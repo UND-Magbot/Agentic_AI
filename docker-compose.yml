@@ -1,0 +1,221 @@
+name: und_cortex
+
+services:
+  postgres:
+    # 외부 DB 사용 시 비활성. 로컬 DB로 전환하려면 `--profile local-db` 와 함께 기동.
+    profiles: ["local-db"]
+    image: pgvector/pgvector:pg16
+    container_name: und_cortex_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cortex}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: ${POSTGRES_DB:-cortex}
+      # 새 볼륨 초기화 시 시드 사용자 비밀번호(infra/postgres/init/02z_seed_users.sh)
+      SEED_SUPERADMIN_PASSWORD: ${SEED_SUPERADMIN_PASSWORD:-}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cortex} -d ${POSTGRES_DB:-cortex}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - und_cortex_net
+
+  redis:
+    image: redis:7-alpine
+    container_name: und_cortex_redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-change-me}"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a ${REDIS_PASSWORD:-change-me} ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    networks:
+      - und_cortex_net
+
+  minio:
+    image: minio/minio:latest
+    container_name: und_cortex_minio
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-cortex}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-change-me-min-8}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - und_cortex_net
+
+  backend:
+    build:
+      context: ./backend
+    container_name: und_cortex_backend
+    restart: unless-stopped
+    env_file: ./.env
+    environment:
+      VLLM_BASE_URL: ${VLLM_BASE_URL:-http://host.docker.internal:8001}
+      MODEL: ${MODEL:-Qwen/Qwen2.5-7B-Instruct-AWQ}
+      MAX_TOKENS: ${MAX_TOKENS:-1024}
+      MAX_MODEL_LEN: ${MAX_MODEL_LEN:-4096}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3010}
+      # MinIO — 같은 compose 네트워크에서 서비스명으로 도달.
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-cortex}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-change-me-min-8}
+      MINIO_BUCKET: ${MINIO_BUCKET:-und-cortex-attachments}
+      MINIO_SECURE: ${MINIO_SECURE:-false}
+      ATTACHMENT_MAX_BYTES: ${ATTACHMENT_MAX_BYTES:-78643200}
+      # 임베딩 서비스(TEI) — 같은 compose 네트워크에서 서비스명으로.
+      EMBED_BASE_URL: ${EMBED_BASE_URL:-http://embed:80}
+      EMBED_MODEL: ${EMBED_MODEL:-BAAI/bge-m3}
+      EMBED_DIM: ${EMBED_DIM:-1024}
+      PORT: "8000"
+    ports:
+      # 호스트 8002 → 컨테이너 8000. 호스트 8000은 다른 프로그램이 점유 중이라 충돌 회피.
+      - "8002:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # 회의 녹음 STT(faster-whisper) 모델 캐시 — vLLM/embed 와 같은 호스트 폴더를
+      # huggingface 캐시로 재사용. 컨테이너 재기동 시 모델 재다운로드를 회피한다.
+      - ./.vllm-cache:/home/cortex/.cache/huggingface
+    depends_on:
+      # postgres는 외부 DB 사용 중이라 의존성 제거. 로컬 DB로 돌리려면 다시 추가.
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - und_cortex_net
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: und_cortex_frontend
+    restart: unless-stopped
+    environment:
+      BACKEND_URL: http://backend:8000
+      # BFF → backend 내부 서비스 토큰. .env 의 값과 동일하게 주입(backend 는 env_file 로 로드).
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-}
+      NEXT_TELEMETRY_DISABLED: "1"
+      NEXT_PUBLIC_USER_NAME: ${NEXT_PUBLIC_USER_NAME:-UND}
+      # 다른 PC 접속 허용 호스트(이 PC 의 LAN IP). 예: ALLOWED_DEV_ORIGINS=192.168.0.x
+      ALLOWED_DEV_ORIGINS: ${ALLOWED_DEV_ORIGINS:-}
+    ports:
+      # 호스트 3010 → 컨테이너 3000(Next.js). 호스트 3000 포트 충돌 회피.
+      - "3010:3000"
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+      - frontend_next_cache:/app/.next
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - und_cortex_net
+
+  embed:
+    # HuggingFace TEI — 임베딩 전용 경량 서비스. /embed 엔드포인트.
+    # bge-m3: 한국어 강한 다국어 임베딩, 1024차원.
+    # 8GB GPU 한 장에 vLLM 7B-AWQ 와 공존 불가 → CPU 이미지로 전환. 단발성 임베딩이라 CPU 1~2초로 견딜 만.
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.6
+    container_name: und_cortex_embed
+    restart: unless-stopped
+    environment:
+      MODEL_ID: ${EMBED_MODEL:-BAAI/bge-m3}
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+      HF_ENDPOINT: https://huggingface.co
+    ports:
+      - "8090:80"
+    volumes:
+      # vLLM 과 동일 경로의 huggingface 캐시 재사용 — 모델 중복 다운로드 회피.
+      - ./.vllm-cache:/data
+    # CPU 이미지(cpu-1.6)는 curl 포함 → /health 로 직접 검사.
+    # 첫 부팅 시 ONNX 모델(bge-m3 ~2.2GB) 다운로드에 시간이 걸리므로 start_period 를 길게.
+    # 캐시 hit 후엔 수십초 내 ready.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 600s
+    networks:
+      - und_cortex_net
+
+  vllm:
+    image: vllm/vllm-openai:latest
+    container_name: und_cortex_vllm
+    profiles: ["gpu"]
+    restart: unless-stopped
+    ipc: host
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+      VLLM_MODEL: ${MODEL:-Qwen/Qwen2.5-7B-Instruct-AWQ}
+      VLLM_QUANTIZATION: ${VLLM_QUANTIZATION:-awq_marlin}
+      VLLM_MAX_MODEL_LEN: ${MAX_MODEL_LEN:-4096}
+    ports:
+      - "8001:8000"
+    volumes:
+      # 프로젝트 루트의 .vllm-cache 폴더를 huggingface 캐시로 사용.
+      # 첫 기동 시 비어있으면 모델을 자동 다운로드하고, 다음 기동부터는 캐시 hit.
+      - ./.vllm-cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    # 모델/양자화/컨텍스트 길이는 .env 의 MODEL / VLLM_QUANTIZATION / MAX_MODEL_LEN 으로 변경 가능.
+    # FP16 모델로 갈 경우 VLLM_QUANTIZATION=none 으로 두면 --quantization 미적용.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        ARGS="--model $$VLLM_MODEL --max-model-len $$VLLM_MAX_MODEL_LEN --gpu-memory-utilization 0.86 --enforce-eager --dtype auto --enable-auto-tool-choice --tool-call-parser hermes"
+        if [ "$$VLLM_QUANTIZATION" != "none" ] && [ -n "$$VLLM_QUANTIZATION" ]; then
+          ARGS="$$ARGS --quantization $$VLLM_QUANTIZATION"
+        fi
+        exec python3 -m vllm.entrypoints.openai.api_server $$ARGS
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 60s
+    networks:
+      - und_cortex_net
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  frontend_node_modules:
+  frontend_next_cache:
+
+networks:
+  und_cortex_net:
+    driver: bridge

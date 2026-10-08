@@ -1,0 +1,294 @@
+@import "tailwindcss";
+
+/* 다크 모드 토글 — `.dark` 가 <html> 에 붙으면 다크 변형 활성. Tailwind v4 의 dark variant 를
+   클래스 기반으로 재정의(기본값은 prefers-color-scheme). 토글은 `ThemeToggle` 컴포넌트가 담당. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* 라이트 그레이·화이트 베이스 — 산업 로보틱 톤. 사이드바는 같은 그레이 패밀리에서 한 단계 진하게. */
+:root {
+  /* 클린 라이트 — 화이트 표면 + 옅은 쿨 배경 + 부드러운 보더(ui_v2 프리미엄 팔레트). */
+  --background: #eff2f7;
+  --surface: #f7f9fb;
+  --surface-muted: #eaedf2;
+  --surface-raised: #ffffff;
+  --border: #e4e8f0;
+  --border-strong: #cdd3dc;
+  --foreground: #0d1526;
+  --foreground-muted: #45506e;
+  --foreground-subtle: #6b7689;
+
+  --accent: #0e7490;
+  --accent-soft: rgba(14, 116, 144, 0.12);
+  --accent-ring: rgba(14, 116, 144, 0.30);
+
+  --sidebar-bg: #fbfcff;
+  --sidebar-fg: #0d1526;
+  --sidebar-fg-muted: #6b7689;
+  --sidebar-hover: #eef1f8;
+  --sidebar-active: #e5eaf3;
+
+  --dot-grid: rgba(15, 23, 42, 0.05);
+
+  /* 프리미엄 그라디언트 — UND 로고(레드+블루)에서 정제한 '지능형' 블루→시안 + 레드 스파크. */
+  --g1: #2563eb;
+  --g2: #0ea5b7;
+  --g3: #06b6d4;
+  --spark: #e23b54;
+  --grad: linear-gradient(135deg, var(--g1), var(--g3));
+  --grad-soft: linear-gradient(135deg, rgba(37, 99, 235, 0.14), rgba(6, 182, 212, 0.14));
+  --glass-bg: rgba(255, 255, 255, 0.72);
+  --glass-border: rgba(255, 255, 255, 0.85);
+}
+
+/* 다크 — 슬레이트 계열을 유지하되 명도를 반전. 도메인 accent 색은 그대로 사용(Tailwind 팔레트의
+   500 대 색이 다크 배경에서도 충분한 대비). 사이드바는 본문 배경보다 한 단계 더 깊게 두어 영역 구분. */
+.dark {
+  --background: #0b0f15;
+  --surface: #11161e;
+  --surface-muted: #1b222d;
+  --surface-raised: #171d27;
+  --border: #2a323e;
+  --border-strong: #3d4654;
+  --foreground: #e2e8f0;
+  --foreground-muted: #94a3b8;
+  --foreground-subtle: #64748b;
+
+  --accent: #22d3ee;
+  --accent-soft: rgba(34, 211, 238, 0.12);
+  --accent-ring: rgba(34, 211, 238, 0.40);
+
+  --sidebar-bg: #0d1219;
+  --sidebar-fg: #e2e8f0;
+  --sidebar-fg-muted: #94a3b8;
+  --sidebar-hover: #1c232e;
+  --sidebar-active: #252e3b;
+
+  --dot-grid: rgba(255, 255, 255, 0.05);
+
+  /* 다크 — accent 톤을 밝혀 깊은 배경에서도 그라디언트가 살아나게. */
+  --g1: #3b82f6;
+  --g2: #22b8d4;
+  --g3: #22d3ee;
+  --spark: #fb5573;
+  --grad: linear-gradient(135deg, var(--g1), var(--g3));
+  --grad-soft: linear-gradient(135deg, rgba(59, 130, 246, 0.18), rgba(34, 211, 238, 0.16));
+  --glass-bg: rgba(23, 29, 39, 0.62);
+  --glass-border: rgba(255, 255, 255, 0.07);
+}
+
+/* 시스템 색 스킴을 OS 테마와 맞춰주면 폼 컨트롤(스크롤바, 셀렉터 등)도 자연 매칭. */
+.dark { color-scheme: dark; }
+:root:not(.dark) { color-scheme: light; }
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
+  --color-surface-raised: var(--surface-raised);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-foreground: var(--foreground);
+  --color-foreground-muted: var(--foreground-muted);
+  --color-foreground-subtle: var(--foreground-subtle);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+
+  --color-sidebar-bg: var(--sidebar-bg);
+  --color-sidebar-fg: var(--sidebar-fg);
+  --color-sidebar-fg-muted: var(--sidebar-fg-muted);
+  --color-sidebar-hover: var(--sidebar-hover);
+  --color-sidebar-active: var(--sidebar-active);
+
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), -apple-system, "Pretendard", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "ss01", "cv11";
+}
+
+/* 미세한 도트 그리드 배경 — 라이트는 옅은 다크 도트, 다크는 옅은 화이트 도트(--dot-grid 토큰). */
+.dot-grid {
+  background-image: radial-gradient(var(--dot-grid) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+
+/* 채팅 영역 스크롤바를 얇게 */
+.scroll-thin::-webkit-scrollbar { width: 6px; height: 6px; }
+.scroll-thin::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 0; }
+.scroll-thin::-webkit-scrollbar-thumb:hover { background: var(--foreground-subtle); }
+.scroll-thin::-webkit-scrollbar-track { background: transparent; }
+
+/* 진입 모션 — 빈 상태 → 첫 메시지 전환을 부드럽게 */
+@keyframes und-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes und-fade-in-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+.anim-fade-in { animation: und-fade-in 0.4s ease-out both; }
+.anim-fade-in-up { animation: und-fade-in-up 0.32s ease-out both; }
+@media (prefers-reduced-motion: reduce) {
+  .anim-fade-in, .anim-fade-in-up { animation: none !important; }
+}
+
+/* 비동기 작업(로그인 등) 진행 중 시스템 wait 커서를 강제 적용.
+   button/input 의 기본 cursor(pointer/not-allowed) 가 우선되어 mouse 가 그 위에 있을 때
+   wait 커서가 안 보이는 문제를 막기 위해 모든 자손에 !important 로 덮어쓴다.
+   토글: document.body.classList.add('und-busy') / .remove('und-busy'). */
+body.und-busy,
+body.und-busy * {
+  cursor: wait !important;
+}
+
+/* assistant 메시지 안 마크다운 흉내용 기본 타이포 */
+/* 숫자는 등폭(tabular) — 재무/경비 답변의 금액·수치 정렬이 또렷(엔지니어드 톤). */
+.prose-chat { font-variant-numeric: tabular-nums; }
+.prose-chat > * + * { margin-top: 0.6rem; }
+.prose-chat h1, .prose-chat h2, .prose-chat h3 { font-weight: 600; letter-spacing: -0.01em; }
+.prose-chat strong { font-weight: 600; color: var(--foreground); }
+.prose-chat a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; text-decoration-thickness: 1px; text-decoration-color: var(--accent-ring); }
+.prose-chat a:hover { text-decoration-color: var(--accent); }
+.prose-chat code { font-family: var(--font-mono); font-size: 0.85em; background: var(--surface-muted); padding: 0.1em 0.35em; border-radius: 4px; border: 1px solid var(--border); }
+.prose-chat blockquote { border-left: 2px solid var(--accent); padding-left: 0.75rem; color: var(--foreground-muted); }
+.prose-chat ol, .prose-chat ul { padding-left: 1.25rem; }
+.prose-chat ol { list-style: decimal; }
+.prose-chat ul { list-style: disc; }
+.prose-chat hr { border: 0; border-top: 1px solid var(--border); margin: 0.9rem 0; }
+
+/* 입력창 자동 리사이즈용 */
+textarea.autosize {
+  field-sizing: content;
+  max-height: 12rem;
+}
+
+/* ───────────────── 프리미엄 비주얼 유틸리티 ───────────────── */
+/* 오로라 배경 — 평평한 회색 대신 브랜드 컬러의 부드러운 광원 + 마스킹된 도트그리드로 깊이. */
+.und-aurora {
+  position: relative;
+  background:
+    radial-gradient(820px 520px at 78% -8%, rgba(37, 99, 235, 0.16), transparent 60%),
+    radial-gradient(720px 520px at 12% 8%, rgba(6, 182, 212, 0.14), transparent 55%),
+    radial-gradient(900px 700px at 50% 120%, rgba(226, 59, 84, 0.07), transparent 60%),
+    var(--background);
+}
+.dark .und-aurora {
+  background:
+    radial-gradient(820px 520px at 78% -8%, rgba(59, 130, 246, 0.20), transparent 60%),
+    radial-gradient(720px 520px at 12% 8%, rgba(34, 211, 238, 0.14), transparent 55%),
+    radial-gradient(900px 700px at 50% 120%, rgba(244, 63, 94, 0.08), transparent 60%),
+    var(--background);
+}
+.und-aurora::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: radial-gradient(var(--dot-grid) 1px, transparent 1px);
+  background-size: 24px 24px;
+  -webkit-mask-image: radial-gradient(70% 60% at 50% 38%, #000, transparent);
+  mask-image: radial-gradient(70% 60% at 50% 38%, #000, transparent);
+  opacity: 0.6;
+}
+
+/* 글래스 표면 */
+.und-glass {
+  background: var(--glass-bg);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid var(--glass-border);
+}
+
+/* 그라디언트 텍스트(워드마크 등) — 토큰 미해결 대비 리터럴 폴백 포함. */
+.text-grad {
+  background-image: linear-gradient(135deg, var(--g1, #2563eb), var(--g3, #06b6d4));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* 그라디언트 면/연한 면 — 버튼·아바타·active 틴트.
+   solid background-color 폴백 + 리터럴 색 폴백 → 토큰/CSS 가 덜 로드돼도 흰 텍스트가
+   투명 배경 위에 사라지지 않게 한다(방어적). */
+.und-grad {
+  background-color: var(--g1, #2563eb);
+  background-image: linear-gradient(135deg, var(--g1, #2563eb), var(--g3, #06b6d4));
+}
+.und-grad-soft {
+  background-image: linear-gradient(135deg, rgba(37, 99, 235, 0.14), rgba(6, 182, 212, 0.14));
+}
+.dark .und-grad-soft {
+  background-image: linear-gradient(135deg, rgba(59, 130, 246, 0.18), rgba(34, 211, 238, 0.16));
+}
+
+/* 그라디언트 1px 보더(카드) — mask 합성으로 안쪽을 투명하게 둔 테두리만. */
+.und-card-border { position: relative; }
+.und-card-border::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(140deg, rgba(37, 99, 235, 0.5), rgba(6, 182, 212, 0.18), transparent 60%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: 0.85;
+  pointer-events: none;
+}
+.dark .und-card-border::before {
+  background: linear-gradient(140deg, rgba(59, 130, 246, 0.55), rgba(34, 211, 238, 0.2), transparent 60%);
+}
+
+/* 로고 글로우 헤일로 */
+.und-glow {
+  background: radial-gradient(closest-side, rgba(37, 99, 235, 0.5), rgba(6, 182, 212, 0.25), transparent 72%);
+  filter: blur(26px);
+}
+.dark .und-glow {
+  background: radial-gradient(closest-side, rgba(59, 130, 246, 0.45), rgba(34, 211, 238, 0.22), transparent 72%);
+}
+
+/* 메시지 말풍선 입체 — 인셋 하이라이트 + 소프트 드롭(머신드 패널). border 와 함께 쓴다. */
+.bubble-panel {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75), 0 10px 30px -20px rgba(15, 30, 70, 0.40);
+}
+.dark .bubble-panel {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 14px 34px -22px rgba(0, 0, 0, 0.65);
+}
+/* 스트리밍 중 — accent 헤일로(답이 쓰여지는 중 신호). */
+.bubble-live {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 0 0 1px var(--accent-ring),
+    0 16px 44px -24px var(--accent);
+}
+.dark .bubble-live {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 0 0 1px var(--accent-ring),
+    0 16px 44px -22px var(--accent);
+}
+
+/* 사용자 말풍선 — 그라디언트 + 입체. */
+.bubble-user {
+  background-color: var(--g1, #2563eb);
+  background-image: linear-gradient(135deg, var(--g1, #2563eb), var(--g3, #06b6d4));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 12px 28px -14px rgba(37, 99, 235, 0.55);
+}
+
+/* 터미널형 스트리밍 커서 — accent 색 + step 블링크. */
+@keyframes und-caret-blink {
+  0%, 45% { opacity: 1; }
+  50%, 95% { opacity: 0; }
+  100% { opacity: 1; }
+}
+.anim-caret { animation: und-caret-blink 1.05s steps(1, end) infinite; }
+@media (prefers-reduced-motion: reduce) { .anim-caret { animation: none !important; } }

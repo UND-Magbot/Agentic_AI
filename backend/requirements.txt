@@ -1,0 +1,49 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+httpx>=0.27
+pydantic>=2.7
+python-dotenv>=1.0
+
+# DB / ORM
+sqlalchemy[asyncio]>=2.0
+asyncpg>=0.29
+greenlet>=3.0
+
+# 인증
+bcrypt>=4.1,<5
+passlib[bcrypt]>=1.7.4
+pyjwt>=2.8
+
+# 메일/입력 검증
+email-validator>=2.1
+
+# 객체 저장 — MinIO (S3 호환)
+minio>=7.2
+
+# multipart 업로드 (FastAPI File/UploadFile)
+python-multipart>=0.0.9
+
+# RAG — 사칙·매뉴얼 등 사내 문서 검색용
+# 임베딩은 별도 컨테이너(huggingface/text-embeddings-inference) 가 처리.
+# pgvector 컬럼은 raw SQL로 다루므로 추가 ORM 의존성 없음.
+# xlsx 인제스트 스크립트에서 사용.
+openpyxl>=3.1
+
+# expense 양식 영수증 이미지 리사이즈/정규화 (slot 크기 맞춤 + EXIF 회전 보정).
+Pillow>=10.0
+
+# Hiworks SMTP 메일 발송 (smtps.hiworks.com:465 SSL)
+aiosmtplib>=3.0
+
+# 회의 녹음 → 텍스트 변환(STT). 로컬 CPU 추론 — 사내 회의 녹음은 보안등급상
+# 외부 STT API 전송 불가. PyAV(번들 ffmpeg)로 m4a/mp3/wav 디코드.
+faster-whisper>=1.1
+
+# 컨설팅 사례집 등 PDF 인제스트(ingest_casebook) — 좌표 기반 다단 읽기 순서 복원.
+pymupdf>=1.24
+
+# 확정 수정본(.docx) 글자 추출(confirmed.py).
+python-docx>=1.1
+
+# 제안서 pptx 생성(proposal/pptx_render.py) — 사내 제안서 공통 스타일 16:9 템플릿.
+python-pptx>=1.0

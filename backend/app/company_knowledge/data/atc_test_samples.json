@@ -1,0 +1,1300 @@
+{
+ "revision": "0.2 + 0.8-addendum + 액세서리 1.2-review",
+ "samples": [
+  {
+   "id": "s1",
+   "label": "샘플1.1 협동 사출품 이송(툴 2개)",
+   "file": "샘플1.1_협동_사출품이송_추가질문완료.docx",
+   "expected_model": "TCC1",
+   "quotable": true,
+   "intake": {
+    "project": {
+     "process": {
+      "category": "transfer"
+     },
+     "tool_count": 2,
+     "environment": {
+      "has_special_conditions": false
+     },
+     "customer_name": "(가상) 한빛플라스틱",
+     "writer": "김영업",
+     "meeting_date": "2026-10-02",
+     "followups_answered": [
+      "F02",
+      "F03",
+      "F04",
+      "F05",
+      "F06"
+     ]
+    },
+    "robots": [
+     {
+      "id": "R1",
+      "model": "M1013",
+      "type": "cobot",
+      "quantity": 1,
+      "speed": {
+       "value": 60,
+       "unit": "%"
+      },
+      "cables": {
+       "master_4m_sufficient": true,
+       "system_1m_sufficient": true
+      },
+      "manufacturer": "두산로보틱스"
+     }
+    ],
+    "tools": [
+     {
+      "id": "T1",
+      "name": "전동 그리퍼",
+      "robot_ids": [
+       "R1"
+      ],
+      "installed_quantity": 1,
+      "workpiece_count": null,
+      "workpiece_not_applicable": false,
+      "intake": {
+       "dimensions_mm": {
+        "x": 220.0,
+        "y": 90.0,
+        "z": 150.0
+       },
+       "tool_assembly_mass_kg": 0.8,
+       "tilts_or_flips": false,
+       "needs_power": true,
+       "needs_air": false,
+       "has_sensors_or_signals": true
+      },
+      "mass_components": {
+       "max_simultaneous_workpieces_kg": 0.5
+      },
+      "electrical": {
+       "power_circuits": [
+        "전동 그리퍼: 24V 1회로, 연속 0.6A, 피크 0.9A (사양서)"
+       ],
+       "sensor_list": [
+        "전동 그리퍼: 열림·닫힘 확인 DI 2, 열기·닫기 명령 DO 2"
+       ],
+       "control_method_raw": "DIO, 공통선 없음(배선도 받음)",
+       "extra_pins": 0,
+       "dio": {
+        "di": 2,
+        "do": 2
+       }
+      }
+     },
+     {
+      "id": "T2",
+      "name": "진공 그리퍼 (흡착패드 4개)",
+      "robot_ids": [
+       "R1"
+      ],
+      "installed_quantity": 1,
+      "workpiece_count": 4,
+      "workpiece_not_applicable": false,
+      "intake": {
+       "dimensions_mm": {
+        "x": 300.0,
+        "y": 200.0,
+        "z": 120.0
+       },
+       "tool_assembly_mass_kg": 1.2,
+       "tilts_or_flips": false,
+       "needs_power": false,
+       "needs_air": true,
+       "has_sensors_or_signals": true
+      },
+      "mass_components": {
+       "max_simultaneous_workpieces_kg": 2.0
+      },
+      "pneumatic": {
+       "pressure_bar": {
+        "min": 4.0,
+        "max": 4.0
+       },
+       "observed_hose_count": 1,
+       "required_independent_paths": 1,
+       "medium": "압축공기"
+      },
+      "electrical": {
+       "power_circuits": [
+        "진공 그리퍼: 센서 전원 24V 1회로, 최대 0.05A"
+       ],
+       "sensor_list": [
+        "진공 그리퍼: 진공 확인 스위치 DI 1, DO 0"
+       ],
+       "control_method_raw": "DIO, 공통선 없음(배선도 받음)",
+       "extra_pins": 0,
+       "dio": {
+        "di": 1,
+        "do": 0
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "s2",
+   "label": "샘플4.1 경계 사례(피크·RS-485·5.5bar)",
+   "file": "샘플4.1_압력경계_통신_추가질문완료.docx",
+   "expected_model": "TCC1",
+   "quotable": true,
+   "intake": {
+    "project": {
+     "process": {
+      "category": "transfer"
+     },
+     "tool_count": 2,
+     "environment": {
+      "has_special_conditions": true,
+      "details": "물이나 기름 (세척수 튐)"
+     },
+     "customer_name": "(가상) 그린바이오",
+     "writer": "최영업",
+     "meeting_date": "2026-10-02",
+     "followups_answered": [
+      "F01",
+      "F02",
+      "F03",
+      "F04",
+      "F05",
+      "F06",
+      "F07",
+      "F08",
+      "F11",
+      "F12"
+     ]
+    },
+    "robots": [
+     {
+      "id": "R1",
+      "model": "UR10e",
+      "type": "cobot",
+      "quantity": 1,
+      "speed": {
+       "value": 50,
+       "unit": "%"
+      },
+      "cables": {
+       "master_4m_sufficient": true,
+       "system_1m_sufficient": false,
+       "controller_to_system_required_m": 2.0
+      },
+      "manufacturer": "Universal Robots"
+     }
+    ],
+    "tools": [
+     {
+      "id": "T1",
+      "name": "전동 그리퍼 (RS-485 제어)",
+      "robot_ids": [
+       "R1"
+      ],
+      "installed_quantity": 1,
+      "workpiece_count": null,
+      "workpiece_not_applicable": false,
+      "intake": {
+       "dimensions_mm": {
+        "x": 150.0,
+        "y": 80.0,
+        "z": 180.0
+       },
+       "tool_assembly_mass_kg": 1.1,
+       "tilts_or_flips": false,
+       "needs_power": true,
+       "needs_air": false,
+       "has_sensors_or_signals": true
+      },
+      "mass_components": {
+       "max_simultaneous_workpieces_kg": 0.4
+      },
+      "electrical": {
+       "power_circuits": [
+        "전동 그리퍼: 24V 1회로, 연속 0.8A, 피크 2A (그리퍼 사양서)"
+       ],
+       "sensor_list": [
+        "전동 그리퍼: 완료 신호 DI 1, DO 0(나머지는 RS-485 통신)"
+       ],
+       "control_method_raw": "전동 그리퍼: RS-485 2선식, 공통선 없음",
+       "extra_pins": 0,
+       "dio": {
+        "di": 1,
+        "do": 0
+       }
+      }
+     },
+     {
+      "id": "T2",
+      "name": "진공 그리퍼",
+      "robot_ids": [
+       "R1"
+      ],
+      "installed_quantity": 1,
+      "workpiece_count": null,
+      "workpiece_not_applicable": false,
+      "intake": {
+       "dimensions_mm": {
+        "x": 160.0,
+        "y": 160.0,
+        "z": 140.0
+       },
+       "tool_assembly_mass_kg": 0.9,
+       "tilts_or_flips": true,
+       "needs_power": false,
+       "needs_air": true,
+       "has_sensors_or_signals": true
+      },
+      "mass_components": {
+       "max_simultaneous_workpieces_kg": 0.2
+      },
+      "pneumatic": {
+       "pressure_bar": {
+        "min": 5.5,
+        "max": 5.5
+       },
+       "observed_hose_count": 1,
+       "required_independent_paths": 1,
+       "medium": "압축공기"
+      },
+      "electrical": {
+       "power_circuits": [
+        "진공 그리퍼: 센서 전원 24V 1회로, 최대 0.1A"
+       ],
+       "sensor_list": [
+        "진공 그리퍼: 진공 확인 센서 DI 1, 흡착 ON/OFF DO 1"
+       ],
+       "control_method_raw": "진공 그리퍼: DIO, 공통선 없음",
+       "extra_pins": 0,
+       "dio": {
+        "di": 1,
+        "do": 1
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "s3",
+   "label": "샘플5.1 다수 툴·로봇 2대",
+   "file": "샘플5.1_다수툴_혼합로봇_추가질문완료.docx",
+   "expected_model": "TCV1",
+   "quotable": true,
+   "intake": {
+    "project": {
+     "process": {
+      "category": "transfer"
+     },
+     "tool_count": 4,
+     "environment": {
+      "has_special_conditions": true,
+      "details": "고온 (여름철 창고 약 45℃)"
+     },
+     "customer_name": "(가상) 성진물류",
+     "writer": "정영업",
+     "meeting_date": "2026-10-02",
+     "followups_answered": [
+      "F02",
+      "F03",
+      "F04",
+      "F05",
+      "F06"
+     ]
+    },
+    "robots": [
+     {
+      "id": "R1",
+      "model": "HCR-12",
+      "type": "cobot",
+      "quantity": 1,
+      "speed": {
+       "value": 60,
+       "unit": "%"
+      },
+      "cables": {
+       "master_4m_sufficient": true,
+       "system_1m_sufficient": true
+      },
+      "manufacturer": "한화로보틱스"
+     },
+     {
+      "id": "R2",
+      "model": "RB10",
+      "type": "cobot",
+      "quantity": 1,
+      "speed": {
+       "value": 60,
+       "unit": "%"
+      },
+      "cables": {
+       "master_4m_sufficient": true,
+       "system_1m_sufficient": true
+      },
+      "manufacturer": "레인보우로보틱스"
+     }
+    ],
+    "tools": [
+     {
+      "id": "T1",
+      "name": "흡착 그리퍼 (같은 모델)",
+      "robot_ids": [
+       "R1",
+       "R2"
+      ],
+      "installed_quantity": 2,
+      "workpiece_count": null,
+      "workpiece_not_applicable": false,
+      "intake": {
+       "dimensions_mm": {
+        "x": 400.0,
+        "y": 300.0,
+        "z": 150.0
+       },
+       "tool_assembly_mass_kg": 2.5,
+       "tilts_or_flips": false,
+       "needs_power": false,
+       "needs_air": true,
+       "has_sensors_or_signals": true
+      },
+      "mass_components": {
+       "max_simultaneous_workpieces_kg": 5.0
+      },
+      "pneumatic": {
+       "pressure_bar": {
+        "min": 4.0,
+        "max": 4.0
+       },
+       "observed_hose_count": 2,
+       "required_independent_paths": 1,
+       "medium": "압축공기"
+      },
+      "electrical": {
+       "power_circuits": [
+        "흡착 그리퍼: 센서 전원 24V 1회로, 최대 0.05A"
+       ],
+       "sensor_list": [
+        "흡착 그리퍼: 진공 스위치 DI 1, DO 0"
+       ],
+       "control_method_raw": "DIO, 공통선 없음(0V 공용)",
+       "extra_pins": 0,
+       "dio": {
+        "di": 1,
+        "do": 0
+       }
+      }
+     },
+     {
+      "id": "T2",
+      "name": "핑거 그리퍼",
+      "robot_ids": [
+       "R1"
+      ],
+      "installed_quantity": 1,
+      "workpiece_count": null,
+      "workpiece_not_applicable": false,
+      "intake": {
+       "dimensions_mm": {
+        "x": 200.0,
+        "y": 120.0,
+        "z": 160.0
+       },
+       "tool_assembly_mass_kg": 1.5,
+       "tilts_or_flips": false,
+       "needs_power": true,
+       "needs_air": false,
+       "has_sensors_or_signals": true
+      },
+      "mass_components": {
+       "max_simultaneous_workpieces_kg": 3.0
+      },
+      "electrical": {
+       "power_circuits": [
+        "핑거 그리퍼: 24V 1회로, 연속 0.5A, 피크 0.8A"
+       ],
+       "sensor_list": [
+        "핑거 그리퍼: 열림·닫힘 DI 2, 열기·닫기 DO 2"
+       ],
+       "control_method_raw": "DIO, 공통선 없음(0V 공용)",
+       "extra_pins": 0,
+       "dio": {
+        "di": 2,
+        "do": 2
+       }
+      }
+     },
+     {
+      "id": "T3",
+      "name": "마그네틱 그리퍼",
+      "robot_ids": [
+       "R2"
+      ],
+      "installed_quantity": 1,
+      "workpiece_count": null,
+      "workpiece_not_applicable": false,
+      "intake": {
+       "dimensions_mm": {
+        "x": 120.0,
+        "y": 120.0,
+        "z": 80.0
+       },
+       "tool_assembly_mass_kg": 1.8,
+       "tilts_or_flips": false,
+       "needs_power": true,
+       "needs_air": false,
+       "has_sensors_or_signals": true
+      },
+      "mass_components": {
+       "max_simultaneous_workpieces_kg": 4.0
+      },
+      "electrical": {
+       "power_circuits": [
+        "마그네틱 그리퍼: 24V 1회로, 연속 0.7A, 피크 0.9A"
+       ],
+       "sensor_list": [
+        "마그네틱 그리퍼: DI 0, ON/OFF DO 1"
+       ],
+       "control_method_raw": "DIO, 공통선 없음(0V 공용)",
+       "extra_pins": 0,
+       "dio": {
+        "di": 0,
+        "do": 1
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "s4",
+   "label": "샘플6 협동 박스 팔레타이징",
+   "file": "샘플6_협동_박스팔레타이징.docx",
+   "expected_model": "TCV2",
+   "quotable": true,
+   "intake": {
+    "project": {
+     "process": {
+      "category": "transfer"
+     },
+     "tool_count": 2,
+     "environment": {
+      "has_special_conditions": false
+     },
+     "customer_name": "(가상) 동해식품",
+     "writer": "한영업",
+     "meeting_date": "2026-10-02",
+     "followups_answered": [
+      "F02",
+      "F03",
+      "F04",
+      "F05",
+      "F06"
+     ]
+    },
+    "robots": [
+     {
+      "id": "R1",
+      "model": "H2017",
+      "type": "cobot",
+      "quantity": 1,
+      "speed": {
+       "value": 50,
+       "unit": "%"
+      },
+      "cables": {
+       "master_4m_sufficient": true,
+       "system_1m_sufficient": true
+      },
+      "manufacturer": "두산로보틱스"
+     }
+    ],
+    "tools": [
+     {
+      "id": "T1",
+      "name": "박스 흡착 그리퍼",
+      "robot_ids": [
+       "R1"
+      ],
+      "installed_quantity": 1,
+      "workpiece_count": null,
+      "workpiece_not_applicable": false,
+      "intake": {
+       "dimensions_mm": {
+        "x": 600.0,
+        "y": 400.0,
+        "z": 200.0
+       },
+       "tool_assembly_mass_kg": 5.0,
+       "tilts_or_flips": false,
+       "needs_power": false,
+       "needs_air": true,
+       "has_sensors_or_signals": true
+      },
+      "mass_components": {
+       "max_simultaneous_workpieces_kg": 7.0
+      },
+      "pneumatic": {
+       "pressure_bar": {
+        "min": 4.0,
+        "max": 4.0
+       },
+       "observed_hose_count": 2,
+       "required_independent_paths": 1,
+       "medium": "압축공기"
+      },
+      "electrical": {
+       "power_circuits": [
+        "박스 흡착 그리퍼: 센서 전원 24V 1회로, 최대 0.1A"
+       ],
+       "sensor_list": [
+        "박스 흡착 그리퍼: 진공 스위치 DI 1, 흡착 ON/OFF DO 1"
+       ],
+       "control_method_raw": "DIO, 공통선 없음(배선도 받음)",
+       "extra_pins": 0,
+       "dio": {
+        "di": 1,
+        "do": 1
+       }
+      }
+     },
+     {
+      "id": "T2",
+      "name": "포크형 그리퍼",
+      "robot_ids": [
+       "R1"
+      ],
+      "installed_quantity": 1,
+      "workpiece_count": null,
+      "workpiece_not_applicable": false,
+      "intake": {
+       "dimensions_mm": {
+        "x": 500.0,
+        "y": 350.0,
+        "z": 250.0
+       },
+       "tool_assembly_mass_kg": 4.0,
+       "tilts_or_flips": false,
+       "needs_power": true,
+       "needs_air": false,
+       "has_sensors_or_signals": true
+      },
+      "mass_components": {
+       "max_simultaneous_workpieces_kg": 6.0
+      },
+      "electrical": {
+       "power_circuits": [
+        "포크형 그리퍼: 24V 1회로, 연속 0.8A, 피크 1A (사양서)"
+       ],
+       "sensor_list": [
+        "포크형 그리퍼: 포크 위치 센서 DI 2, 열기·닫기 DO 2"
+       ],
+       "control_method_raw": "DIO, 공통선 없음(배선도 받음)",
+       "extra_pins": 0,
+       "dio": {
+        "di": 2,
+        "do": 2
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "s5",
+   "label": "샘플7 협동 대형 부품 이송",
+   "file": "샘플7_협동_대형부품이송.docx",
+   "expected_model": "TCV3",
+   "quotable": true,
+   "intake": {
+    "project": {
+     "process": {
+      "category": "transfer"
+     },
+     "tool_count": 2,
+     "environment": {
+      "has_special_conditions": false
+     },
+     "customer_name": "(가상) 서진금속",
+     "writer": "오영업",
+     "meeting_date": "2026-10-02",
+     "followups_answered": [
+      "F02",
+      "F03",
+      "F04",
+      "F05",
+      "F06"
+     ]
+    },
+    "robots": [
+     {
+      "id": "R1",
+      "model": "CRX-30iA",
+      "type": "cobot",
+      "quantity": 1,
+      "speed": {
+       "value": 40,
+       "unit": "%"
+      },
+      "cables": {
+       "master_4m_sufficient": true,
+       "system_1m_sufficient": true
+      },
+      "manufacturer": "화낙"
+     }
+    ],
+    "tools": [
+     {
+      "id": "T1",
+      "name": "자석 그리퍼",
+      "robot_ids": [
+       "R1"
+      ],
+      "installed_quantity": 1,
+      "workpiece_count": null,
+      "workpiece_not_applicable": false,
+      "intake": {
+       "dimensions_mm": {
+        "x": 450.0,
+        "y": 300.0,
+        "z": 180.0
+       },
+       "tool_assembly_mass_kg": 8.0,
+       "tilts_or_flips": false,
+       "needs_power": true,
+       "needs_air": false,
+       "has_sensors_or_signals": true
+      },
+      "mass_components": {
+       "max_simultaneous_workpieces_kg": 10.0
+      },
+      "electrical": {
+       "power_circuits": [
+        "자석 그리퍼: 24V 1회로, 연속 0.9A, 피크 1A (전자석 사양서)"
+       ],
+       "sensor_list": [
+        "자석 그리퍼: 흡착 확인 DI 1, 자석 ON/OFF DO 1"
+       ],
+       "control_method_raw": "DIO, 공통선 없음",
+       "extra_pins": 0,
+       "dio": {
+        "di": 1,
+        "do": 1
+       }
+      }
+     },
+     {
+      "id": "T2",
+      "name": "클램프 그리퍼",
+      "robot_ids": [
+       "R1"
+      ],
+      "installed_quantity": 1,
+      "workpiece_count": null,
+      "workpiece_not_applicable": false,
+      "intake": {
+       "dimensions_mm": {
+        "x": 400.0,
+        "y": 250.0,
+        "z": 200.0
+       },
+       "tool_assembly_mass_kg": 6.0,
+       "tilts_or_flips": false,
+       "needs_power": false,
+       "needs_air": true,
+       "has_sensors_or_signals": true
+      },
+      "mass_components": {
+       "max_simultaneous_workpieces_kg": 8.0
+      },
+      "pneumatic": {
+       "pressure_bar": {
+        "min": 5.0,
+        "max": 5.0
+       },
+       "actuation": "double_acting",
+       "valve_location": "robot_side",
+       "gripper_count": 1,
+       "extra_paths": 0,
+       "observed_hose_count": 2,
+       "medium": "압축공기"
+      },
+      "electrical": {
+       "power_circuits": [
+        "클램프 그리퍼: 센서 전원 24V 1회로, 최대 0.1A"
+       ],
+       "sensor_list": [
+        "클램프 그리퍼: 클램프 위치 DI 2, 열기·닫기 DO 2"
+       ],
+       "control_method_raw": "DIO, 공통선 없음",
+       "extra_pins": 0,
+       "dio": {
+        "di": 2,
+        "do": 2
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "s6",
+   "label": "샘플8 협동 고중량(자동 범위 초과)",
+   "file": "샘플8_협동_고중량_범위초과.docx",
+   "expected_model": "M-LTC-0040A",
+   "quotable": false,
+   "intake": {
+    "project": {
+     "process": {
+      "category": "transfer"
+     },
+     "tool_count": 2,
+     "environment": {
+      "has_special_conditions": false
+     },
+     "customer_name": "(가상) 태광산업",
+     "writer": "윤영업",
+     "meeting_date": "2026-10-02",
+     "followups_answered": [
+      "F02",
+      "F03",
+      "F04",
+      "F05",
+      "F06"
+     ]
+    },
+    "robots": [
+     {
+      "id": "R1",
+      "model": "CR-35iB",
+      "type": "cobot",
+      "quantity": 1,
+      "speed": {
+       "value": 30,
+       "unit": "%"
+      },
+      "cables": {
+       "master_4m_sufficient": true,
+       "system_1m_sufficient": true
+      },
+      "manufacturer": "화낙"
+     }
+    ],
+    "tools": [
+     {
+      "id": "T1",
+      "name": "주물 그리퍼 A",
+      "robot_ids": [
+       "R1"
+      ],
+      "installed_quantity": 1,
+      "workpiece_count": null,
+      "workpiece_not_applicable": false,
+      "intake": {
+       "dimensions_mm": {
+        "x": 500.0,
+        "y": 400.0,
+        "z": 300.0
+       },
+       "tool_assembly_mass_kg": 12.0,
+       "tilts_or_flips": false,
+       "needs_power": false,
+       "needs_air": true,
+       "has_sensors_or_signals": true
+      },
+      "mass_components": {
+       "max_simultaneous_workpieces_kg": 20.0
+      },
+      "pneumatic": {
+       "pressure_bar": {
+        "min": 5.0,
+        "max": 5.0
+       },
+       "observed_hose_count": 2,
+       "required_independent_paths": 2,
+       "medium": "압축공기"
+      },
+      "electrical": {
+       "power_circuits": [
+        "툴마다 센서 전원 24V 1회로, 최대 0.1A"
+       ],
+       "sensor_list": [
+        "툴마다 클램프 위치 DI 2, 열기·닫기 DO 2"
+       ],
+       "control_method_raw": "DIO, 공통선 없음",
+       "extra_pins": 0,
+       "dio": {
+        "di": 2,
+        "do": 2
+       }
+      }
+     },
+     {
+      "id": "T2",
+      "name": "주물 그리퍼 B",
+      "robot_ids": [
+       "R1"
+      ],
+      "installed_quantity": 1,
+      "workpiece_count": null,
+      "workpiece_not_applicable": false,
+      "intake": {
+       "dimensions_mm": {
+        "x": 450.0,
+        "y": 350.0,
+        "z": 300.0
+       },
+       "tool_assembly_mass_kg": 10.0,
+       "tilts_or_flips": false,
+       "needs_power": false,
+       "needs_air": true,
+       "has_sensors_or_signals": true
+      },
+      "mass_components": {
+       "max_simultaneous_workpieces_kg": 15.0
+      },
+      "pneumatic": {
+       "pressure_bar": {
+        "min": 5.0,
+        "max": 5.0
+       },
+       "observed_hose_count": 2,
+       "required_independent_paths": 2,
+       "medium": "압축공기"
+      },
+      "electrical": {
+       "power_circuits": [
+        "툴마다 센서 전원 24V 1회로, 최대 0.1A"
+       ],
+       "sensor_list": [
+        "툴마다 클램프 위치 DI 2, 열기·닫기 DO 2"
+       ],
+       "control_method_raw": "DIO, 공통선 없음",
+       "extra_pins": 0,
+       "dio": {
+        "di": 2,
+        "do": 2
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "s7",
+   "label": "샘플2.1 산업용 차체 패널",
+   "file": "샘플2.1_산업용_차체패널_추가질문완료.docx",
+   "expected_model": "TCHK150",
+   "quotable": false,
+   "intake": {
+    "project": {
+     "process": {
+      "category": "transfer"
+     },
+     "tool_count": 3,
+     "environment": {
+      "has_special_conditions": true,
+      "details": "철가루 (프레스 라인 분진)"
+     },
+     "customer_name": "(가상) 대성오토",
+     "writer": "박영업",
+     "meeting_date": "2026-10-02",
+     "followups_answered": [
+      "F01",
+      "F02",
+      "F03",
+      "F04",
+      "F05",
+      "F06",
+      "F07",
+      "F08",
+      "F11",
+      "F12"
+     ]
+    },
+    "robots": [
+     {
+      "id": "R1",
+      "model": "HS220",
+      "type": "industrial",
+      "quantity": 2,
+      "speed": {
+       "value": 40,
+       "unit": "%"
+      },
+      "cables": {
+       "master_4m_sufficient": false,
+       "system_1m_sufficient": true,
+       "master_to_controller_required_m": 6.0
+      },
+      "manufacturer": "현대로보틱스"
+     }
+    ],
+    "tools": [
+     {
+      "id": "T1",
+      "name": "패널 그리퍼 A (자석+흡착)",
+      "robot_ids": [
+       "R1"
+      ],
+      "installed_quantity": 2,
+      "workpiece_count": null,
+      "workpiece_not_applicable": false,
+      "intake": {
+       "dimensions_mm": {
+        "x": 1200.0,
+        "y": 800.0,
+        "z": 250.0
+       },
+       "tool_assembly_mass_kg": 45.0,
+       "tilts_or_flips": true,
+       "needs_power": true,
+       "needs_air": true,
+       "has_sensors_or_signals": true
+      },
+      "mass_components": {
+       "max_simultaneous_workpieces_kg": 30.0
+      },
+      "pneumatic": {
+       "pressure_bar": {
+        "min": 5.0,
+        "max": 5.0
+       },
+       "observed_hose_count": 2,
+       "required_independent_paths": 2,
+       "medium": "압축공기"
+      },
+      "electrical": {
+       "power_circuits": [
+        "툴마다 24V 1회로, 연속 0.9A, 피크 1A (전자석 컨트롤러 사양서)"
+       ],
+       "sensor_list": [
+        "툴마다 근접센서 4개·흡착 압력 스위치 1개 → DI 5, 전자석·흡착 ON/OFF → DO 2"
+       ],
+       "control_method_raw": "DIO, 공통선 없음(0V 공용), 배선도 요청함",
+       "extra_pins": 0,
+       "dio": {
+        "di": 5,
+        "do": 2
+       }
+      }
+     },
+     {
+      "id": "T2",
+      "name": "패널 그리퍼 B",
+      "robot_ids": [
+       "R1"
+      ],
+      "installed_quantity": 1,
+      "workpiece_count": null,
+      "workpiece_not_applicable": false,
+      "intake": {
+       "dimensions_mm": {
+        "x": 1000.0,
+        "y": 700.0,
+        "z": 250.0
+       },
+       "tool_assembly_mass_kg": 40.0,
+       "tilts_or_flips": true,
+       "needs_power": true,
+       "needs_air": true,
+       "has_sensors_or_signals": true
+      },
+      "mass_components": {
+       "max_simultaneous_workpieces_kg": 25.0
+      },
+      "pneumatic": {
+       "pressure_bar": {
+        "min": 5.0,
+        "max": 5.0
+       },
+       "observed_hose_count": 2,
+       "required_independent_paths": 2,
+       "medium": "압축공기"
+      },
+      "electrical": {
+       "power_circuits": [
+        "툴마다 24V 1회로, 연속 0.9A, 피크 1A (전자석 컨트롤러 사양서)"
+       ],
+       "sensor_list": [
+        "툴마다 근접센서 4개·흡착 압력 스위치 1개 → DI 5, 전자석·흡착 ON/OFF → DO 2"
+       ],
+       "control_method_raw": "DIO, 공통선 없음(0V 공용), 배선도 요청함",
+       "extra_pins": 0,
+       "dio": {
+        "di": 5,
+        "do": 2
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "s8",
+   "label": "샘플9 산업용 도어 이송",
+   "file": "샘플9_산업용_도어이송.docx",
+   "expected_model": "M-LTC-0300G",
+   "quotable": false,
+   "intake": {
+    "project": {
+     "process": {
+      "category": "transfer"
+     },
+     "tool_count": 2,
+     "environment": {
+      "has_special_conditions": false
+     },
+     "customer_name": "(가상) 한성모터스",
+     "writer": "강영업",
+     "meeting_date": "2026-10-02",
+     "followups_answered": [
+      "F02",
+      "F03",
+      "F04",
+      "F05",
+      "F06"
+     ]
+    },
+    "robots": [
+     {
+      "id": "R1",
+      "model": "R-2000iC",
+      "type": "industrial",
+      "quantity": 1,
+      "speed": {
+       "value": 45,
+       "unit": "%"
+      },
+      "cables": {
+       "master_4m_sufficient": true,
+       "system_1m_sufficient": true
+      },
+      "manufacturer": "화낙"
+     }
+    ],
+    "tools": [
+     {
+      "id": "T1",
+      "name": "도어 그리퍼 (세단)",
+      "robot_ids": [
+       "R1"
+      ],
+      "installed_quantity": 1,
+      "workpiece_count": null,
+      "workpiece_not_applicable": false,
+      "intake": {
+       "dimensions_mm": {
+        "x": 1400.0,
+        "y": 900.0,
+        "z": 350.0
+       },
+       "tool_assembly_mass_kg": 60.0,
+       "tilts_or_flips": false,
+       "needs_power": true,
+       "needs_air": true,
+       "has_sensors_or_signals": true
+      },
+      "mass_components": {
+       "max_simultaneous_workpieces_kg": 70.0
+      },
+      "pneumatic": {
+       "pressure_bar": {
+        "min": 5.0,
+        "max": 5.0
+       },
+       "observed_hose_count": 2,
+       "required_independent_paths": 2,
+       "medium": "압축공기"
+      },
+      "electrical": {
+       "power_circuits": [
+        "툴마다 24V 1회로, 연속 0.6A, 피크 0.9A (전자석 클램프 사양서)"
+       ],
+       "sensor_list": [
+        "툴마다 도어 유무 센서 DI 3, 클램프 ON/OFF DO 2"
+       ],
+       "control_method_raw": "DIO, 공통선 없음",
+       "extra_pins": 0,
+       "dio": {
+        "di": 3,
+        "do": 2
+       }
+      }
+     },
+     {
+      "id": "T2",
+      "name": "도어 그리퍼 (SUV)",
+      "robot_ids": [
+       "R1"
+      ],
+      "installed_quantity": 1,
+      "workpiece_count": null,
+      "workpiece_not_applicable": false,
+      "intake": {
+       "dimensions_mm": {
+        "x": 1500.0,
+        "y": 1000.0,
+        "z": 350.0
+       },
+       "tool_assembly_mass_kg": 55.0,
+       "tilts_or_flips": false,
+       "needs_power": true,
+       "needs_air": true,
+       "has_sensors_or_signals": true
+      },
+      "mass_components": {
+       "max_simultaneous_workpieces_kg": 60.0
+      },
+      "pneumatic": {
+       "pressure_bar": {
+        "min": 5.0,
+        "max": 5.0
+       },
+       "observed_hose_count": 2,
+       "required_independent_paths": 2,
+       "medium": "압축공기"
+      },
+      "electrical": {
+       "power_circuits": [
+        "툴마다 24V 1회로, 연속 0.6A, 피크 0.9A (전자석 클램프 사양서)"
+       ],
+       "sensor_list": [
+        "툴마다 도어 유무 센서 DI 3, 클램프 ON/OFF DO 2"
+       ],
+       "control_method_raw": "DIO, 공통선 없음",
+       "extra_pins": 0,
+       "dio": {
+        "di": 3,
+        "do": 2
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "s9",
+   "label": "샘플10 산업용 초고중량",
+   "file": "샘플10_산업용_초고중량.docx",
+   "expected_model": "M-LTC-0630F",
+   "quotable": false,
+   "intake": {
+    "project": {
+     "process": {
+      "category": "transfer"
+     },
+     "tool_count": 2,
+     "environment": {
+      "has_special_conditions": false
+     },
+     "customer_name": "(가상) 대한중공업",
+     "writer": "임영업",
+     "meeting_date": "2026-10-02",
+     "followups_answered": [
+      "F02",
+      "F03",
+      "F04"
+     ]
+    },
+    "robots": [
+     {
+      "id": "R1",
+      "model": "KR 500",
+      "type": "industrial",
+      "quantity": 1,
+      "speed": {
+       "value": 40,
+       "unit": "%"
+      },
+      "cables": {
+       "master_4m_sufficient": true,
+       "system_1m_sufficient": true
+      },
+      "manufacturer": "쿠카"
+     }
+    ],
+    "tools": [
+     {
+      "id": "T1",
+      "name": "대형 자석 그리퍼",
+      "robot_ids": [
+       "R1"
+      ],
+      "installed_quantity": 1,
+      "workpiece_count": null,
+      "workpiece_not_applicable": false,
+      "intake": {
+       "dimensions_mm": {
+        "x": 2000.0,
+        "y": 1200.0,
+        "z": 400.0
+       },
+       "tool_assembly_mass_kg": 110.0,
+       "tilts_or_flips": false,
+       "needs_power": true,
+       "needs_air": false,
+       "has_sensors_or_signals": true
+      },
+      "mass_components": {
+       "max_simultaneous_workpieces_kg": 150.0
+      },
+      "electrical": {
+       "power_circuits": [
+        "툴마다 24V 1회로, 연속 0.9A, 피크 1A (전자석 컨트롤러 사양서)"
+       ],
+       "sensor_list": [
+        "툴마다 흡착 확인 DI 2, 자석 ON/OFF DO 1"
+       ],
+       "control_method_raw": "DIO, 공통선 없음",
+       "extra_pins": 0,
+       "dio": {
+        "di": 2,
+        "do": 1
+       }
+      }
+     },
+     {
+      "id": "T2",
+      "name": "중형 자석 그리퍼",
+      "robot_ids": [
+       "R1"
+      ],
+      "installed_quantity": 1,
+      "workpiece_count": null,
+      "workpiece_not_applicable": false,
+      "intake": {
+       "dimensions_mm": {
+        "x": 1500.0,
+        "y": 1000.0,
+        "z": 400.0
+       },
+       "tool_assembly_mass_kg": 90.0,
+       "tilts_or_flips": false,
+       "needs_power": true,
+       "needs_air": false,
+       "has_sensors_or_signals": true
+      },
+      "mass_components": {
+       "max_simultaneous_workpieces_kg": 100.0
+      },
+      "electrical": {
+       "power_circuits": [
+        "툴마다 24V 1회로, 연속 0.9A, 피크 1A (전자석 컨트롤러 사양서)"
+       ],
+       "sensor_list": [
+        "툴마다 흡착 확인 DI 2, 자석 ON/OFF DO 1"
+       ],
+       "control_method_raw": "DIO, 공통선 없음",
+       "extra_pins": 0,
+       "dio": {
+        "di": 2,
+        "do": 1
+       }
+      }
+     }
+    ]
+   }
+  }
+ ]
+}

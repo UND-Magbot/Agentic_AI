@@ -1,0 +1,1397 @@
+{
+  "document_type": "UND_MAGBOT_ATC_accessory_selection_specification",
+  "version": "1.2-review",
+  "date": "2026-10-07",
+  "language": "ko-KR",
+  "production_ready": false,
+  "title_ko": "맥봇 ATC 액세서리 통합 선정 기준",
+  "purpose_ko": "고객의 툴 사양에서 전기·공압 요구를 함께 파악하여 액세서리 공통 장착 구성과 PPM·PPF·PMM·PMF 및 30cm 케이블의 통합 판매 수량을 산정하는 개발 명세.",
+  "implementation_status_ko": "규칙과 예제 명세이며 실제 영업 AI에 설치하거나 배포한 프로그램은 아니다. 아래 산정 정책과 배선은 엔지니어 검토 후 적용한다.",
+  "base_reference": "UND_MAGBOT_ATC_선정기준_추가확정_v0.8.json",
+  "scope_ko": "액세서리라는 공통 분류 아래 전기 액세서리인 포고핀, 공압 액세서리인 에어커플러, 이들과 연동되는 30cm 케이블을 통합 선정한다. MASTER T.C의 기계적 모델, T.P 수량, 마스터 제어용 컨트롤박스·4m·1m 케이블 및 기타 품목은 기존 ATC 선정 단계와 연결한다.",
+  "sources": [
+    {
+      "id": "S01",
+      "type": "user_confirmed_internal_rules",
+      "description_ko": "2026-10-02 확정 v0.8의 C02~C06·C12·C16·C17 및 2026-10-07 사용자 설명. 1A/핀·8핀/모듈·포고핀/공압 공용 3개소·병렬 사용 산정 허용·케이블 및 공급 범위."
+    },
+    {
+      "id": "S02",
+      "type": "user_attachment",
+      "file_name": "image.png",
+      "file_id": "file_00000000885c8206aa7ad4fe5da6216e",
+      "description_ko": "AG-160-95, AG-105-145, DH-3 사양표. Rated voltage / Rated current / Peak current / Communication interface 행을 확인."
+    },
+    {
+      "id": "S03",
+      "type": "manufacturer_web",
+      "url": "https://en.dh-robotics.com/product/ag",
+      "accessed": "2026-10-07",
+      "description_ko": "첨부 사양의 전압·정격/피크 전류·지원 인터페이스 대조. 실제 구매 옵션과 결선도는 별도 확인."
+    },
+    {
+      "id": "S04",
+      "type": "manufacturer_application_note",
+      "url": "https://www.ti.com/lit/slla272",
+      "title": "The RS-485 Design Guide Rev D",
+      "description_ko": "RS-485의 2선/4선 구성, 배선·커넥터 배치·기준전위 검토 참고. 맥봇의 검증 완료 근거는 아님."
+    },
+    {
+      "id": "S05",
+      "type": "connector_manufacturer_guidance",
+      "url": "https://www.te.com/en/products/connectors/pcb-connectors/battery-connectors-holders/battery-connectors-dc-jacks/battery-interconnect-mobile/intro-to-battery-pack-connectors.html",
+      "description_ko": "다접점 부하에서 핀당 정격 단순 곱셈만으로 전체 전류 능력을 보장할 수 없다는 일반 원칙 참고. TE 수치나 저감률을 맥봇에 적용하지 않음."
+    },
+    {
+      "id": "S06",
+      "type": "manufacturer_catalog",
+      "url": "https://www.smcworld.com/catalog/en/rotary_airchuck/MHZ_2-E/6-3-p0381-0463-mhz_en/data/6-3-p0381-0463-mhz_en.pdf",
+      "accessed": "2026-10-07",
+      "description_ko": "MHZA2 도면의 열림·닫힘 포트와 단동의 한쪽 호흡구 설명. 일반 회로 분류 참고이며 고객 제품에 자동 대입하지 않음."
+    },
+    {
+      "id": "S07",
+      "type": "manufacturer_web",
+      "url": "https://www.smcworld.com/webcatalog/en-sg/rotary-actuators-air-grippers/parallel-type-air-grippers/?view=list",
+      "accessed": "2026-10-07",
+      "description_ko": "밸브·센서 내장 제품 중 공급 튜브 1개와 전기 케이블로 작동하는 사례. 툴측 밸브의 조건부 분기 근거이며 UND 검증 사례는 아님."
+    }
+  ],
+  "company_confirmed_constants": {
+    "pins_per_pogo_module": 8,
+    "current_per_pin_A": 1,
+    "shared_mounting_positions": 3,
+    "air_paths_per_coupler_pair": 2,
+    "positive_pressure_standard_bar": [
+      1,
+      5
+    ],
+    "pogo_master_part": "PPM",
+    "pogo_tool_part": "PPF",
+    "air_master_part": "PMM",
+    "air_tool_part": "PMF",
+    "tool_side_alias_ko": "슬레이브 모듈 또는 툴측 모듈",
+    "pair_capacity_note_ko": "PPM 1개와 PPF 1개가 맞물려 8개의 통과 경로를 만든다. 한 쌍을 16핀 또는 장착 2개소로 계산하지 않는다.",
+    "parallel_power_pins_allowed_for_draft_sizing": true,
+    "unmatched_master_module_allowed": true,
+    "pogo_cable_length_cm": 30,
+    "cables_per_PPM": 1,
+    "cables_per_PPF": 1,
+    "master_4m_cable_is_separate": true,
+    "extension_and_gripper_termination_responsibility": "customer_in_product_sales"
+  },
+  "proposed_sizing_policy": {
+    "status": "engineering_review_required",
+    "current_basis_ko": "초안에서는 정격·피크·기동 전류 중 확보한 최대 요구 전류를 사용한다. 펄스 정격이나 제어상 전류 제한에 의한 완화는 승인된 사양과 적용 조건이 있을 때만 적용한다.",
+    "current_basis_formula": "I_design = max(I_rated, I_peak, I_inrush) over documented values",
+    "incomplete_current_data_ko": "피크/기동 정보가 없으면 알려진 전류 기준 하한만 계산하고 최대 전류 확인을 요청한다. 누락을 0A로 처리하지 않는다. 피크가 모든 기동·과도 조건을 포괄하는지도 최종 검토한다.",
+    "per_pin_current_A": 1,
+    "parallel_validation_note_ko": "ceil(I/1A)는 필요한 병렬 핀 수의 초안이다. 실제 전류 분담·다접점 동시 부하·발열·케이블·기판·커넥터 한계가 확인되어야 하며, 핀 수만으로 전기 적합을 확정하지 않는다.",
+    "no_unapproved_derating_factor": true,
+    "no_automatic_spare_pin_margin": true,
+    "data_extraction_by_AI_arithmetic_by_deterministic_code": true,
+    "never_invent_missing_pinouts_or_IO_counts": true
+  },
+  "required_input_structure": {
+    "project": {
+      "master_instances": "각 마스터의 수량·교체 툴 목록·공통 배선 프로파일",
+      "tool_assemblies": "물리적으로 교체하는 툴별 목록. 비교 사양표의 모델을 전부 구매 대상으로 간주하지 않음"
+    },
+    "tool_assembly": {
+      "tool_id": "고유 ID",
+      "quantity": "실물/예비 T.P 수량 구분",
+      "devices": "한 툴에 장착되는 그리퍼·센서·밸브·컨버터",
+      "simultaneity": "동시 사용 여부와 승인된 동시 전류 조건",
+      "crossing_boundary": "ATC 결합면을 실제로 통과하는 전원·신호·유로"
+    },
+    "device": {
+      "manufacturer_model_revision": "모델·구매 통신 옵션·하드웨어/매뉴얼 버전",
+      "power": "전압·정격전류·피크/기동전류·별도 공급원·공통선",
+      "control": "실제 선택 통신, I/O 신호 목록, 기준전위, 실드/접지 처리",
+      "gateway_location": "통신 변환기 및 밸브의 로봇측/툴측 위치",
+      "pneumatic": "독립 유로·양압/진공·압력·필요 유량·연결 규격"
+    },
+    "each_extracted_fact": {
+      "value": null,
+      "unit": null,
+      "evidence_reference": null,
+      "evidence_location": null,
+      "state": "provided | derived | assumption | missing",
+      "confirmed_by": null
+    },
+    "each_unique_electrical_net": {
+      "net_key": "동일 전기 경로의 고유 ID",
+      "role": "supply | return | signal | signal_common | protective_earth | shield",
+      "voltage_domain": null,
+      "source_or_destination": null,
+      "design_current_A": null,
+      "minimum_contacts": null,
+      "alias_approval_reference": null,
+      "pair_or_group_constraints": []
+    },
+    "each_air_path": {
+      "path_key": "독립 유로 ID",
+      "medium": "compressed_air | vacuum",
+      "pressure_and_reference": null,
+      "required_flow": null,
+      "robot_side_source": null,
+      "tool_side_destination": null,
+      "reuse_approval_reference": null
+    },
+    "unknown_value_representation": "null; 알려진 없음만 0 또는 false. null을 수량 0으로 바꾸지 않는다.",
+    "pneumatic_device_detail": {
+      "model_revision": null,
+      "actuation": "double_acting | single_acting | integrated_valve | other | unknown",
+      "valve_location": "robot_side_of_ATC | tool_side_of_ATC | mixed | unknown",
+      "gripper_quantity_per_tool": null,
+      "control_relationship": "independent | approved_shared_circuit | unknown",
+      "actual_supply_pressure": {
+        "value": null,
+        "unit": null,
+        "reference": "gauge | absolute | unknown",
+        "maximum_applied_value": null
+      },
+      "gripper_allowed_pressure_range": null,
+      "required_gripping_force_condition": null,
+      "manufacturer_port_map": null,
+      "ATC_crossing_paths": null,
+      "additional_blow_vacuum_exhaust_paths": null,
+      "flow_demand_and_conditions": null,
+      "tube_and_fitting_spec": null,
+      "tool_side_sensors_and_valves": null,
+      "evidence_reference": null
+    }
+  },
+  "rules": [
+    {
+      "id": "PGR01",
+      "title_ko": "표에서 사실을 추출하고 실제 사용안을 선택",
+      "logic": "추출값과 출처를 저장; 선택 모델·수량·통신 옵션을 별도 확정",
+      "implementation_note_ko": "지원 프로토콜 목록을 동시에 사용하는 프로토콜 목록으로 해석하지 않는다. AG 두 모델과 DH-3의 표를 한 툴 구성으로 합산하지 않는다."
+    },
+    {
+      "id": "PGR02",
+      "title_ko": "ATC 결합면을 지나는 선과 유로만 계산",
+      "logic": "ATC 경계를 통과하는 회로를 목록화",
+      "implementation_note_ko": "로봇측 변환기와 툴측 변환기는 포고핀을 통과하는 통신이 다를 수 있다. 툴측 변환기의 전원도 필요하면 합산한다. 4m 마스터 작동용 케이블은 포고핀 핀 예산에서 제외한다."
+    },
+    {
+      "id": "PGR03",
+      "title_ko": "최대 전류로 초안 계산",
+      "logic": "I_design=max(문서로 확보한 전류 요구); 불명확하면 조건부 하한",
+      "implementation_note_ko": "정격 0.8A·피크 1.5A면 1.5A를 기준으로 계산한다. 피크 정보 미확보를 0A 또는 정격과 동일로 확정하지 않는다."
+    },
+    {
+      "id": "PGR04",
+      "title_ko": "전원 공급과 리턴 각각 산정",
+      "logic": "P_power=sum(max(1,ceil(I_net/1A))) for required supply and return nets",
+      "implementation_note_ko": "24V 3A의 한 전원 회로는 +측 3핀·리턴측 3핀, 총 6핀이다. 3A를 전원 3핀 전체로 잘못 처리하지 않는다. 전압이 다른 회로·절연 공통선을 임의로 합치지 않는다."
+    },
+    {
+      "id": "PGR05",
+      "title_ko": "같은 툴의 동시 부하를 합산",
+      "logic": "같은 전원 경로를 공유하면 동시 부하 전류를 합산; 승인된 비동시 조건만 피크 완화",
+      "implementation_note_ko": "두 1.5A 그리퍼가 동시에 같은 공급·리턴을 쓰면 각 경로 3A. 전류가 이미 포함된 조립체 정격에 부품 전류를 다시 더하지 않는다."
+    },
+    {
+      "id": "PGR06",
+      "title_ko": "통신과 제어의 실제 연결선 산정",
+      "logic": "P_signal=승인 또는 조건 명시된 실제 신호 경로 수",
+      "implementation_note_ko": "DI/DO는 실제 연결할 신호 목록을 센다. 피드백은 RS485 레지스터로 읽으면 별도 출력 핀을 자동 추가하지 않고, 별도 하드웨어 출력 사용 시 추가한다. 사용 안 하는 선택 프로토콜 선은 추가하지 않는다."
+    },
+    {
+      "id": "PGR07",
+      "title_ko": "공통선과 실드 경로 처리",
+      "logic": "P_extra=미산정 독립 COM·SG·필요 접지/실드 경로 수",
+      "implementation_note_ko": "COM·SG·0V·PE·실드는 같은 것으로 가정하지 않는다. 실드가 셸/별도 경로로 연결되면 신호핀 수에서 제외할 수 있으나 연결 경로는 확인한다. PE가 필요하면 일반 포고핀으로 대체 가능하다고 단정하지 않는다."
+    },
+    {
+      "id": "PGR08",
+      "title_ko": "핀 수에서 모듈 수 하한 산정",
+      "logic": "P_total=P_power+P_signal+P_extra+고객이 명시 요청한 예비핀; E_min=ceil(P_total/8)",
+      "implementation_note_ko": "통신선과 COM 수가 미확정이면 총합을 확정하지 않고 시나리오별 하한을 표시한다. 0핀은 전기 경로가 없다고 확인된 경우만 사용한다."
+    },
+    {
+      "id": "PGR09",
+      "title_ko": "공압 독립 유로 산정",
+      "logic": "A_min=ceil(L_independent/2)",
+      "implementation_note_ko": "외부 밸브에서 복동 실린더 A/B를 따로 통과시키는 예는 2유로. 툴측 밸브는 공급 1유로일 수 있으나 밸브 전원·제어선이 늘 수 있으므로 실제 배치 확인. 그리퍼 수나 호스 외관 개수로 확정하지 않는다."
+    },
+    {
+      "id": "PGR10",
+      "title_ko": "양압과 진공의 성능 확인",
+      "logic": "양압 1~5bar 여부 + 필요 유량 + 연결 규격; 진공은 실제 허용 조건 확인",
+      "implementation_note_ko": "진공도 모듈 수량 산정에 포함하되 양압 범위를 적용하지 않는다. 대유량 부족을 모듈 병렬 추가로 자동 해결하지 않는다."
+    },
+    {
+      "id": "PGR11",
+      "title_ko": "교체 툴들의 공통 마스터 회로 작성",
+      "logic": "서로 교체하는 툴에서 동일하게 재사용 가능한 net_key별 필요 접점 수의 최댓값; 서로 다른 net_key는 합집합",
+      "implementation_note_ko": "전류를 툴 개수만큼 합산하지 않는다. 그러나 통신·전압·공통선이 다른 핀은 같은 핀으로 자동 재사용하지 않는다. 고정 마스터 배선에 맞게 모든 툴의 결선을 검토한다."
+    },
+    {
+      "id": "PGR12",
+      "title_ko": "공통 슬롯과 핀 배치 후 실제 수량 산정",
+      "logic": "고정 슬롯별 PPM/PMM 종류 및 핀·유로 역할 배정; 각 툴이 사용하는 슬롯에서 PPF/PMF 수량 계산",
+      "implementation_note_ko": "각 툴의 ceil(핀수/8)은 하한이다. 공통 배치에서 필요한 신호가 두 모듈에 나뉘면 PPF가 2개 필요할 수 있다. 논리 배정은 실제 커넥터 번호나 핀의 기하학적 배치를 확정하는 것이 아니다."
+    },
+    {
+      "id": "PGR13",
+      "title_ko": "3개소 공유 제한 검토",
+      "logic": "S_master=실제 PPM 위치 수+실제 PMM 위치 수; S_master<=3 이어야 표준 후보",
+      "implementation_note_ko": "전기 모듈 2개+공압 모듈 2개면 4개소로 커스텀 필요. 각 툴이 개별로 3개소 이내여도 공통 마스터 구성이 3개소를 넘을 수 있다. 16핀/1개소는 표준으로 자동 사용하지 않는다."
+    },
+    {
+      "id": "PGR14",
+      "title_ko": "상대 모듈 없는 툴 허용",
+      "logic": "사용하지 않는 마스터 모듈에 대해 툴측 상대 모듈을 자동 추가하지 않음",
+      "implementation_note_ko": "사용자가 확정한 사용 방식이다. 별도 보호 부품을 자동 추가하지 않는다. 다른 전기 핀의 연결 호환성까지 승인된 것으로 해석하지 않는다."
+    },
+    {
+      "id": "PGR15",
+      "title_ko": "마스터측과 툴측 판매 수량 분리",
+      "logic": "PPM=sum(master_qty*E_master); PPF=sum(tool_qty*E_tool_after_layout); PMM/PMF도 같은 방식",
+      "implementation_note_ko": "예비품은 별도 수량으로 더한다. 모든 툴의 전기 모듈 수를 PPM 수량으로 합산하지 않는다."
+    },
+    {
+      "id": "PGR16",
+      "title_ko": "포고핀 케이블 수량 연동",
+      "logic": "PPM_30cm=PPM; PPF_30cm=PPF",
+      "implementation_note_ko": "한 결합쌍은 30cm 케이블 총 2개. 4m·1m 마스터 제어 케이블과 구분한다. 연장·그리퍼 결선은 제품영업에서 고객 수행 범위다."
+    },
+    {
+      "id": "PGR17",
+      "title_ko": "누락 정보가 있어도 상담과 조건부 초안 진행",
+      "logic": "모든 미확정값에 질문 생성; 확인된 사실과 시나리오를 분리해서 출력",
+      "implementation_note_ko": "불명확한 IO 선 수·공압 없음·통신 호환을 AI가 만들어 채우지 않는다. 담당자와 조건을 확정한 후 최종 구성·견적으로 전환한다."
+    },
+    {
+      "id": "PGR18",
+      "title_ko": "엔지니어 확인과 공통 지식 승인 분리",
+      "logic": "엔지니어가 해당 결선·조건 검토; 마스터 계정이 재사용 프로파일 승인",
+      "implementation_note_ko": "승인 범위에 모델 버전·전원·프로토콜·핀배치·케이블·사용 조건을 포함한다. 단순 저장이나 판매 이력만으로 전기 검증 완료 사례로 승격하지 않는다."
+    },
+    {
+      "id": "PGR19",
+      "title_ko": "RS485라는 입력에서 자동 초안 분기",
+      "logic": "실제 ATC 구간의 인터페이스 확인 → 자료 또는 승인 프로파일에서 2선/4선 판별 → 2선은 A/B 2핀, 4선은 송수신 4핀 → 전원·추가선 합산",
+      "implementation_note_ko": "RS485 또는 Modbus RTU라는 이름만으로 2선식을 확정하지 않는다. 미확인 시 2선식 가정의 계산안을 보여주되 4선식 여부·SG/COM·추가 I/O를 질문한다. 가정은 내부 기록하고 견적 전 확정한다."
+    },
+    {
+      "id": "PGR20",
+      "title_ko": "공압그리퍼 자료에서 계산 조건 추출",
+      "logic": "모델·동작 방식·실제 사용 압력·밸브 위치·개별 제어 여부·추가 유로·센서를 추출하고 pneumatic_profiles와 대조",
+      "implementation_note_ko": "일반 지식은 회로 후보를 만드는 데 사용한다. 고객 모델의 포트 수·밸브 구성은 사양서 또는 확인된 현장 배관으로 판별한다. 그리퍼 사양만으로 밸브 위치를 알 수 없으면 담당자에게 질문한다."
+    },
+    {
+      "id": "PGR21",
+      "title_ko": "실제 통과 유로와 승인된 분기만 산정",
+      "logic": "L = ATC 경계를 통과하는 서로 다른 path_key 수; A_min=ceil(L/2)",
+      "implementation_note_ko": "로봇측 밸브가 복동 그리퍼를 개별 제어하면 일반적으로 그리퍼당 A/B 2유로. 두 그리퍼의 같은 동작을 위한 공통 분기는 실제 회로와 동작 요구가 승인된 경우에만 재사용한다. 단순 동시 사용이라는 말만으로 4유로를 2유로로 줄이지 않는다. 5포트 밸브라고 통과 유로를 5개로 세지 않는다."
+    },
+    {
+      "id": "PGR22",
+      "title_ko": "공압그리퍼의 전기 부품도 포고핀 계산",
+      "logic": "툴측 센서·밸브·통신 장치에서 ATC를 통과하는 고유 전원·리턴·신호 경로를 기존 전기 계산기에 합산",
+      "implementation_note_ko": "공압그리퍼라고 PPM/PPF를 자동 0개로 정하지 않는다. 센서별 2선/3선, 공통 전원 가능 여부와 실제 전류를 확인한다. 밸브 직접 구동선은 실제 전류를 운반하는 경로로 계산하고 같은 경로를 전원과 신호에 중복 산정하지 않는다."
+    },
+    {
+      "id": "PGR23",
+      "title_ko": "실제 양압 사용 조건과 단위로 비교",
+      "logic": "MPa×10 또는 kPa÷100으로 bar 환산; ATC에 적용되는 양압 공급 설정·최대 공급 조건을 UND 표준 1~5bar 및 장치 요구와 각각 비교",
+      "implementation_note_ko": "카탈로그 최대 허용 7bar를 실제 사용 압력으로 간주하지 않는다. 4bar 사용이면 압력 범위상 후보가 될 수 있으나 필요한 파지력·압력 손실·유량은 별도 확인한다. 배기 순간의 0bar를 표준 하한 미달로 처리하지 않는다. 6bar 실제 공급은 별도 검토이며 모듈 수를 늘려 해결하지 않는다. 진공 및 절대압은 기준을 구분한다."
+    },
+    {
+      "id": "PGR24",
+      "title_ko": "자동 산정 결과를 구성과 견적으로 연결",
+      "logic": "추출 근거 → 핀·유로 산식 → 공통 마스터 배치 → PPM/PPF/PMM/PMF 및 케이블 수량 → 3개소 판정 → 담당자·엔지니어 확인 → 확정 견적",
+      "implementation_note_ko": "AI가 부족한 정보를 질문하고 확인된 답으로 재계산한다. 조건부 결과를 최종 견적으로 자동 확정하지 않는다. 영업 건 확인과 마스터 계정의 재사용 지식 승인은 별도로 기록한다."
+    }
+  ],
+  "communication_profiles": [
+    {
+      "interface": "RS485_2wire",
+      "data_contacts": 2,
+      "labels": [
+        "A",
+        "B"
+      ],
+      "extra_contacts": "결선도에 따른 신호 공통선·접지·실드·추가 I/O",
+      "conditions_ko": "실제 2선식 확인. A/B는 통신선으로 각각 별도 경로이며 서로 병렬 연결하지 않는다. SG를 전원 0V와 공유하는 것은 승인된 결선에 한함."
+    },
+    {
+      "interface": "RS485_4wire",
+      "data_contacts": 4,
+      "labels": [
+        "TX+",
+        "TX-",
+        "RX+",
+        "RX-"
+      ],
+      "extra_contacts": "결선도 기준",
+      "conditions_ko": "해당 장치가 실제 4선식인 경우에만 사용."
+    },
+    {
+      "interface": "digital_IO",
+      "data_contacts": null,
+      "formula": "실제로 연결할 gripper_inputs + gripper_outputs + 기타 독립 제어선",
+      "conditions_ko": "그리퍼 기준 입출력 방향을 기록한다. COM·전원·접지는 독립 경로로 계산하고 승인된 공유만 중복 제거. I/O 지원이라는 문구만으로 신호 수를 정하지 않는다."
+    },
+    {
+      "interface": "CAN",
+      "data_contacts": 2,
+      "labels": [
+        "CAN_H",
+        "CAN_L"
+      ],
+      "extra_contacts": "장치 결선도 기준 CAN 기준전위·실드·추가 전원",
+      "conditions_ko": "실제 포고핀 구간이 CAN임을 확인하고 통신 품질 검토를 거친다."
+    },
+    {
+      "interface": "Ethernet_TCPIP_PROFINET_EtherCAT_USB_or_other",
+      "data_contacts": null,
+      "conditions_ko": "프로토콜 이름만으로 핀 수를 고정하지 않는다. 실제 물리 인터페이스·링크/포트 수·커넥터·쌍선·실드·컨버터 위치를 먼저 확인하고 승인된 프로파일의 선 수를 불러온다. 핀 수가 맞아도 통신 적합은 별도 검토."
+    }
+  ],
+  "output_contract": {
+    "status": "needs_data | conditional_draft | engineering_review | engineering_confirmed",
+    "facts": [],
+    "assumptions": [],
+    "followup_questions": [],
+    "tool_results": [
+      {
+        "tool_id": null,
+        "power_contacts": null,
+        "signal_contacts": null,
+        "additional_contacts": null,
+        "total_contacts": null,
+        "pogo_module_pairs_lower_bound": null,
+        "air_module_pairs_lower_bound": null,
+        "assigned_module_positions": null,
+        "PPF_per_tool_after_layout": null,
+        "PMF_per_tool_after_layout": null
+      }
+    ],
+    "master_results": [
+      {
+        "master_id": null,
+        "common_net_requirements": null,
+        "logical_layout": null,
+        "physical_pinmap_revision": null,
+        "PPM_per_master": null,
+        "PMM_per_master": null,
+        "occupied_positions": null,
+        "standard_slot_fit": null
+      }
+    ],
+    "bill_of_materials": {
+      "PPM": null,
+      "PPF": null,
+      "PMM": null,
+      "PMF": null,
+      "PPM_30cm_cable": null,
+      "PPF_30cm_cable": null
+    },
+    "review": {
+      "parallel_power_wiring": null,
+      "module_cable_board_limits": null,
+      "voltage_drop": null,
+      "communication_integrity": null,
+      "common_pinmap": null,
+      "air_performance": null,
+      "engineer": null,
+      "approval_date": null
+    },
+    "quote_release": {
+      "all_required_values_resolved": false,
+      "responsible_sales_confirmed": false,
+      "note_ko": "조건부 초안의 null/가정을 최종 고객 견적의 미확정 값이나 대체용 0원으로 발행하지 않는다. 담당자·엔지니어 확인으로 값을 확정한다."
+    },
+    "reuse_approval": {
+      "requested_by": null,
+      "approved_by_master_account": null,
+      "approved_scope": null,
+      "rule_version": null
+    },
+    "pneumatic_analysis": {
+      "selected_profile": null,
+      "valve_location": null,
+      "crossing_path_list": null,
+      "independent_path_count": null,
+      "air_modules_lower_bound": null,
+      "actual_supply_bar": null,
+      "pressure_range_check": null,
+      "tool_side_electrical_nets_added": null,
+      "flow_and_fitting_review": null,
+      "assumptions": [],
+      "followup_questions": []
+    },
+    "unified_accessory_result": {
+      "category": "ATC_ACCESSORIES",
+      "tool_requirements": [
+        {
+          "tool_id": null,
+          "power_contacts": null,
+          "signal_and_extra_contacts": null,
+          "total_contacts": null,
+          "air_paths": null,
+          "electrical_lower_bound": null,
+          "pneumatic_lower_bound": null
+        }
+      ],
+      "master_layouts": [
+        {
+          "master_id": null,
+          "quantity": null,
+          "positions": [
+            {
+              "position_id": null,
+              "type": "pogo | pneumatic | unused",
+              "net_or_path_map": null
+            }
+          ],
+          "electrical_positions": null,
+          "pneumatic_positions": null,
+          "total_occupied_positions": null,
+          "fits_three_positions": null
+        }
+      ],
+      "tool_layouts": [
+        {
+          "tool_id": null,
+          "physical_tool_quantity": null,
+          "PPF_per_tool": null,
+          "PMF_per_tool": null,
+          "occupied_master_position_ids": null
+        }
+      ],
+      "integrated_BOM": {
+        "PPM": null,
+        "PPF": null,
+        "PMM": null,
+        "PMF": null,
+        "PPM_30cm_cable": null,
+        "PPF_30cm_cable": null,
+        "unit": "EA"
+      },
+      "calculation_basis": [],
+      "open_questions": [],
+      "customization_review": null,
+      "engineering_review_status": null,
+      "responsible_sales_confirmation": null,
+      "quantity_note_ko": "미확정값을 0으로 대체하지 않는다. 각 마스터·툴 배치의 실제 수량을 계산하며 결합쌍 수를 전체 판매 수량으로 오해하지 않는다."
+    }
+  },
+  "extracted_attachment_models": [
+    {
+      "model": "AG-160-95",
+      "voltage_V": 24,
+      "voltage_tolerance_percent": 10,
+      "rated_current_A": 0.8,
+      "peak_current_A": 1.5,
+      "standard_interfaces": [
+        "Modbus_RTU_RS485",
+        "digital_IO"
+      ],
+      "optional_interfaces": [
+        "TCP_IP",
+        "USB_2_0",
+        "CAN_2_0A",
+        "PROFINET",
+        "EtherCAT"
+      ],
+      "source": "S02",
+      "selected_interface": null,
+      "pinout_received": false
+    },
+    {
+      "model": "AG-105-145",
+      "voltage_V": 24,
+      "voltage_tolerance_percent": 10,
+      "rated_current_A": 0.8,
+      "peak_current_A": 1.5,
+      "standard_interfaces": [
+        "Modbus_RTU_RS485",
+        "digital_IO"
+      ],
+      "optional_interfaces": [
+        "TCP_IP",
+        "USB_2_0",
+        "CAN_2_0A",
+        "PROFINET",
+        "EtherCAT"
+      ],
+      "source": "S02",
+      "selected_interface": null,
+      "pinout_received": false
+    },
+    {
+      "model": "DH-3",
+      "voltage_V": 24,
+      "voltage_tolerance_percent": 10,
+      "rated_current_A": 0.5,
+      "peak_current_A": 1,
+      "standard_interfaces": [
+        "TCP_IP_communication_module_including_TCP_IP_USB_2_0_CAN_2_0A"
+      ],
+      "optional_interfaces": [
+        "EtherCAT"
+      ],
+      "source": "S02",
+      "selected_interface": null,
+      "pinout_received": false
+    }
+  ],
+  "worked_examples": [
+    {
+      "id": "E01",
+      "name_ko": "첨부 AG-160-95 RS485 조건부 초안",
+      "assumptions_ko": [
+        "그리퍼 1개",
+        "포고핀 구간 2선식 RS485",
+        "별도 COM·SG·접지용 포고핀 불필요가 확인된 조건",
+        "추가 장치·공압 없음"
+      ],
+      "input": {
+        "current_A": 1.5,
+        "signal_pins": 2,
+        "extra_pins": 0,
+        "air_paths": 0
+      },
+      "expected": {
+        "power_pins": 4,
+        "signal_pins": 2,
+        "extra_pins": 0,
+        "total_pins": 6,
+        "pogo_module_pairs_lower_bound": 1,
+        "spare_pins_at_lower_bound": 2,
+        "air_module_pairs_lower_bound": 0,
+        "mounting_positions_lower_bound": 1,
+        "custom_required_by_count": false,
+        "electrical_compatibility_approved": false
+      },
+      "draft_logical_assignment": {
+        "E1": [
+          "+24V",
+          "+24V",
+          "0V",
+          "0V",
+          "RS485_A",
+          "RS485_B",
+          "unused",
+          "unused"
+        ]
+      },
+      "note_ko": "논리 접점 목록이며 실제 제품 핀번호·배선 확정안이 아님. 병렬 전원과 통신 품질은 엔지니어 검토."
+    },
+    {
+      "id": "E02",
+      "name_ko": "AG-105-145 RS485 신호 공통선 추가 조건",
+      "input": {
+        "current_A": 1.5,
+        "signal_pins": 2,
+        "extra_pins": 1,
+        "air_paths": 0
+      },
+      "expected": {
+        "power_pins": 4,
+        "signal_pins": 2,
+        "extra_pins": 1,
+        "total_pins": 7,
+        "pogo_module_pairs_lower_bound": 1,
+        "spare_pins_at_lower_bound": 1,
+        "air_module_pairs_lower_bound": 0,
+        "mounting_positions_lower_bound": 1,
+        "custom_required_by_count": false,
+        "electrical_compatibility_approved": false
+      },
+      "note_ko": "SG가 실제로 따로 필요한 시나리오. 이 모델에 SG가 있다는 확정 사실은 아님."
+    },
+    {
+      "id": "E03",
+      "name_ko": "I/O 명령 2개와 피드백 2개 공통선 공유 조건",
+      "input": {
+        "current_A": 1.5,
+        "signal_pins": 4,
+        "extra_pins": 0,
+        "air_paths": 0
+      },
+      "expected": {
+        "power_pins": 4,
+        "signal_pins": 4,
+        "extra_pins": 0,
+        "total_pins": 8,
+        "pogo_module_pairs_lower_bound": 1,
+        "spare_pins_at_lower_bound": 0,
+        "air_module_pairs_lower_bound": 0,
+        "mounting_positions_lower_bound": 1,
+        "custom_required_by_count": false,
+        "electrical_compatibility_approved": false
+      },
+      "note_ko": "일반 가상 배선 예시. 첨부 AG의 실제 I/O 개수로 등록하지 않음."
+    },
+    {
+      "id": "E04",
+      "name_ko": "동일 I/O 예시에 별도 COM 1핀 추가",
+      "input": {
+        "current_A": 1.5,
+        "signal_pins": 4,
+        "extra_pins": 1,
+        "air_paths": 0
+      },
+      "expected": {
+        "power_pins": 4,
+        "signal_pins": 4,
+        "extra_pins": 1,
+        "total_pins": 9,
+        "pogo_module_pairs_lower_bound": 2,
+        "spare_pins_at_lower_bound": 7,
+        "air_module_pairs_lower_bound": 0,
+        "mounting_positions_lower_bound": 2,
+        "custom_required_by_count": false,
+        "electrical_compatibility_approved": false
+      },
+      "note_ko": "총 9핀으로 2모듈 필요. 실제 독립 COM이 더 많으면 추가 산정."
+    },
+    {
+      "id": "E05",
+      "name_ko": "3A 전원과 RS485",
+      "input": {
+        "current_A": 3,
+        "signal_pins": 2,
+        "extra_pins": 0,
+        "air_paths": 0
+      },
+      "expected": {
+        "power_pins": 6,
+        "signal_pins": 2,
+        "extra_pins": 0,
+        "total_pins": 8,
+        "pogo_module_pairs_lower_bound": 1,
+        "spare_pins_at_lower_bound": 0,
+        "air_module_pairs_lower_bound": 0,
+        "mounting_positions_lower_bound": 1,
+        "custom_required_by_count": false,
+        "electrical_compatibility_approved": false
+      }
+    },
+    {
+      "id": "E06",
+      "name_ko": "3A와 I/O 4선 및 공압 2유로",
+      "input": {
+        "current_A": 3,
+        "signal_pins": 4,
+        "extra_pins": 0,
+        "air_paths": 2
+      },
+      "expected": {
+        "power_pins": 6,
+        "signal_pins": 4,
+        "extra_pins": 0,
+        "total_pins": 10,
+        "pogo_module_pairs_lower_bound": 2,
+        "spare_pins_at_lower_bound": 6,
+        "air_module_pairs_lower_bound": 1,
+        "mounting_positions_lower_bound": 3,
+        "custom_required_by_count": false,
+        "electrical_compatibility_approved": false
+      }
+    },
+    {
+      "id": "E07",
+      "name_ko": "전기 2모듈과 공압 2모듈",
+      "input": {
+        "current_A": 3,
+        "signal_pins": 4,
+        "extra_pins": 0,
+        "air_paths": 3
+      },
+      "expected": {
+        "power_pins": 6,
+        "signal_pins": 4,
+        "extra_pins": 0,
+        "total_pins": 10,
+        "pogo_module_pairs_lower_bound": 2,
+        "spare_pins_at_lower_bound": 6,
+        "air_module_pairs_lower_bound": 2,
+        "mounting_positions_lower_bound": 4,
+        "custom_required_by_count": true,
+        "electrical_compatibility_approved": false
+      }
+    },
+    {
+      "id": "E08",
+      "name_ko": "I/O 지원만 있고 배선도 없음",
+      "input": {
+        "model": "AG-160-95",
+        "interface": "digital_IO",
+        "io_count": null
+      },
+      "expected": {
+        "power_pins_draft": 4,
+        "total_pins": null,
+        "pogo_module_pairs": null,
+        "status": "needs_data",
+        "questions_ko": [
+          "사용할 명령·피드백 신호와 COM 배선도를 요청한다."
+        ]
+      }
+    },
+    {
+      "id": "E09",
+      "name_ko": "DH-3 통신 변환기와 실제 포고핀 구간 미확인",
+      "input": {
+        "model": "DH-3",
+        "peak_current_A": 1,
+        "crossing_interface": null,
+        "gateway_location": null
+      },
+      "expected": {
+        "gripper_only_power_pins_draft": 2,
+        "total_pins": null,
+        "pogo_module_pairs": null,
+        "status": "needs_data",
+        "questions_ko": [
+          "선택 통신 옵션과 변환기 위치 및 결선도를 확인한다.",
+          "툴측 변환기가 있으면 추가 전류와 통과 신호를 확인한다."
+        ]
+      }
+    },
+    {
+      "id": "E10",
+      "name_ko": "교체 툴별 하한과 공통 마스터 배치의 차이",
+      "input": {
+        "tool_A": {
+          "current_A": 3,
+          "protocol": "RS485_2wire",
+          "unique_nets": {
+            "P24": 3,
+            "R0": 3,
+            "RS_A": 1,
+            "RS_B": 1
+          }
+        },
+        "tool_B": {
+          "current_A": 1.5,
+          "protocol": "digital_IO_4signals",
+          "unique_nets": {
+            "P24": 2,
+            "R0": 2,
+            "IO1": 1,
+            "IO2": 1,
+            "IO3": 1,
+            "IO4": 1
+          }
+        }
+      },
+      "expected": {
+        "tool_A_individual_lower_bound": 1,
+        "tool_B_individual_lower_bound": 1,
+        "fixed_master_unique_net_contacts": 12,
+        "PPM_candidate": 2,
+        "layout_example": {
+          "E1": [
+            "P24",
+            "P24",
+            "P24",
+            "R0",
+            "R0",
+            "R0",
+            "RS_A",
+            "RS_B"
+          ],
+          "E2": [
+            "IO1",
+            "IO2",
+            "IO3",
+            "IO4",
+            "unused",
+            "unused",
+            "unused",
+            "unused"
+          ]
+        },
+        "tool_A_PPF_with_this_layout": 1,
+        "tool_B_PPF_with_this_layout": 2,
+        "PPF_total_for_one_each": 3,
+        "cable_total": 5
+      },
+      "conditions_ko": "동일 24V/0V 경로 재사용, 다른 신호는 고정 분리, 추가 COM 없음, 미사용 접점의 부적절한 연결 없음이라는 조건. 실제 매핑 승인 필요. 다른 배치에서는 결과가 달라질 수 있음."
+    },
+    {
+      "id": "E11",
+      "name_ko": "서로 다른 툴의 전기와 공압 자원 합집합",
+      "input": {
+        "tool_A_pogo_modules": 2,
+        "tool_A_air_modules": 0,
+        "tool_B_pogo_modules": 0,
+        "tool_B_air_modules": 2
+      },
+      "expected": {
+        "master_pogo_positions": 2,
+        "master_air_positions": 2,
+        "master_total_positions": 4,
+        "customization_required": true
+      },
+      "note_ko": "각 툴별 최대 사용 위치는 2개지만 고정 공통 마스터는 4개소 필요."
+    },
+    {
+      "id": "E12",
+      "name_ko": "AG 두 개를 각 T.P에 달아 교체 사용",
+      "conditions_ko": "각 툴은 E01과 같은 6핀 프로파일이며 공통 핀배치 호환. 마스터 1개, 교체 툴 2개, 각 PPF 1개.",
+      "expected": {
+        "master_current_draft_A": 1.5,
+        "PPM": 1,
+        "PPF": 2,
+        "PPM_30cm_cable": 1,
+        "PPF_30cm_cable": 2,
+        "total_30cm_cable": 3,
+        "PMM": 0,
+        "PMF": 0
+      }
+    },
+    {
+      "id": "E13",
+      "name_ko": "한 T.P에 AG 두 개가 동시에 동작",
+      "conditions_ko": "동일 공급·리턴 경로에 피크 1.5A 장치 2개. 추가 SG·COM 없음.",
+      "expected": {
+        "combined_design_current_A": 3,
+        "power_contacts": 6,
+        "shared_approved_RS485_bus": {
+          "signal_contacts": 2,
+          "total_contacts": 8,
+          "pogo_pairs_lower_bound": 1
+        },
+        "two_independent_RS485_links": {
+          "signal_contacts": 4,
+          "total_contacts": 10,
+          "pogo_pairs_lower_bound": 2
+        }
+      },
+      "note_ko": "주소·동시 제어·배선·종단 조건이 승인된 경우에만 공통 RS485 버스로 계산. 두 장치라고 자동으로 통신선을 공유하지 않는다."
+    },
+    {
+      "id": "E14",
+      "name_ko": "RS485만 입력되고 배선 미확인",
+      "input": {
+        "design_current_A": 3,
+        "interface": "RS485",
+        "wire_mode": null
+      },
+      "expected": {
+        "confirmed_total_contacts": null,
+        "conditional_2wire_without_extras": {
+          "power_contacts": 6,
+          "data_contacts": 2,
+          "total_contacts": 8,
+          "pogo_pairs_lower_bound": 1
+        },
+        "conditional_4wire_without_extras": {
+          "power_contacts": 6,
+          "data_contacts": 4,
+          "total_contacts": 10,
+          "pogo_pairs_lower_bound": 2
+        },
+        "followup_required": true
+      }
+    },
+    {
+      "id": "E15",
+      "name_ko": "복동 그리퍼 1개 로봇측 밸브",
+      "input": {
+        "confirmed_ATC_crossing_air_paths": 2,
+        "grippers_on_one_tool": 1
+      },
+      "expected": {
+        "air_module_pairs_lower_bound": 1,
+        "PMM_for_one_master": 1,
+        "PMF_for_one_tool": 1,
+        "air_positions": 1,
+        "pogo_modules": "separately_calculated",
+        "pneumatic_performance_approved": false
+      },
+      "note_ko": "열림·닫힘 2유로를 각각 통과시키고 추가 공압 경로가 없는 조건."
+    },
+    {
+      "id": "E16",
+      "name_ko": "복동 그리퍼 2개 독립 제어 로봇측 밸브",
+      "input": {
+        "confirmed_ATC_crossing_air_paths": 4,
+        "grippers_on_one_tool": 2
+      },
+      "expected": {
+        "air_module_pairs_lower_bound": 2,
+        "PMM_for_one_master": 2,
+        "PMF_for_one_tool": 2,
+        "air_positions": 2,
+        "pogo_modules": "separately_calculated",
+        "pneumatic_performance_approved": false
+      },
+      "note_ko": "각 그리퍼 A/B가 독립적으로 ATC를 통과하는 회로. 개별 제어 조건."
+    },
+    {
+      "id": "E17",
+      "name_ko": "복동 그리퍼 2개 승인된 공통 A/B 분기",
+      "input": {
+        "confirmed_ATC_crossing_air_paths": 2,
+        "grippers_on_one_tool": 2
+      },
+      "expected": {
+        "air_module_pairs_lower_bound": 1,
+        "PMM_for_one_master": 1,
+        "PMF_for_one_tool": 1,
+        "air_positions": 1,
+        "pogo_modules": "separately_calculated",
+        "pneumatic_performance_approved": false
+      },
+      "note_ko": "공통 A/B 2유로 통과 후 분기. 회로 승인 및 유량 검토가 전제이며 단순 동시 동작만으로 이 결과를 선택하지 않음."
+    },
+    {
+      "id": "E18",
+      "name_ko": "단동 그리퍼 1개 작동선 1개",
+      "input": {
+        "confirmed_ATC_crossing_air_paths": 1,
+        "grippers_on_one_tool": 1
+      },
+      "expected": {
+        "air_module_pairs_lower_bound": 1,
+        "PMM_for_one_master": 1,
+        "PMF_for_one_tool": 1,
+        "air_positions": 1,
+        "pogo_modules": "separately_calculated",
+        "pneumatic_performance_approved": false
+      },
+      "note_ko": "작동선 1유로, 툴측 호흡구, 추가 배기 경로 없음. 모듈 잔여 유로 1개."
+    },
+    {
+      "id": "E19",
+      "name_ko": "툴측 밸브 공급 1선 배기 툴측",
+      "input": {
+        "confirmed_ATC_crossing_air_paths": 1,
+        "grippers_on_one_tool": 1
+      },
+      "expected": {
+        "air_module_pairs_lower_bound": 1,
+        "PMM_for_one_master": 1,
+        "PMF_for_one_tool": 1,
+        "air_positions": 1,
+        "pogo_modules": "separately_calculated",
+        "pneumatic_performance_approved": false
+      },
+      "note_ko": "공급 1유로 확인. 밸브와 센서의 전기 사양 미확인 시 포고핀은 미산정이며 0개로 확정하지 않음."
+    },
+    {
+      "id": "E20",
+      "name_ko": "공통 유로가 호환되는 교체 공압 툴 2개",
+      "input": {
+        "masters": 1,
+        "interchangeable_tools": 2,
+        "air_paths_per_tool": 2,
+        "common_path_mapping_approved": true
+      },
+      "expected": {
+        "PMM": 1,
+        "PMF": 2,
+        "master_air_positions": 1
+      },
+      "note_ko": "별도 센서 등 전기 구성은 별도 산정. 교체 툴 수만큼 마스터 PMM을 늘리지 않음."
+    },
+    {
+      "id": "E21",
+      "name_ko": "실제 공급 0점6MPa",
+      "input": {
+        "actual_supply": 0.6,
+        "unit": "MPa",
+        "reference": "gauge",
+        "air_paths": 2
+      },
+      "expected": {
+        "actual_supply_bar": 6,
+        "air_modules_lower_bound": 1,
+        "standard_pressure_range_fit": false,
+        "needs_engineering_review": true
+      },
+      "note_ko": "공압 모듈을 2개로 늘려도 압력 초과가 해결되었다고 판정하지 않음."
+    },
+    {
+      "id": "E22",
+      "name_ko": "복동 공압 그리퍼와 3선식 센서 2개",
+      "input": {
+        "valve_location": "robot_side",
+        "air_paths": 2,
+        "sensors": 2,
+        "sensor_wiring": "각 센서 전원·0V·출력 1선",
+        "shared_24V_0V_approved": true,
+        "combined_design_current_A": 0.1,
+        "additional_electrical_nets": 0
+      },
+      "expected": {
+        "power_contacts": 2,
+        "signal_contacts": 2,
+        "total_contacts": 4,
+        "PPM": 1,
+        "PPF": 1,
+        "PMM": 1,
+        "PMF": 1,
+        "PPM_30cm_cable": 1,
+        "PPF_30cm_cable": 1,
+        "master_positions": 2
+      },
+      "note_ko": "가상 예제. 합산 설계 전류 0.1A는 센서 경로의 모든 부하를 포함한다고 가정. 실제 센서 선 수·공유·전류를 검토한다."
+    },
+    {
+      "id": "E23",
+      "name_ko": "복동이라는 정보만 있고 밸브 위치 누락",
+      "input": {
+        "actuation": "double_acting",
+        "grippers": 1,
+        "valve_location": null
+      },
+      "expected": {
+        "confirmed_air_paths": null,
+        "confirmed_air_modules": null,
+        "followup_question_ko": "밸브가 로봇측에 있나요, 그리퍼측에 있나요?",
+        "conditional_robot_side_valve_paths": 2,
+        "conditional_tool_side_single_supply_paths": 1
+      },
+      "note_ko": "두 시나리오 모두 공압 1모듈 하한이지만 전기 배선과 실제 유로가 달라 확인해야 함."
+    },
+    {
+      "id": "E24",
+      "name_ko": "그리퍼 허용 최대 7bar 실제 사용 4bar",
+      "input": {
+        "gripper_allowed_range_bar": [
+          2,
+          7
+        ],
+        "actual_supply_bar": 4,
+        "maximum_applied_supply_bar": 4
+      },
+      "expected": {
+        "catalog_max_treated_as_actual": false,
+        "standard_positive_pressure_range_fit": true,
+        "gripper_pressure_range_fit": true,
+        "flow_and_gripping_force_approved": false
+      },
+      "note_ko": "압력 범위상 후보. 실제 그리퍼측 압력 손실·필요 파지력·유량까지 승인한 결과는 아님."
+    }
+  ],
+  "junior_questions": [
+    "실제로 사용할 그리퍼 모델과 개수는 무엇인가요? 각 툴에 몇 개씩 달리나요?",
+    "한 툴에 여러 장치가 있으면 동시에 작동하나요?",
+    "실제 사용할 제어 방식은 I/O인가요, RS485인가요, 다른 통신인가요?",
+    "전원·제어 커넥터 배선도 또는 케이블 선 색상표가 있나요?",
+    "별도 통신 변환기·센서·솔레노이드 밸브가 있나요? 로봇측인가요, 툴측인가요?",
+    "공압·진공·에어블로우를 사용하나요? 실제로 ATC를 통과할 독립 라인은 몇 개인가요?",
+    "공압그리퍼는 공기로 열고 닫는 복동인가요, 한쪽은 스프링으로 움직이는 단동인가요?",
+    "열고 닫는 밸브가 로봇측에 있나요, 교체하는 그리퍼측에 있나요? 배관 사진도 괜찮습니다.",
+    "한 툴에 그리퍼가 여러 개면 각각 따로 제어하나요? 공통 배관으로 움직이는 구성이 이미 정해졌나요?",
+    "실제 공급 압력은 몇 bar 또는 MPa인가요? 카탈로그 최대치와 구분해서 알려주세요.",
+    "열림·닫힘 센서, 솔레노이드 밸브, 추가 에어블로우·진공을 사용하나요?"
+  ],
+  "engineering_review_before_use": [
+    "1A 정격의 적용 조건, 병렬 전원 구성과 접점별 전류 분담, 다접점 동시 부하 한계",
+    "모듈 내부·30cm 케이블·커넥터·고객 연장선의 전류 및 전압 강하",
+    "제조사 핀맵·커넥터 방향·SG/COM/PE/실드 처리와 실제 포고핀 번호의 대응",
+    "실제 통신 옵션·변환기 위치·통신 속도·페어 배치·케이블 및 검증 결과",
+    "모든 교체 툴의 고정 마스터 핀·유로 배치 호환",
+    "공압/진공 압력·유량·피팅과 커스텀 필요 여부"
+  ],
+  "validation_summary": {
+    "checked_ko": [
+      "1.5A 전원 왕복 4핀",
+      "8핀/9핀 모듈 경계",
+      "전기 2+공압 2의 3개소 초과",
+      "1A 초과 소수 전류 올림",
+      "공통 고정 배치에 따른 툴별 PPF 수량 차이",
+      "RS485 2선/4선 조건부 분기",
+      "공압 1·2·4유로 올림",
+      "0.6MPa를 6bar로 환산",
+      "공압그리퍼 센서 포함 포고핀 4핀 예제",
+      "밸브 위치 누락 시 확정값 null 유지",
+      "전기·공압 통합 분류 및 24개 규칙의 그룹 연결과 기존 산정값 보존"
+    ],
+    "hardware_validation_performed": false,
+    "validation_scope_ko": "명세의 산식과 예제 정합성 확인. 실제 영업 AI 통합 테스트 및 하드웨어 시험은 수행하지 않음."
+  },
+  "change_history": [
+    {
+      "version": "1.1-review",
+      "date": "2026-10-07",
+      "changes_ko": [
+        "RS485 입력에서 2선식 또는 4선식 판별과 조건부 시나리오 산정을 명시",
+        "공압그리퍼 사양 추출과 밸브 위치별 유로 산정 프로파일 추가",
+        "독립 제어와 승인된 공통 분기, 센서 및 밸브 전기 배선 합산 추가",
+        "실제 사용 압력과 카탈로그 최대 압력 구분 및 단위 변환 추가",
+        "총 24개 규칙과 24개 예제로 확대"
+      ]
+    },
+    {
+      "version": "1.2-review",
+      "date": "2026-10-07",
+      "changes_ko": [
+        "자료명과 최상위 분류를 맥봇 ATC 액세서리 통합 선정으로 변경",
+        "전기·공압 요구를 함께 수집하여 공통 장착 배치와 통합 수량표로 연결",
+        "기존 계산 규칙 24개와 예제 24개는 유지하고 통합 입출력 구조 추가"
+      ]
+    }
+  ],
+  "protocol_inference_policy": {
+    "precedence": [
+      "approved_matching_product_profile",
+      "manufacturer_pinout_and_selected_option",
+      "explicit_customer_or_engineer_confirmation",
+      "conditional_general_knowledge_scenario"
+    ],
+    "RS485_2wire": {
+      "data_pins": 2,
+      "names": [
+        "A",
+        "B"
+      ],
+      "separate_SG_COM_shield_IO": "count_from_actual_wiring"
+    },
+    "RS485_4wire": {
+      "data_pins": 4,
+      "names": [
+        "TX+",
+        "TX-",
+        "RX+",
+        "RX-"
+      ],
+      "separate_SG_COM_shield_IO": "count_from_actual_wiring"
+    },
+    "RS485_unspecified": {
+      "confirmed_data_pins": null,
+      "allow_conditional_2wire_draft": true,
+      "assumption_text_ko": "2선식 RS485와 별도 추가선이 없는 조건의 계산안",
+      "followup_ko": [
+        "그리퍼 결선도에서 A/B 2선식인가요, 송수신 4선식인가요?",
+        "SG 또는 별도 COM과 하드웨어 제어 신호를 연결하나요?"
+      ]
+    },
+    "note_ko": "각 전류·모델 사례를 일일이 가르칠 필요는 없다. 회사 상수와 산식, 판별 조건을 등록하고 승인된 제품 프로파일을 재사용한다. AI 추출 결과로 계산 코드가 수량을 산정한다."
+  },
+  "pneumatic_profiles": [
+    {
+      "id": "AIR_DOUBLE_ROBOT_VALVE",
+      "when_ko": "일반 복동 그리퍼, 밸브는 로봇측, 열림·닫힘 회로 각각 통과",
+      "crossing_paths_per_independent_gripper": 2,
+      "path_labels": [
+        "open_A",
+        "close_B"
+      ],
+      "conditions_ko": "실제 회로 확인. 추가 잠금·블로우·원격 배기 라인은 별도 합산."
+    },
+    {
+      "id": "AIR_SINGLE_ROBOT_VALVE",
+      "when_ko": "일반 단동 그리퍼, 로봇측 밸브, 작동 공압선 1개가 결합면 통과",
+      "crossing_paths_per_independent_gripper": 1,
+      "path_labels": [
+        "actuation"
+      ],
+      "conditions_ko": "호흡구를 두 번째 공급선으로 자동 산정하지 않음. 별도 원격 배기가 ATC를 통과하면 그 경로는 추가."
+    },
+    {
+      "id": "AIR_TOOL_VALVE_SINGLE_SUPPLY",
+      "when_ko": "툴측 밸브 또는 밸브 내장 그리퍼, 단일 공급선과 툴측 배기인 회로",
+      "crossing_paths_per_confirmed_supply_group": 1,
+      "path_labels": [
+        "supply_P"
+      ],
+      "conditions_ko": "밸브 전원·제어·센서선을 포고핀 계산에 추가. 별도 압력 공급·진공·원격 배기·파일럿 경로는 추가. 모든 내장 밸브 제품을 1유로로 단정하지 않음."
+    },
+    {
+      "id": "AIR_APPROVED_SHARED_BRANCH",
+      "when_ko": "로봇측 밸브의 A/B를 통과 후 여러 복동 그리퍼로 분기하는 승인된 회로",
+      "crossing_paths_per_approved_group": 2,
+      "conditions_ko": "동일 명령·압력으로 동작 가능한지와 유량을 확인. 독립 제어가 필요하면 이 프로파일 적용 불가."
+    },
+    {
+      "id": "AIR_VACUUM_OTHER",
+      "when_ko": "진공·블로우·특수 그리퍼·회전 복합 장치",
+      "crossing_paths": null,
+      "conditions_ko": "발생기와 밸브 위치를 반영한 실제 통과 경로 목록으로 계산. 그리퍼 개수로 고정하지 않음."
+    },
+    {
+      "id": "AIR_UNKNOWN_LAYOUT",
+      "when_ko": "밸브 위치 또는 배관 정보 없음",
+      "crossing_paths": null,
+      "conditions_ko": "로봇측 밸브/툴측 밸브 시나리오를 분리하고 질문한다. 단일 확정 수량을 만들지 않음."
+    }
+  ],
+  "pneumatic_pressure_policy": {
+    "standard_positive_supply_bar": [
+      1,
+      5
+    ],
+    "normalization_to_bar": {
+      "bar": "value",
+      "MPa": "value*10",
+      "kPa": "value/100"
+    },
+    "pressure_reference_must_match": true,
+    "unknown_units": "ask_user",
+    "vacuum": "separate_engineering_review",
+    "check_actual_setting_and_maximum_applied_supply": true,
+    "catalog_max_is_not_actual_setting": true,
+    "pressure_fit_is_not_flow_or_gripping_force_approval": true,
+    "no_automatic_module_addition_for_high_pressure_or_flow": true
+  },
+  "automatic_selection_flow": [
+    {
+      "step": 1,
+      "owner": "AI",
+      "action_ko": "사양서에서 선택 모델의 전기·공압 사실과 출처를 추출한다."
+    },
+    {
+      "step": 2,
+      "owner": "AI_and_sales",
+      "action_ko": "누락된 통신 결선·밸브 위치·실사용 압력·센서·동시 사용 조건을 질문한다."
+    },
+    {
+      "step": 3,
+      "owner": "deterministic_calculator",
+      "action_ko": "확인값 또는 명시된 시나리오에 따라 고유 핀·독립 유로와 모듈 하한을 계산한다."
+    },
+    {
+      "step": 4,
+      "owner": "layout_rules",
+      "action_ko": "교체 툴 전체의 공통 배치를 검토해 실제 모듈 수·3개소 초과·케이블 수량을 산정한다."
+    },
+    {
+      "step": 5,
+      "owner": "engineer_and_responsible_sales",
+      "action_ko": "결선·공압 적합과 수량을 검토하여 견적에 쓸 구성을 확정한다."
+    },
+    {
+      "step": 6,
+      "owner": "master_account",
+      "action_ko": "재사용할 프로파일의 모델·배선·압력·조건·버전을 별도로 승인한다."
+    }
+  ],
+  "previous_document_type": "UND_MAGBOT_pogo_air_sizing_rule_specification",
+  "accessory_catalog_structure": {
+    "category_id": "ATC_ACCESSORIES",
+    "category_name_ko": "맥봇 ATC 액세서리",
+    "electrical": {
+      "name_ko": "전기 액세서리",
+      "product_ko": "포고핀",
+      "master_part": "PPM",
+      "tool_part": "PPF",
+      "pins_per_mating_pair": 8,
+      "current_per_contact_A": 1
+    },
+    "pneumatic": {
+      "name_ko": "공압 액세서리",
+      "product_ko": "에어커플러",
+      "master_part": "PMM",
+      "tool_part": "PMF",
+      "paths_per_mating_pair": 2,
+      "positive_pressure_bar": [
+        1,
+        5
+      ]
+    },
+    "linked_items": {
+      "PPM_30cm_cable": "PPM당 1개",
+      "PPF_30cm_cable": "PPF당 1개"
+    },
+    "shared_resource": {
+      "mounting_positions_per_master": 3,
+      "rule_ko": "마스터의 포고핀 위치 수와 공압 위치 수를 합산한다. 두 분류에 각각 3개소를 부여하지 않는다."
+    },
+    "terminology_ko": "산정 설명의 1쌍은 서로 맞물리는 마스터측 1개와 툴측 1개다. 견적에서는 각 판매 품목을 EA 수량으로 분리한다."
+  },
+  "unified_selection_workflow": [
+    {
+      "step": 1,
+      "name_ko": "툴 사용 조건 확인",
+      "input_ko": "마스터 수량, 교체 툴 구성, 장치 수량, 동시 사용, 선택 통신 및 실제 공압 회로",
+      "output_ko": "전기·공압 공통 입력 목록과 누락 질문"
+    },
+    {
+      "step": 2,
+      "name_ko": "결합면 통과 요구 산정",
+      "input_ko": "그리퍼·센서·밸브·변환기의 전원·신호와 공압·진공 경로",
+      "output_ko": "툴별 고유 전기 경로 목록 및 독립 유로 목록",
+      "cross_dependency_ko": "공압그리퍼도 센서·밸브가 전기를 요구하면 전기 액세서리 산정에 포함"
+    },
+    {
+      "step": 3,
+      "name_ko": "전기와 공압 액세서리 하한 계산",
+      "input_ko": "전류, 신호 핀 수, 독립 유로 수",
+      "output_ko": "포고핀 하한 ceil(핀 수/8), 공압 하한 ceil(유로 수/2)"
+    },
+    {
+      "step": 4,
+      "name_ko": "공통 마스터 배치와 3개소 검토",
+      "input_ko": "모든 교체 툴의 고정 배선 및 유로 호환",
+      "output_ko": "마스터·툴별 실제 모듈 배치와 표준 위치 수 적합 또는 커스텀 검토"
+    },
+    {
+      "step": 5,
+      "name_ko": "통합 액세서리 수량표 작성",
+      "input_ko": "각 마스터와 물리적 툴의 수량 및 실제 배치",
+      "output_ko": "PPM·PPF·PMM·PMF·각 측 30cm 케이블 수량과 계산 근거"
+    },
+    {
+      "step": 6,
+      "name_ko": "확인 후 견적 연결",
+      "input_ko": "누락 정보 해소, 엔지니어 기술 검토, 영업 담당자 구성 확인",
+      "output_ko": "확정 품목·수량을 견적에 전달하고 재사용 지식은 마스터 계정 승인"
+    }
+  ],
+  "rule_groups": [
+    {
+      "group_ko": "공통 입력과 결합면 정의",
+      "rule_ids": [
+        "PGR01",
+        "PGR02"
+      ]
+    },
+    {
+      "group_ko": "전기 액세서리 요구 산정",
+      "rule_ids": [
+        "PGR03",
+        "PGR04",
+        "PGR05",
+        "PGR06",
+        "PGR07",
+        "PGR08",
+        "PGR19"
+      ]
+    },
+    {
+      "group_ko": "공압 액세서리와 전기 연계 산정",
+      "rule_ids": [
+        "PGR09",
+        "PGR10",
+        "PGR20",
+        "PGR21",
+        "PGR22",
+        "PGR23"
+      ]
+    },
+    {
+      "group_ko": "공통 배치와 판매 수량",
+      "rule_ids": [
+        "PGR11",
+        "PGR12",
+        "PGR13",
+        "PGR14",
+        "PGR15",
+        "PGR16"
+      ]
+    },
+    {
+      "group_ko": "검토와 견적 및 재사용 승인",
+      "rule_ids": [
+        "PGR17",
+        "PGR18",
+        "PGR24"
+      ]
+    }
+  ],
+  "schema_transition_note_ko": "v1.1의 24개 규칙과 24개 예제 및 기존 입력·출력 키는 유지했다. accessory_catalog_structure, unified_selection_workflow, rule_groups와 output_contract.unified_accessory_result를 추가했다. 통합 출력은 기존 tool_results·master_results·bill_of_materials와 같은 계산 결과에서 생성하며 별도 수량 값을 수작업으로 유지하지 않는다."
+}

@@ -1,0 +1,28 @@
+{
+  "quote_issuer": {
+    "company": "주식회사 예시회사",
+    "company_en": "Example Co., Ltd",
+    "address": "서울특별시 예시구 예시로 1",
+    "bank": "예시은행",
+    "bank_address": "",
+    "account_no": "000000-00-000000",
+    "account_holder": "주식회사 예시회사",
+    "signed_by": "Signed by President / Mr.Hong Gil-Dong"
+  },
+  "quote_issuer_en": {
+    "company": "Example Co., Ltd.",
+    "company_en": "Example Co., Ltd",
+    "address": "1, Example-ro, Seoul, Republic of Korea (00000)",
+    "bank": "EXAMPLE BANK",
+    "bank_address": "1, Example-ro, Seoul, South Korea",
+    "account_no": "000000-00-000000",
+    "account_holder": "Example Co., Ltd.",
+    "signed_by": "Signed by President / Mr.Hong Gil-Dong"
+  },
+  "statement_supplier": {
+    "reg_no": "000-00-00000",
+    "name": "주식회사 예시회사",
+    "ceo": "홍길동",
+    "address": "서울시 예시구 예시로 1"
+  }
+}

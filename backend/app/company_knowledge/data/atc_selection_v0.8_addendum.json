@@ -1,0 +1,983 @@
+{
+  "document_type": "UND_MAGBOT_ATC_selection_policy_addendum",
+  "revision": "0.8-addendum",
+  "revision_date": "2026-10-02",
+  "language": "ko-KR",
+  "title_ko": "맥봇 ATC 선정 기준 추가 확정 메모",
+  "purpose_ko": "기존 선정 기준에 고객별 구성, 종합 모델 판단, 포고핀 병렬 사용, 진공 취급, 제어·포고핀 배선 구성과 최종 견적 확정 정책을 추가한 개발용 메모.",
+  "production_ready": false,
+  "base_reference": {
+    "file_name": "UND_MAGBOT_AI_선정데이터_v0.2.json",
+    "library_file_id": "libfile_a6f797727e00819183225e009950073e"
+  },
+  "use_policy_ko": "독립된 추가 메모다. 기존 v0.2 전체를 대체하는 실행용 설정 파일이 아니다. 아래 확정 변경만 기존 규칙에 병합하고, 제안 항목은 마스터 계정 및 기술 담당자 검토 후 구현한다. 미확정 수치와 모델·품목·판매단가는 임의 생성하지 않는다.",
+  "provenance": [
+    {
+      "id": "U3",
+      "type": "user_statement",
+      "date": "2026-10-02",
+      "time_zone": "Asia/Seoul",
+      "description_ko": "현재 대화에서 확인한 산업용 2배 검토, 부품 명칭·장착측, 공압 독립 2유로, 액세서리 3개소, 커스텀 사례, 정성적 무게중심 및 틸팅·밴딩 검토 요구"
+    },
+    {
+      "id": "U4",
+      "type": "user_statement",
+      "date": "2026-10-02",
+      "time_zone": "Asia/Seoul",
+      "description_ko": "19:41 답변에서 유선 우선, 총중량, 속도 종합 판단, 최소 핀 구성, 핀 병렬 사용, 검증 통신 조합, 툴별 구성, 진공 포함, 견적 표시와 최종 값 확정 방식을 확인"
+    },
+    {
+      "id": "U5",
+      "type": "user_statement",
+      "date": "2026-10-02",
+      "time_zone": "Asia/Seoul",
+      "description_ko": "19:57 답변에서 경계 하중 및 편하중의 종합 판단을 승인. 고정 판매 세트 없이 마스터·CONTROLBOX·4m 케이블 1개·1m 케이블 1개를 공통 구성으로, T.P·포고핀·공압 액세서리를 고객별 가변 구성으로 지정"
+    },
+    {
+      "id": "U6",
+      "type": "user_statement",
+      "date": "2026-10-02",
+      "time_zone": "Asia/Seoul",
+      "description_ko": "마스터에 PPM 또는 PMM이 있고 교체 툴측에 대응하는 PPF 또는 PMF가 없는 혼합 구성도 그대로 사용하며 별도 보호 조치가 필요 없다고 확인"
+    },
+    {
+      "id": "U7",
+      "type": "user_statement",
+      "date": "2026-10-02",
+      "time_zone": "Asia/Seoul",
+      "description_ko": "마스터 1개당 CONTROLBOX 1개. MASTER T.C–CONTROLBOX는 로봇을 따라 배선하는 4m 케이블, CONTROLBOX–로봇 제어반 또는 PLC는 1m 케이블. 길이 변경 시 전압 강하를 고려한 고객 협의 필요"
+    },
+    {
+      "id": "U8",
+      "type": "user_statement",
+      "date": "2026-10-02",
+      "time_zone": "Asia/Seoul",
+      "description_ko": "20:19 답변: 4m 케이블은 MASTER T.C 작동 전원·제어 전용. 포고핀은 PPM·PPF 각각 별도 30cm 케이블 필요. PPM 케이블은 양단 커넥터이며 제어반까지 연장 연결, PPF 케이블은 그리퍼 배선에 연결. 포고핀 개수만큼 30cm 케이블을 함께 판매"
+    },
+    {
+      "id": "U9",
+      "type": "user_statement",
+      "date": "2026-10-02",
+      "time_zone": "Asia/Seoul",
+      "description_ko": "20:26 답변: 제품영업의 포고핀 연장 배선과 그리퍼 결선은 모두 고객 담당. UND가 비용을 받고 수행하는 경우도 있으나 별도 관리 영역으로 구분."
+    },
+    {
+      "id": "U10",
+      "type": "user_statement",
+      "date": "2026-10-02",
+      "time_zone": "Asia/Seoul",
+      "description_ko": "로봇측 어댑터는 견적을 받아 판매. 툴 2개용 표준 툴스탠드 mTS2가 있으며 그 외 사양은 커스텀 주문제작 또는 고객 제작. 두 번째 어댑터의 고객 제작 언급은 대상 측을 확인해야 함.",
+      "raw_adapter_statement_ko": "로봇측 어댑터는 견적을 받고 판매를하면되는파트이고, 어댑터쪽은 고객보고 제작하라고해야할듯"
+    },
+    {
+      "id": "U11",
+      "type": "user_statement",
+      "date": "2026-10-02",
+      "time_zone": "Asia/Seoul",
+      "description_ko": "20:43 답변에서 고객 제작 대상이 T.P와 그리퍼 사이 툴측 어댑터임을 확인."
+    }
+  ],
+  "confirmed_changes": [
+    {
+      "id": "C01",
+      "topic_ko": "산업용 초기 하중 보정",
+      "source": "U3",
+      "status": "user_confirmed_initial_screening_policy",
+      "industrial_factor": 2,
+      "supersedes_rule_ids": [
+        "R05",
+        "R06",
+        "R07"
+      ],
+      "instruction_ko": "기존 산업용 속도별 1~2단계 상향 대신 약 2배 하중을 고려해 초기 후보를 검토한다. 두 방식을 중복 적용하지 않는다.",
+      "implementation_note_ko": "실제 동하중 계산값이나 모든 동작의 적합성을 보장하는 계수로 표시하지 않는다. 배수의 적용 질량은 기존 총질량 산정 원칙과 모델 정격 정의를 맞춰 기술 담당자가 확인해야 한다.",
+      "unresolved_ko": [
+        "협동로봇 속도 70 부근의 상향 검토를 중심·중량·자세와 종합 적용한다. 정확한 경계와 예외 적용 기준은 실제 선정 사례로 보완한다.",
+        "제품 정격의 정의와 동작조건별 허용치는 제품 자료로 확인한다."
+      ]
+    },
+    {
+      "id": "C02",
+      "topic_ko": "액세서리 명칭과 장착측",
+      "source": "U3",
+      "status": "user_confirmed",
+      "parts": [
+        {
+          "code": "PPM",
+          "family": "pogo",
+          "gender": "male",
+          "side": "master"
+        },
+        {
+          "code": "PPF",
+          "family": "pogo",
+          "gender": "female",
+          "side": "tool_plate"
+        },
+        {
+          "code": "PMM",
+          "family": "air_coupler",
+          "gender": "male",
+          "side": "master"
+        },
+        {
+          "code": "PMF",
+          "family": "air_coupler",
+          "gender": "female",
+          "side": "tool_plate"
+        }
+      ],
+      "counting_note_ko": "모델별 호환 배치 확정 후, 마스터측 수량은 실제 마스터 구성별로, 툴측 수량은 실제 교체 툴별로 산정하고 설치 수량·예비 수량·기본 포함 수량을 구분한다."
+    },
+    {
+      "id": "C03",
+      "topic_ko": "공압 유로",
+      "source": "U3",
+      "status": "user_confirmed",
+      "independent_paths_per_standard_coupler": 2,
+      "resolves_configuration_ids": [
+        "P06"
+      ],
+      "supersedes_rule_ids": [
+        "R15"
+      ],
+      "count_expression": "ceil(required_independent_paths / 2)",
+      "instruction_ko": "표준 커플러 한 결합쌍은 독립 에어라인 2개를 연결한다. 실제 필요한 독립 유로 수가 확인된 경우 수량을 계산한다. 외관상 호스 수만으로 유로 수를 단정하지 않는다."
+    },
+    {
+      "id": "C04",
+      "topic_ko": "표준 장착 위치",
+      "source": "U3",
+      "status": "user_confirmed",
+      "shared_standard_positions": 3,
+      "standard_pogo_pins_per_position": 8,
+      "standard_air_paths_per_position": 2,
+      "supersedes_rule_ids": [
+        "R16"
+      ],
+      "instruction_ko": "포고핀·AIR COUPLER를 조합해 표준 결합 구성당 총 3개소를 사용한다. 맞물리는 수·암 한 쌍은 하나의 장착 위치로 계산한다. 마스터측과 툴측 위치를 합쳐 6개소로 계산하지 않는다.",
+      "excess_action": "customization_required",
+      "compatibility_note_ko": "3개소 이내여도 모든 교체 툴의 위치·핀 배열·전압·연결 여부·모델 호환성을 확인해야 한다. 전체 툴의 모듈 수를 마스터 한 개의 슬롯 요구량으로 합산하지 않는다."
+    },
+    {
+      "id": "C05",
+      "topic_ko": "포고핀 기본 한계",
+      "source": [
+        "U3",
+        "U4"
+      ],
+      "status": "user_confirmed_internal_criterion",
+      "current_per_pin_A": 1,
+      "pins_per_standard_module": 8,
+      "instruction_ko": "표준 16핀은 8핀 모듈 2개와 장착 2개소로 검토한다. 16핀을 1개소에 배치하는 구성은 커스텀 검토로만 표시한다. 핀 수 증가를 핀당 허용전류 증가로 해석하지 않는다. 통신 호환·리턴 전류·피크 조건은 별도 검토한다.",
+      "parallel_pins_allowed_as_selection_method": true,
+      "supersedes_rule_ids": [
+        "R12"
+      ],
+      "parallel_policy_ko": "핀당 1A 기준으로 2A는 2핀, 3A는 3핀을 병렬 사용하는 구성을 선정에 포함한다. 공급선과 리턴선 모두 각 경로의 전류를 계산하고 신호·통신 핀을 더한다. 실제 병렬 배선과 모듈 전체 한계는 제품 자료로 연결한다.",
+      "minimum_pin_count_expression": "sum(ceil(current_A / 1A) for each independent power and return path) + non_power_pin_count",
+      "pin_count_note_ko": "공유 리턴은 동시에 흐르는 합산 전류를 기준으로 한 번 계산한다. 실제 회로와 핀 배치 없이 통신 핀을 고정 개수로 단정하지 않는다.",
+      "spare_pin_policy_ko": "필요 배선을 수용하는 최소 모듈 수를 선정하고 잔여 핀을 표시한다. 예비핀 확보를 위한 추가 모듈은 고객 요청 또는 별도 회사 기준에 따른다."
+    },
+    {
+      "id": "C06",
+      "topic_ko": "공압 표준 압력",
+      "source": [
+        "U3",
+        "U4"
+      ],
+      "status": "user_confirmed_internal_criterion",
+      "standard_pressure_bar": {
+        "min": 1,
+        "max": 5
+      },
+      "supersedes_rule_ids": [
+        "R14"
+      ],
+      "instruction_ko": "압축공기는 운전 전 구간 1~5bar를 표준 압력으로 검토하며 범위 밖이면 별도 검토한다. 진공도 PMM·PMF 수량 선정 흐름에 포함한다. 매체와 압력 단위·기준을 별도 기록하고 양압 1~5bar 기준을 진공에 적용하지 않는다. 진공의 세부 허용치는 제품 자료로 연결한다.",
+      "vacuum_in_same_coupler_selection_workflow": true
+    },
+    {
+      "id": "C07",
+      "topic_ko": "수치 확보 전 정성 입력",
+      "source": "U3",
+      "status": "user_confirmed_direction",
+      "instruction_ko": "초기 제안에서 고객에게 정확한 무게중심 좌표를 필수로 요구하지 않는다. 중심 근처·조금 치우침·많이 치우침·모름 등의 분류와 사진·도면을 먼저 확보한다. mm·모멘트·각도 임계값은 향후 정량화한다."
+    },
+    {
+      "id": "C08",
+      "topic_ko": "틸팅과 밴딩 등 작업조건",
+      "source": "U3",
+      "status": "user_reported_product_consideration",
+      "instruction_ko": "자석식 결합에서 편하중·틸팅·밴딩 조건을 별도로 확인한다. 고객의 수평·수직 이동, 장착 자세, 기울임·뒤집기, 공정 중 외력 정보를 확보한다.",
+      "reported_failure_modes_ko": [
+        "결합면 일부 벌어짐",
+        "전기 접점 불안정 또는 통신 끊김",
+        "에어 누설"
+      ],
+      "note_ko": "발생 가능성과 검토 목적을 기록한 것으로 모든 해당 작업에서 결함이 발생한다는 뜻은 아니다."
+    },
+    {
+      "id": "C09",
+      "topic_ko": "유선 기본 선택과 무선 별도 선택",
+      "source": "U4",
+      "status": "user_confirmed",
+      "instruction_ko": "초기 화면과 추천은 유선 구성을 기본으로 한다. 무선은 고객 또는 담당자가 별도로 선택하면 해당 경로에서 검토한다. 사용자 승인 없이 자동 추천 모델을 특정 5개로 제한하지 않는다."
+    },
+    {
+      "id": "C10",
+      "topic_ko": "전체 툴측 중량",
+      "source": "U4",
+      "status": "user_confirmed",
+      "instruction_ko": "그리퍼·대상물·T.P·툴측 브라켓·액세서리 등 툴측 총중량을 정격 정의에 맞춰 비교한다. 고객 제공 조립체 무게에 포함된 부품을 다시 더하지 않는다. 로봇 부하 검토에서는 마스터측 실제 중량도 따로 더한다."
+    },
+    {
+      "id": "C11",
+      "topic_ko": "속도와 경계 하중 및 편하중의 종합 판단",
+      "source": [
+        "U4",
+        "U5"
+      ],
+      "status": "user_confirmed_direction",
+      "supersedes_rule_ids": [
+        "R03",
+        "R04"
+      ],
+      "instruction_ko": "협동로봇 속도 70 부근은 상향 검토 계기로 삼되, 무게중심이 중심에 가깝고 정격 대비 가벼운 조건 등을 함께 본다. 선정 하중이 정격에 걸리면 동급·상위 후보의 조건을 비교하고 담당자가 확정한다. 길이·치우침·틸팅만으로 각각 한 단계씩 연속 가산하지 않는다. 모든 교체 툴의 중량·형상·자세·공정 힘을 검토해 공통 마스터를 선택한다.",
+      "automatic_numeric_scoring_approved": false,
+      "further_data_ko": "실제 선정·변경 이유와 적용 결과를 축적하여 예외 적용 기준을 구체화한다."
+    },
+    {
+      "id": "C12",
+      "topic_ko": "툴별 액세서리 최소 구성",
+      "source": [
+        "U4",
+        "U6"
+      ],
+      "status": "user_confirmed",
+      "instruction_ko": "툴마다 필요한 PPF·PMF만 산정하고 마스터 공통 배치와 맞춘다. 마스터측 PPM 또는 PMM에 대응하는 툴측 PPF 또는 PMF가 없는 구성도 그대로 사용하며 별도 보호 조치가 필요 없다. 전기그리퍼와 공압그리퍼를 각각 교체 사용하는 구성에 적용한다. 필요 없는 상대 모듈·보호 부품·해당 포고핀 케이블을 자동 추가하지 않는다.",
+      "unmatched_master_module_allowed": true,
+      "additional_protection_required_for_missing_counterpart": false,
+      "scope_note_ko": "사용자 확인 범위는 상대 모듈이 없는 결합의 사용 가능 여부다. 자동 차단 밸브 구조나 임의의 비표준 배선 호환성을 추정하지 않는다."
+    },
+    {
+      "id": "C13",
+      "topic_ko": "완성된 최종 견적",
+      "source": "U4",
+      "status": "user_confirmed",
+      "instruction_ko": "AI와 담당자가 부족한 정보를 계속 보완한다. 고객 자료 또는 담당자의 최선 판단으로 견적에 필요한 모델·품목·수량·단가를 채우고 승인한 뒤 최종 견적을 발행한다. 최종 견적에 미확정·확인 필요·TBD 또는 미확정 가격 대체용 0원을 넣지 않는다. 담당자 판단값의 근거와 출처는 내부에 남긴다.",
+      "internal_unknown_values_allowed": true,
+      "final_quote_requires_resolved_values": true,
+      "responsible_user_judgment_allowed": true,
+      "invent_missing_values": false,
+      "document_detail_policy_ko": "내부 구성품 데이터는 모두 보존하고 고객용 견적의 세트 또는 개별 표기는 회사 양식에 맞춘다. 자동 고정 세트 구성은 만들지 않는다."
+    },
+    {
+      "id": "C14",
+      "topic_ko": "공통 구성과 고객별 선택 구성",
+      "source": [
+        "U5",
+        "U7",
+        "U8",
+        "U10"
+      ],
+      "status": "user_confirmed",
+      "fixed_sales_bundle": false,
+      "scope": "wired_atc",
+      "common_components": [
+        {
+          "item": "MASTER T.C",
+          "quantity_basis": "선정한 마스터 수량",
+          "fixed_model": null
+        },
+        {
+          "item": "CONTROLBOX",
+          "quantity_basis": "MASTER T.C 수량과 동일",
+          "fixed_model": null,
+          "quantity_per_master": 1
+        },
+        {
+          "item": "4m CABLE",
+          "unit": "EA",
+          "route": "MASTER T.C to CONTROLBOX",
+          "quantity_per_master": 1,
+          "purpose_ko": "MASTER T.C 작동 전원·제어 전용",
+          "routing_note_ko": "로봇을 따라 배선한다."
+        },
+        {
+          "item": "1m CABLE",
+          "unit": "EA",
+          "route": "CONTROLBOX to robot control cabinet or PLC",
+          "quantity_per_master": 1
+        }
+      ],
+      "variable_components": [
+        {
+          "item": "T.P",
+          "quantity_basis": "실제 교체 툴 수량과 고객의 추가·예비 요청"
+        },
+        {
+          "item": "PPM",
+          "quantity_basis": "마스터측 전원·전류·신호·통신 및 공통 배치"
+        },
+        {
+          "item": "PPF",
+          "quantity_basis": "툴별 전원·전류·신호·통신 요구 누계"
+        },
+        {
+          "item": "PMM",
+          "quantity_basis": "마스터측 공압·진공 독립 유로 및 공통 배치"
+        },
+        {
+          "item": "PMF",
+          "quantity_basis": "툴별 공압·진공 독립 유로 요구 누계"
+        },
+        {
+          "item": "기타 액세서리",
+          "quantity_basis": "고객 조건과 확정한 공급 범위"
+        },
+        {
+          "item": "PPM용 30cm 케이블",
+          "quantity_basis": "PPM 공급 수량과 동일: PPM 1개당 1EA",
+          "quantity_per_PPM": 1
+        },
+        {
+          "item": "PPF용 30cm 케이블",
+          "quantity_basis": "PPF 공급 수량과 동일: PPF 1개당 1EA",
+          "quantity_per_PPF": 1
+        },
+        {
+          "item": "로봇측 어댑터",
+          "quantity_basis": "필요 수량과 공급 범위를 확인하고 견적 확보 후 판매",
+          "policy_reference": "C18"
+        },
+        {
+          "item": "mTS2 또는 커스텀 툴스탠드",
+          "quantity_basis": "고객이 UND 공급을 선택한 경우 확정 거치 구성에 따른 수량",
+          "policy_reference": "C19"
+        }
+      ],
+      "tool_plate_automatically_included": false,
+      "pogo_automatically_included": false,
+      "air_coupler_automatically_included": false,
+      "commonality_note_ko": "여러 고객 구성에 공통으로 들어가는 항목이라는 의미다. 마스터 1개당 CONTROLBOX 1개·표준 4m 케이블 1개·표준 1m 케이블 1개를 산정한다. T.P 수량이 늘어난다는 이유로 이 공통 구성 수량을 늘리지 않는다. 모든 모델의 CONTROLBOX·케이블이 같은 품번 또는 상호 호환된다고 자동 해석하지 않는다. 고객 지급·기존품 활용은 해당 건의 합의에 따라 별도 반영한다.",
+      "pricing_note_ko": "공통 구성이라는 이유로 단가 포함·무상·고정 세트 판매를 추정하지 않는다. 품목별 가격은 회사가 정리하는 판매단가에 연결한다."
+    },
+    {
+      "id": "C15",
+      "topic_ko": "마스터 전용 배선과 케이블 길이 변경",
+      "source": [
+        "U7",
+        "U8"
+      ],
+      "status": "user_confirmed",
+      "controlbox_quantity_expression": "MASTER_TC_quantity",
+      "standard_cables": [
+        {
+          "segment_id": "master_to_controlbox",
+          "length_m": 4,
+          "quantity_per_master": 1,
+          "purpose_ko": "MASTER T.C 작동 전원·제어 전용",
+          "carries_gripper_power_or_signals": false,
+          "route_note_ko": "로봇을 따라 배선"
+        },
+        {
+          "segment_id": "controlbox_to_robot_cabinet_or_plc",
+          "length_m": 1,
+          "quantity_per_master": 1
+        }
+      ],
+      "instruction_ko": "4m 케이블을 그리퍼용 포고핀 케이블로 대체하거나 그리퍼 전원·통신을 포함한 배선으로 해석하지 않는다. 길이를 변경하는 프로젝트는 전압 강하를 중요 검토 사항으로 기록하고 고객과 변경 길이·사양을 협의한다. 표준 길이가 충분한지 확인한 뒤 필요한 변경을 반영한다.",
+      "length_change_requires_customer_agreement": true,
+      "voltage_drop_review_required_on_length_change": true,
+      "unprovided_limits_ko": "허용 최대 길이, 허용 전압 강하, 케이블 굵기 및 변경 품번·가격은 아직 제공되지 않았다. 임의 생성하지 않는다."
+    },
+    {
+      "id": "C16",
+      "topic_ko": "포고핀 30cm 케이블 및 연결 경로",
+      "source": [
+        "U8",
+        "U9"
+      ],
+      "status": "user_confirmed",
+      "cable_length_cm": 30,
+      "per_module_cables": [
+        {
+          "pogo_module": "PPM",
+          "side": "master",
+          "cable_quantity_per_module": 1,
+          "connector_form_ko": "양단 커넥터",
+          "one_end_ko": "PPM 커넥터",
+          "other_end_ko": "연장 배선을 통해 PLC 또는 IO단자가 있는 로봇 컨트롤러에 연결"
+        },
+        {
+          "pogo_module": "PPF",
+          "side": "tool_plate",
+          "cable_quantity_per_module": 1,
+          "one_end_ko": "PPF 커넥터",
+          "other_end_ko": "그리퍼 배선과 연결",
+          "gripper_end_connector_form_confirmed": false
+        }
+      ],
+      "quantity_expressions": {
+        "PPM_30cm_cable_quantity": "PPM_supply_quantity",
+        "PPF_30cm_cable_quantity": "PPF_supply_quantity",
+        "total_30cm_cable_quantity": "PPM_supply_quantity + PPF_supply_quantity"
+      },
+      "instruction_ko": "표준 포고핀 모듈 하나당 해당 측 30cm 케이블 하나를 함께 판매한다. PPM·PPF 한 쌍이면 케이블은 총 2개다. 핀 개수나 T.P 개수에 바로 비례시키지 않고 실제 공급하는 PPM·PPF 모듈 수량을 기준으로 한다. PMM·PMF에는 포고핀 케이블을 추가하지 않는다.",
+      "electrical_connection_ko": "로봇 컨트롤러 또는 PLC 측 배선 → 연장 배선 → PPM용 30cm 케이블 → PPM·PPF 접점 → PPF용 30cm 케이블 → 그리퍼 배선. 이는 연결 구조이며 통신 데이터의 단방향 흐름을 뜻하지 않는다. 툴체인저 결합 시 포고핀 접점이 맞닿아 전원·신호·통신 경로를 연결한다.",
+      "master_control_power_separate": true,
+      "quote_policy_ko": "PPM용과 PPF용 30cm 케이블을 내부 구성·견적 품목으로 각각 수량 산정한다. 포고핀 단가에 포함되거나 무상이라고 추정하지 않는다. 세부 품번과 가격은 판매단가표에 연결한다.",
+      "extension_scope_ko": "제품영업에서 PPM 30cm 케이블 이후 PLC 또는 로봇 컨트롤러까지의 연장 배선과 PPF 케이블의 그리퍼 결선은 모두 고객이 담당한다. UND가 비용을 받고 수행하는 경우는 별도 관리 영역이다. 제품영업 견적에 연장 배선·현장 결선 작업비를 자동 추가하지 않는다.",
+      "customization_note_ko": "1개소 16핀 등 커스텀의 실제 케이블·커넥터 구성은 기술 검토로 확정한다. 모듈 2개를 임의로 케이블 1개로 축소하지 않는다."
+    },
+    {
+      "id": "C17",
+      "topic_ko": "제품영업의 고객 배선 범위와 유상 작업 분리",
+      "source": "U9",
+      "status": "user_confirmed",
+      "scope": "product_sales",
+      "responsibility_mapping": [
+        {
+          "activity": "PPM용 30cm 케이블 공급",
+          "responsible_party": "UND",
+          "management_scope": "product_sales",
+          "quantity_rule_reference": "C16"
+        },
+        {
+          "activity": "PPF용 30cm 케이블 공급",
+          "responsible_party": "UND",
+          "management_scope": "product_sales",
+          "quantity_rule_reference": "C16"
+        },
+        {
+          "activity": "PPM 30cm 케이블 이후 제어반까지 연장 배선",
+          "responsible_party": "customer",
+          "management_scope": "customer_work"
+        },
+        {
+          "activity": "PPF 케이블과 그리퍼 배선 결선",
+          "responsible_party": "customer",
+          "management_scope": "customer_work"
+        }
+      ],
+      "paid_UND_work_available": true,
+      "paid_UND_work_management": "separate_scope",
+      "automatically_add_extension_or_wiring_work_to_product_quote": false,
+      "instruction_ko": "제품영업에서는 정해진 제품과 케이블을 산정하고, 연장 배선·그리퍼 결선은 고객 담당으로 안내한다. UND 유상 작업 요청이 있으면 별도 관리 건으로 구분한다. 고객 담당 작업이 있다는 이유로 제품 견적에 작업비를 자동 추가하거나 기본 수행 주체를 반복 질문하지 않는다.",
+      "quote_scope_text_ko": "포고핀 연장 배선 및 그리퍼 결선은 고객사 수행 범위입니다. UND 수행 요청 시 별도 협의합니다.",
+      "technical_selection_note_ko": "고객 결선 범위라는 사실과 제품 선정을 위한 그리퍼 전압·전류·통신·핀 수 확인은 별개다. 선정에 필요한 기술 정보는 계속 확인한다."
+    },
+    {
+      "id": "C18",
+      "topic_ko": "로봇측 어댑터 판매",
+      "source": "U10",
+      "status": "user_confirmed",
+      "interface": "robot_to_MASTER_TC",
+      "supply_policy": "UND_sale_after_quotation",
+      "instruction_ko": "필요한 로봇측 어댑터는 견적을 받아 UND가 판매하는 품목으로 처리한다. 로봇과 마스터의 장착 조건 및 필요 수량을 확인하고 확보한 견적을 판매 견적 작성에 연결한다.",
+      "pricing_note_ko": "고정 단가·판매 마진·견적 원가와 판매가의 동일 여부는 이번 확인에서 정하지 않았다. 담당자가 실제 판매가격을 확정한다.",
+      "included_in_common_configuration": false
+    },
+    {
+      "id": "C19",
+      "topic_ko": "표준 툴스탠드 mTS2 및 비표준 거치대",
+      "source": "U10",
+      "status": "user_confirmed",
+      "standard_product": {
+        "model": "mTS2",
+        "name_ko": "맥봇 툴스탠드 2개용",
+        "tool_capacity": 2,
+        "unit": "EA"
+      },
+      "nonstandard_options": [
+        "UND_custom_order",
+        "customer_arranged_fabrication"
+      ],
+      "instruction_ko": "툴 2개를 거치하는 표준 판매품 mTS2를 고객 선택 구성으로 제안할 수 있다. 표준 외 사양은 커스텀 사양으로 주문제작을 받거나 고객이 제작하도록 한다. 툴스탠드를 모든 제품 견적에 자동 포함하지 않는다.",
+      "quote_policy_ko": "표준 mTS2, 커스텀 주문제작, 고객 제작 중 해당 고객의 공급 범위를 기록한다. UND 공급 선택 시 확정 사양·수량·가격을 견적에 반영하고 고객 제작 시 UND 판매 품목으로 추가하지 않는다.",
+      "quantity_note_ko": "툴 수량을 툴스탠드 판매 수량으로 그대로 사용하지 않는다. 필요한 거치 자리 수와 실제 배치를 확인하여 수량을 확정한다. 여러 mTS2의 조합을 표준 외 모든 요구의 자동 대안으로 확정하지 않는다.",
+      "unprovided_specs_ko": [
+        "허용 툴 중량",
+        "대응 모델과 장착 호환",
+        "거치 간격 및 외형 치수",
+        "부속 구성과 판매단가"
+      ]
+    },
+    {
+      "id": "C20",
+      "topic_ko": "툴측 어댑터 고객 제작",
+      "source": [
+        "U10",
+        "U11"
+      ],
+      "status": "user_confirmed",
+      "interface": "tool_plate_to_gripper",
+      "fabrication_responsibility": "customer",
+      "automatically_include_in_UND_product_quote": false,
+      "instruction_ko": "T.P와 그리퍼 사이에 필요한 툴측 어댑터는 고객이 제작한다. 제품영업에서 고객 제작 범위로 안내하며 UND 판매 품목에 자동 포함하지 않는다. 로봇측 어댑터는 C18의 견적 확보 후 UND 판매 기준을 유지한다.",
+      "selection_note_ko": "고객 제작 여부와 별개로 툴측 총중량과 형상 검토에는 해당 어댑터의 중량 및 돌출 길이를 반영한다. 실제 장착 도면·수치는 고객 자료 또는 담당자의 확인 근거에 연결한다."
+    }
+  ],
+  "customization_reference": {
+    "customer": "삼성디스플레이",
+    "source": "U3",
+    "status": "user_reported_custom_example",
+    "raw_description_ko": "포고핀 두개를 연결해서 한 개소에 16핀을달고 에어커플러도 2개소를 3개소로 커스터마이징해서 사용",
+    "record_as_ko": "커스터마이징 검토 사례",
+    "use_as_standard_configuration": false,
+    "verified_success_label": false,
+    "dimensions_or_capacity_for_reuse": null,
+    "note_ko": "원문을 보존한다. 정확한 개조 형상·유로 수·검증 범위는 이번 메모에서 해석하거나 일반화하지 않는다. 표준 3개소 규칙의 예외로 자동 추천하지 않는다."
+  },
+  "proposed_junior_questions": {
+    "status": "assistant_proposal_pending_review",
+    "integration_ko": "J04의 크기·무게 질문 뒤에 G01~G02를, J07의 자세 질문을 확장해 G03~G05를 배치한다. 기존 질문과 중복 질문하지 않고 이미 메모에 있으면 추출값을 확인한다.",
+    "questions": [
+      {
+        "id": "G01",
+        "question_ko": "제품을 잡았을 때, 무게가 툴체인저 중심에서 한쪽으로 치우치나요?",
+        "field": "tools[].qualitative_geometry.loaded_lateral_offset",
+        "options": [
+          {
+            "value": "near_center",
+            "label_ko": "중심 근처"
+          },
+          {
+            "value": "slight_offset",
+            "label_ko": "조금 치우침"
+          },
+          {
+            "value": "large_offset",
+            "label_ko": "많이 치우침"
+          },
+          {
+            "value": null,
+            "label_ko": "모름"
+          }
+        ],
+        "help_ko": "자기 평가이며 수치 기준이 아니다. 비대칭 형상이나 긴 제품은 사진을 함께 받는다."
+      },
+      {
+        "id": "G02",
+        "question_ko": "툴체인저 결합면에서 그리퍼와 제품이 얼마나 길게 뻗어 있나요?",
+        "field": "tools[].qualitative_geometry.axial_reach_class",
+        "options": [
+          {
+            "value": "short",
+            "label_ko": "짧음"
+          },
+          {
+            "value": "medium",
+            "label_ko": "보통"
+          },
+          {
+            "value": "long",
+            "label_ko": "김"
+          },
+          {
+            "value": null,
+            "label_ko": "모름"
+          }
+        ],
+        "help_ko": "옆면 사진·도면을 받는다. 알면 대략적인 길이와 측정 기준을 기록한다. 툴 끝까지 길이를 무게중심 Z좌표로 사용하지 않는다."
+      },
+      {
+        "id": "G03",
+        "question_ko": "그리퍼는 툴체인저에 어떤 방향으로 달리나요?",
+        "field": "tools[].qualitative_geometry.mounting_orientation",
+        "options": [
+          {
+            "value": "axial",
+            "label_ko": "결합면에서 정면으로"
+          },
+          {
+            "value": "inclined",
+            "label_ko": "기울여서"
+          },
+          {
+            "value": "lateral",
+            "label_ko": "옆으로 꺾어서"
+          },
+          {
+            "value": null,
+            "label_ko": "모름"
+          }
+        ],
+        "help_ko": "기준은 지면이 아니라 툴체인저 결합면이다. 사진에서 장착 방향을 표시해 확인한다."
+      },
+      {
+        "id": "G04",
+        "question_ko": "작업 중 어떤 움직임이 있나요?",
+        "field": "tools[].motion_screening.movement_tags",
+        "multiple": true,
+        "options": [
+          {
+            "value": "horizontal_translation",
+            "label_ko": "수평 이동"
+          },
+          {
+            "value": "vertical_translation",
+            "label_ko": "상하 이동"
+          },
+          {
+            "value": "tilt",
+            "label_ko": "기울임"
+          },
+          {
+            "value": "flip",
+            "label_ko": "뒤집기"
+          },
+          {
+            "value": "other",
+            "label_ko": "기타"
+          },
+          {
+            "value": null,
+            "label_ko": "모름"
+          }
+        ],
+        "help_ko": "해당 동작을 모두 선택한다. 상하 이동과 자세 회전은 따로 기록하고 가능하면 동작 영상을 받는다.",
+        "unknown_exclusive": true
+      },
+      {
+        "id": "G05",
+        "question_ko": "작업 중 누르기·끼우기·굽히기·비틀기처럼 힘을 주는 동작이 있나요?",
+        "field": "tools[].motion_screening.has_process_force",
+        "options": [
+          {
+            "value": true,
+            "label_ko": "있음"
+          },
+          {
+            "value": false,
+            "label_ko": "없음"
+          },
+          {
+            "value": null,
+            "label_ko": "모름"
+          }
+        ],
+        "help_ko": "있다면 동작 설명이나 영상을 받는다. 힘이나 토크를 주니어가 추측해 입력하지 않는다."
+      }
+    ],
+    "common_policy": {
+      "allow_unknown": true,
+      "exact_cog_required_at_intake": false,
+      "photos_optional_at_intake": true,
+      "retain_source_and_confirmation": true,
+      "never_convert_qualitative_labels_to_unapproved_numbers": true
+    }
+  },
+  "proposed_review_policy": {
+    "status": "direction_user_confirmed_detailed_implementation_pending",
+    "branches": [
+      {
+        "when_ko": "많이 치우침, 툴이 김, 기울임·옆방향 장착, 작업 중 기울임·뒤집기, 공정 외력 중 하나 이상",
+        "action_ko": "편하중·결합 안정성 검토가 필요한 후보로 표시하고, 사진·도면·영상과 기술 검토를 연결한다. 즉시 적용 불가 또는 자동 상위 모델로 단정하지 않는다."
+      },
+      {
+        "when_ko": "조금 치우침 또는 분류가 모호함",
+        "action_ko": "사진으로 재확인하고 근거가 부족하면 기술 검토 대상으로 유지한다."
+      },
+      {
+        "when_ko": "자세를 유지한 상하 이동만 있음",
+        "action_ko": "상하 이동 사실을 기록하고 결합면 방향·부하·속도·가감속을 함께 확인한다. 수직 이동이라는 이유만으로 틸팅 또는 편하중을 자동 판정하지 않는다."
+      },
+      {
+        "when_ko": "무게중심·길이·자세가 모름",
+        "action_ko": "상담과 임시 구성 제안은 계속하며 자료를 요청한다. 최종 견적은 고객 자료 또는 책임 있는 담당자의 판단으로 필요한 값을 확정한 뒤 발행한다. 정량 검증·실제 운전 확인 여부는 견적 확정 상태와 별도로 남긴다."
+      },
+      {
+        "when_ko": "표준 장착 3개소 초과 또는 1개소 16핀 등 비표준 배치",
+        "action_ko": "커스텀 필요로 표시한다. 표준 확정 모델·견적과 분리해 검토 요청한다."
+      }
+    ],
+    "review_note_ko": "정성 답변이 모두 무난해 보여도 모델 정격·구성 호환성과 해당 영업 건의 사람 확인을 생략하지 않는다. 고하중 모델로 바꾸는 것만으로 결합 안정성 문제가 해결됐다고 표시하지 않는다.",
+    "candidate_and_final_separation": true,
+    "field_evidence_to_record_ko": [
+      "실제 적용 모델과 액세서리 배치",
+      "실제 툴·제품 중량과 자세",
+      "운전 속도·가감속 등 확보 가능한 조건",
+      "결합면 벌어짐 여부",
+      "전기 접점·통신 끊김 여부",
+      "공압 누설 여부",
+      "관찰 시간 또는 반복 횟수",
+      "문제 발생 조건·조치·재검증 결과"
+    ],
+    "future_quantification_ko": "기술 담당자가 무게중심 기준면·좌표, 허용 모멘트, 동작조건 및 판정 기준을 정하고 검증된 사례에 연결한다. 현재의 중심/치우침/짧음/김 라벨에 임의 수치나 점수를 부여하지 않는다.",
+    "direction_confirmation_sources": [
+      "U4",
+      "U5"
+    ],
+    "quote_policy_reference": "C13"
+  },
+  "proposed_record_template": {
+    "status": "assistant_proposal_pending_review",
+    "tool_id": null,
+    "qualitative_geometry": {
+      "loaded_lateral_offset": null,
+      "axial_reach_class": null,
+      "mounting_orientation": null,
+      "reported_by": null,
+      "confirmed_by": null,
+      "evidence_refs": [],
+      "approximate_axial_reach_mm": null,
+      "reach_reference_description": null
+    },
+    "motion_screening": {
+      "movement_tags": null,
+      "has_process_force": null,
+      "process_force_description": null,
+      "video_refs": []
+    },
+    "quantitative_geometry": {
+      "cog_x_mm": null,
+      "cog_y_mm": null,
+      "cog_z_mm": null,
+      "reference_frame": null,
+      "source": null,
+      "approval": null
+    },
+    "selection": {
+      "preliminary_master_model": null,
+      "industrial_factor_used": null,
+      "rating_definition_checked": false,
+      "tool_plate_quantity": null,
+      "PPM_quantity": null,
+      "PPF_quantity": null,
+      "PMM_quantity": null,
+      "PMF_quantity": null,
+      "standard_positions_per_interface": null,
+      "customization_required": null,
+      "engineering_review_reasons": [],
+      "final_approval": null
+    },
+    "reuse_approval": {
+      "requested_by": null,
+      "status": "not_requested",
+      "approved_by": null,
+      "approved_at": null,
+      "approved_scope": null,
+      "verified_field_success": false
+    }
+  },
+  "merge_notes_ko": [
+    "기존 v0.2는 원본 참조로 보존하며 이 메모에서 지정한 규칙·설정만 변경한다.",
+    "R05~R07 및 T03~T05의 산업용 속도별 상향 기대값은 새 약 2배 기준으로 재작성하고 종전 기대값은 폐기 이력에 둔다.",
+    "P06는 독립 2유로 확인으로 해결됐으므로 R15와 공압 유로 미확정 테스트 T14/JF12를 현재 제품 정의에 맞춰 갱신한다. 입력 유로 수가 모르는 경우에는 계속 수량 미확정이다.",
+    "R14/P05/T08은 압축공기 1~5bar 밖의 별도 검토로 정리한다. 진공도 같은 커플러 선정 흐름에 포함하되 양압 범위를 적용하지 않는다.",
+    "R16에 3개소 혼합 장착 및 커스텀 분기를 추가한다. 부품 코드·장착측·기본 포함품을 BOM과 연결한다.",
+    "R08/T16은 정성 입력만으로 초기 상담을 막지 않도록 하고, 초기 후보 제시와 최종 적합 확정을 구분한다.",
+    "미확정 실제 모델 정격·품번·판매단가·허용 모멘트는 임의 생성하지 않는다. 공통 구성 항목은 C14로 확인됐으나 모델별 정확한 품번과 가격은 별도 연결한다.",
+    "R03~R04 및 관련 경계 테스트는 70 기준 단독 일괄 상향에서 종합 검토로 변경한다.",
+    "R12 및 병렬 사용 금지 기대값은 C05의 병렬 선정 허용과 공급·리턴·신호 계산으로 수정한다. 실제 전기 한계는 유지한다.",
+    "견적 미확정 항목의 고객용 표시 정책은 C13으로 대체한다. 내부 null과 미확인 기록은 유지하되 최종 발행 전 담당자가 값을 확정한다.",
+    "R19와 BOM 포함품 필드는 고정 판매 세트가 없는 C14의 공통 구성·고객별 선택 구성으로 연결한다. T.P 1개 기본 포함을 추정하지 않는다.",
+    "상대 모듈 없는 결합은 C12/U6으로 해결됐다. 해당 조건만으로 추가 보호 부품이나 기술 검토를 자동 요구하던 규칙을 갱신한다.",
+    "CONTROLBOX 및 표준 4m·1m 케이블은 마스터 1개당 각각 1EA로 산정한다. 툴 수량과 혼동하지 않는다.",
+    "4m는 마스터 전원·제어 전용으로 명시하고 포고핀 전원·통신 배선과 분리한다.",
+    "PPM·PPF 수량 산정에 각 측 30cm 케이블 수량을 연동한다. 연장 배선·그리퍼 결선은 C17에 따라 고객 담당으로 기록하고 UND 유상 작업은 별도 관리한다.",
+    "C17/U9에 따라 기본 제품영업에서 연장 배선·그리퍼 결선의 수행 주체를 반복 질문하지 않는다. 관련 작업비의 제품 견적 자동 추가를 하지 않는다.",
+    "로봇측 어댑터를 견적 확보 후 판매하는 고객별 선택 품목으로 연결한다. 툴측 어댑터는 C20/U11에 따라 고객 제작으로 확정하며 UND 제품 견적에 자동 포함하지 않는다.",
+    "기존 단품 BOM의 거치대 자동 제외 정책은 자동 추가를 하지 않는 의미로 유지한다. 고객이 요청하는 표준 mTS2 판매는 C19에 따라 제품 견적에 반영할 수 있으며 커스텀 주문제작 또는 고객 제작 범위를 구분한다."
+  ],
+  "illustrative_acceptance_cases": [
+    {
+      "id": "A01",
+      "given": {
+        "pogo_modules": 2,
+        "air_modules": 1,
+        "other_positions": 0
+      },
+      "expected": {
+        "standard_positions": 3,
+        "slot_count_within_standard": true,
+        "final_compatibility_approval": false
+      }
+    },
+    {
+      "id": "A02",
+      "given": {
+        "pogo_modules": 2,
+        "air_modules": 2
+      },
+      "expected": {
+        "standard_positions": 4,
+        "customization_required": true
+      }
+    },
+    {
+      "id": "A03",
+      "given": {
+        "required_independent_air_paths": 3,
+        "standard_paths_per_coupler": 2
+      },
+      "expected": {
+        "coupler_pairs_lower_bound": 2,
+        "slots_lower_bound": 2
+      }
+    },
+    {
+      "id": "A04",
+      "given": {
+        "pogo_pins_in_one_position": 16
+      },
+      "expected": {
+        "customization_required": true
+      }
+    },
+    {
+      "id": "A05",
+      "given": {
+        "vertical_translation": true,
+        "tilt": false,
+        "cog_unknown": true
+      },
+      "expected": {
+        "auto_label_as_tilting": false,
+        "request_pose_evidence": true,
+        "final_suitability": false
+      }
+    },
+    {
+      "id": "A06",
+      "given": {
+        "large_lateral_offset": true,
+        "within_nominal_payload": true
+      },
+      "expected": {
+        "engineering_review": true,
+        "automatic_model_upsize_as_complete_solution": false
+      }
+    },
+    {
+      "id": "A07",
+      "given": {
+        "qualitative_axial_reach": "long",
+        "exact_cog_z_mm": null
+      },
+      "expected": {
+        "infer_cog_z_mm": false,
+        "allow_intake": true,
+        "engineering_review": true
+      }
+    },
+    {
+      "id": "A08",
+      "given": {
+        "industrial": true,
+        "industrial_factor_applied": 2
+      },
+      "expected": {
+        "also_apply_legacy_industrial_model_step_uplift": false
+      }
+    },
+    {
+      "id": "A09",
+      "given": {
+        "custom_case_customer": "삼성디스플레이",
+        "user_reports_in_use": true
+      },
+      "expected": {
+        "reuse_as_standard": false,
+        "label_as_verified_field_success": false
+      }
+    },
+    {
+      "id": "A10",
+      "given": {
+        "pressure_bar": 5.5
+      },
+      "expected": {
+        "engineering_review": true,
+        "pressure_within_standard": false
+      }
+    }
+  ],
+  "revision_time": "2026-10-02T20:43:02+09:00",
+  "open_items": [
+    {
+      "id": "O01",
+      "topic_ko": "선정 사례",
+      "need_ko": "속도·중량·중심·틸팅을 종합 판단한 실제 사례와 이유"
+    },
+    {
+      "id": "O03",
+      "topic_ko": "실제 병렬 배선",
+      "need_ko": "공급·리턴 및 통신 핀 배치, 모듈 전체 한계와 사용 조건"
+    },
+    {
+      "id": "O04",
+      "topic_ko": "제품 및 가격 데이터",
+      "need_ko": "모델별 정격 정의·품번·호환 CONTROLBOX·공통 구성품 및 PPM/PPF용 30cm 케이블 품번·판매단가. CONTROLBOX 수량은 마스터 1개당 1개로 확정. mTS2의 실제 호환·치수·허용 툴 중량·부속 구성·판매단가도 제품 자료에 연결."
+    }
+  ],
+  "revision_notes": [
+    "0.3 추가 메모의 구조를 유지하고 19:41 및 19:57 사용자 결정을 통합했다.",
+    "새 고정 판매 세트를 생성하지 않고 공통 구성 항목과 가변 품목을 구분했다.",
+    "이 파일은 요구사항 메모이며 실제 프로그램이나 제품 DB에 배포한 것이 아니다.",
+    "0.5: 상대 모듈 없는 사용, 마스터당 CONTROLBOX 1개, 케이블 길이 변경 검토, 4m 전용 회로 및 포고핀별 30cm 케이블 판매를 통합했다.",
+    "확정 사실과 공급 범위 미확정 사항 및 제안 구현 흐름을 분리했다.",
+    "0.6: 제품영업의 포고핀 연장 배선·그리퍼 결선 고객 담당을 확정하고 UND 유상 작업을 별도 관리 영역으로 분리했다.",
+    "0.7: 로봇측 어댑터 견적 후 판매와 표준 툴스탠드 mTS2(툴 2개용)를 반영. 고객 제작 어댑터의 대상 측은 원문을 보존하고 확인 항목 O06으로 분리.",
+    "0.8: T.P–그리퍼측 어댑터의 고객 제작을 확정하고 확인 항목 O06을 해결 이력으로 이동했다. 0.7의 대기 기록은 당시 변경 이력으로 보존한다."
+  ],
+  "resolved_items": [
+    {
+      "id": "O02",
+      "resolved_by": "U6",
+      "resolution_ko": "상대 PPF·PMF가 없는 결합은 그대로 사용하며 별도 보호 조치 불필요. C12에 반영."
+    },
+    {
+      "topic_ko": "마스터당 CONTROLBOX 수량",
+      "resolved_by": "U7",
+      "resolution_ko": "마스터 1개당 CONTROLBOX 1개."
+    },
+    {
+      "topic_ko": "4m 케이블과 포고핀 배선 구분",
+      "resolved_by": "U8",
+      "resolution_ko": "4m는 마스터 작동 전원·제어 전용. PPM·PPF 각각 30cm 케이블 별도 판매."
+    },
+    {
+      "id": "O05",
+      "resolved_by": "U9",
+      "resolution_ko": "제품영업의 연장 배선과 그리퍼 결선은 고객 담당. UND 유상 수행은 별도 관리 영역으로 분리. 실제 핀 배치 등 선정에 필요한 정보는 기존 O03 및 프로젝트별 입력으로 관리."
+    },
+    {
+      "topic_ko": "툴거치대 표준 판매품 유무와 비표준 공급 선택",
+      "resolved_by": "U10",
+      "resolution_ko": "mTS2는 툴 2개 거치용 표준 판매품. 표준 외 사양은 커스텀 주문제작 또는 고객 제작."
+    },
+    {
+      "id": "O06",
+      "resolved_by": "U11",
+      "resolution_ko": "고객 제작 어댑터는 T.P–그리퍼 사이 툴측 어댑터로 확정. C20에 반영."
+    }
+  ],
+  "proposed_cable_workflow": {
+    "status": "assistant_proposal_pending_review",
+    "principles_ko": [
+      "마스터 제어용 4m·1m 회로와 그리퍼 포고핀 회로를 별도 저장한다.",
+      "견적 변경으로 PPM·PPF 수량이 바뀌면 해당 30cm 케이블 수량도 다시 산정한다.",
+      "PPM·PPF용 30cm 케이블은 제품 공급 수량에 포함하고, 이후 연장 배선·그리퍼 결선은 고객 수행 범위로 기록한다. UND 유상 수행 요청은 별도 관리 건으로 연결한다.",
+      "마스터 제어용 케이블 길이 변경 시 요청 구간·길이·배선 경로·관련 전기 사양·검토 결과·고객 협의 내용을 저장한다.",
+      "고객용 최종 제품 견적 전 UND 공급 품목의 길이·품번·수량·가격을 담당자가 확정한다. 고객 결선 작업을 UND 공급 품목으로 자동 추가하지 않는다. 제품의 핀 배치·전기 호환 확인 상태는 별도로 기록한다."
+    ],
+    "record_fields": [
+      "circuit_type",
+      "segment",
+      "connected_master_or_tool_id",
+      "cable_part_number",
+      "length_m",
+      "quantity",
+      "supply_responsibility",
+      "termination_responsibility",
+      "extension_or_replacement",
+      "pinout_reference",
+      "electrical_review_record",
+      "customer_agreement_record",
+      "confirmed_by"
+    ]
+  }
+}

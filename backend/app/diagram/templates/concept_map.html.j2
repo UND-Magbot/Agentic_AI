@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"/>
+<style>
+  /* 조판 규칙 — 원본 제안서 개념도 톤(딥네이비 + 스틸 그레이)을 토큰화. */
+  :root {
+    --navy:        #1b3a5f;
+    --navy-2:      #2c5282;
+    --navy-ink:    #16304f;
+    --line:        #c3d0de;
+    --line-soft:   #dde5ed;
+    --paper:       #ffffff;
+    --paper-2:     #f4f7fa;
+    --paper-3:     #eaf0f6;
+    --ink:         #1f2937;
+    --ink-2:       #4b5563;
+    --accent:      #1f6feb;
+    --green:       #2fa360;
+    --amber:       #e08a1e;
+    --cone:        90, 220, 130;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Malgun Gothic', 'Pretendard', 'Apple SD Gothic Neo', sans-serif;
+    background: #ffffff;
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+  }
+  .sheet {
+    width: {{ width }}px;
+    padding: 0 0 18px;
+    background: linear-gradient(180deg, #ffffff 0%, #f7fafc 100%);
+    border: 1px solid var(--line);
+  }
+
+  /* ---------- 헤더 ---------- */
+  .hd {
+    display: flex; align-items: center; justify-content: space-between;
+    background: linear-gradient(90deg, var(--navy) 0%, var(--navy-2) 78%, #3a6ea5 100%);
+    color: #fff; padding: 13px 22px;
+  }
+  .hd h1 { font-size: 24px; font-weight: 700; letter-spacing: -.4px; }
+  .hd .sub { font-size: 13px; opacity: .88; font-weight: 500; text-align: right; }
+
+  .band { padding: 14px 18px 0; }
+  .band-t {
+    font-size: 13px; font-weight: 700; color: var(--navy-ink);
+    border-left: 4px solid var(--navy-2); padding-left: 8px; margin-bottom: 8px;
+  }
+
+  /* ---------- 1) 상단 공정 카드 ---------- */
+  .steps { display: flex; align-items: stretch; gap: 0; }
+  .step {
+    flex: 1 1 0; min-width: 0;
+    background: var(--paper); border: 1px solid var(--line); border-radius: 4px;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .step-h {
+    background: var(--paper-3); border-bottom: 1px solid var(--line);
+    padding: 5px 7px; display: flex; align-items: center; gap: 5px;
+  }
+  .step-n {
+    width: 15px; height: 15px; border-radius: 50%; background: var(--navy-ink);
+    color: #fff; font-size: 10px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center; flex: none;
+  }
+  .step-t {
+    font-size: 11px; font-weight: 700; color: var(--navy-ink);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .step-b { padding: 6px 8px 4px; }
+  .step-b li {
+    list-style: none; font-size: 9.5px; color: var(--ink-2); line-height: 1.45;
+    padding-left: 7px; position: relative; margin-bottom: 1px;
+  }
+  .step-b li::before {
+    content: ''; position: absolute; left: 0; top: 5px;
+    width: 3px; height: 3px; border-radius: 50%; background: var(--accent);
+  }
+  .step-art {
+    margin: 2px 6px 6px; height: 74px; background: var(--paper-2);
+    border: 1px solid var(--line-soft); border-radius: 3px;
+    position: relative; overflow: hidden;
+    display: flex; align-items: flex-end; justify-content: center;
+  }
+  .step-art img { width: 100%; height: 100%; object-fit: cover; }
+  .step-art svg { width: 100%; height: 100%; }
+  .badge {
+    position: absolute; right: 4px; top: 4px; font-size: 8.5px; font-weight: 700;
+    color: #fff; padding: 2px 5px; border-radius: 3px; line-height: 1.3;
+    text-align: center; white-space: pre-line;
+  }
+  .badge.amber { background: var(--amber); }
+  .badge.green { background: var(--green); border-radius: 50%; padding: 4px 5px; }
+  .badge.blue  { background: var(--accent); }
+  .chev {
+    flex: none; width: 16px; display: flex; align-items: center; justify-content: center;
+    color: #9fb3c8;
+  }
+  .chev svg { width: 11px; height: 14px; }
+
+  /* ---------- 2) 중앙 라인 레이아웃 ---------- */
+  .line-wrap {
+    position: relative; margin-top: 6px;
+    background: linear-gradient(180deg, #fbfdff 0%, #eef3f8 100%);
+    border: 1px solid var(--line); border-radius: 4px;
+    padding: {{ line_pad_top }}px 14px 12px;
+  }
+  .stage { display: flex; align-items: flex-end; gap: 6px; height: {{ stage_h }}px; }
+  .st { position: relative; display: flex; flex-direction: column; justify-content: flex-end;
+        height: 100%; min-width: 0; }
+  .st-art { position: relative; height: {{ art_h }}px; overflow: visible; }
+  .st-art svg, .st-art img { width: 100%; height: 100%; display: block; }
+  .st-art img { object-fit: contain; object-position: bottom; }
+  /* 존 라벨 자리는 라벨 유무와 무관하게 항상 확보한다.
+     그래야 라벨 없는 설비(로봇·탱크)도 같은 바닥선에 선다. */
+  .zone-slot { height: {{ zone_h }}px; margin-top: 4px; }
+  .zone {
+    background: var(--navy-ink); color: #fff; border-radius: 3px;
+    padding: 4px 4px; text-align: center; height: 100%;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+  }
+  .zone .z1 { font-size: 11px; font-weight: 700; line-height: 1.25; }
+  .zone .z2 { font-size: 9px; opacity: .82; line-height: 1.3; }
+
+  /* 비전 콘 — 카메라에서 설비로 뻗는 광선. st-art 안에 % 로 얹혀
+     설비 그림 높이가 바뀌어도 항상 바닥까지 정확히 닿는다. */
+  .cone {
+    position: absolute; bottom: 0; top: 0; width: {{ cone_w }}px;
+    background: linear-gradient(180deg,
+      rgba(var(--cone), .60) 0%, rgba(var(--cone), .28) 45%, rgba(var(--cone), .03) 100%);
+    clip-path: polygon(38% 0, 62% 0, 97% 100%, 3% 100%);
+    transform: translateX(-50%);
+    pointer-events: none;
+  }
+  .cam { position: absolute; transform: translateX(-50%); display: flex; align-items: center; gap: 4px; }
+  .cam svg { width: 26px; height: 20px; flex: none; }
+  .cam-l {
+    background: #fff; border: 1px solid var(--line); border-radius: 3px;
+    padding: 2px 5px; white-space: nowrap;
+    box-shadow: 0 1px 2px rgba(20,40,70,.10);
+  }
+  .cam-l .c1 { font-size: 10px; font-weight: 700; color: var(--navy-ink); line-height: 1.25; }
+  .cam-l .c2 { font-size: 8.5px; color: var(--ink-2); line-height: 1.3; }
+
+  .callout {
+    position: absolute; transform: translateX(-50%);
+    background: #fff; border: 1px solid var(--accent); border-radius: 3px;
+    padding: 3px 6px; white-space: nowrap;
+    box-shadow: 0 1px 3px rgba(20,40,70,.12);
+  }
+  .callout div { font-size: 9px; color: var(--navy-ink); line-height: 1.4; }
+  .callout div:first-child { font-weight: 700; font-size: 9.5px; }
+
+  .flow { position: absolute; transform: translate(-50%, -50%); }
+  .flow svg { display: block; }
+  .flow-l {
+    position: absolute; transform: translate(-50%, -50%);
+    font-size: 9.5px; font-weight: 700; color: var(--navy-ink);
+    background: rgba(255,255,255,.85); padding: 1px 4px; border-radius: 2px;
+    white-space: nowrap;
+  }
+
+  /* ---------- 하단 3분할 ---------- */
+  .bottom {
+    display: grid; grid-template-columns: {{ bottom_cols }}; gap: 10px;
+    margin-top: 10px; align-items: start;
+  }
+  .panel {
+    background: var(--paper); border: 1px solid var(--line); border-radius: 4px;
+    overflow: hidden;
+  }
+  .panel-h {
+    background: var(--navy-ink); color: #fff; font-size: 11px; font-weight: 700;
+    padding: 5px 9px;
+  }
+  .panel-b { padding: 8px; }
+
+  .insp { display: grid; grid-template-columns: repeat({{ insp_cols }}, 1fr); gap: 6px; }
+  .insp-c { border: 1px solid var(--line-soft); border-radius: 3px; overflow: hidden;
+            background: var(--paper-2); }
+  .insp-t {
+    background: var(--paper-3); font-size: 9px; font-weight: 700; color: var(--navy-ink);
+    padding: 3px 5px; line-height: 1.3; border-bottom: 1px solid var(--line-soft);
+  }
+  .insp-a { height: 62px; display: flex; align-items: center; justify-content: center; }
+  .insp-a img { width: 100%; height: 100%; object-fit: cover; }
+  .insp-a svg { width: 100%; height: 100%; }
+  .insp-d { font-size: 8.5px; color: var(--ink-2); padding: 3px 5px; line-height: 1.35; }
+
+  /* 시스템 구성도 */
+  .sys { display: flex; align-items: center; justify-content: space-around; gap: 4px; }
+  .sys-col { display: flex; flex-direction: column; gap: 6px; align-items: center; }
+  .node {
+    background: var(--paper-2); border: 1px solid var(--line); border-radius: 3px;
+    padding: 5px 7px; text-align: center; min-width: 62px;
+  }
+  .node.camera { border-color: #9aa7b4; }
+  .node.plc { border-color: var(--accent); background: #eef5ff; }
+  .node.controller { border-color: var(--navy-2); background: #eaf0f8; }
+  .node .n1 { font-size: 9px; font-weight: 700; color: var(--navy-ink); line-height: 1.3; }
+  .node .n2 { font-size: 8px; color: var(--ink-2); line-height: 1.3; }
+  .sys-arrow { color: #8fa3b8; display: flex; align-items: center; }
+  .sys-arrow svg { width: 16px; height: 10px; }
+
+  /* 표 */
+  table { width: 100%; border-collapse: collapse; }
+  th, td {
+    border: 1px solid var(--line-soft); padding: 3px 5px;
+    font-size: 9px; line-height: 1.35; text-align: left;
+  }
+  th { background: var(--paper-3); color: var(--navy-ink); font-weight: 700; }
+  td { color: var(--ink-2); }
+  .tbl + .tbl { margin-top: 8px; }
+  .tbl-t {
+    font-size: 10px; font-weight: 700; color: var(--navy-ink); margin-bottom: 4px;
+  }
+  .tbl.accent th { background: #e6eef9; }
+
+  .foot {
+    margin: 10px 18px 0; font-size: 9.5px; color: var(--ink-2);
+    border-top: 1px dashed var(--line); padding-top: 6px;
+  }
+</style>
+</head>
+<body>
+<div class="sheet">
+
+  <div class="hd">
+    <h1>{{ spec.title }}</h1>
+    {% if spec.subtitle %}<div class="sub">{{ spec.subtitle }}</div>{% endif %}
+  </div>
+
+  {# ---------- 1) 상단 공정 카드 ---------- #}
+  {% if spec.process_steps %}
+  <div class="band">
+    <div class="steps">
+      {% for s in spec.process_steps %}
+      <div class="step">
+        <div class="step-h">
+          <div class="step-n">{{ loop.index }}</div>
+          <div class="step-t">{{ s.title }}</div>
+        </div>
+        <ul class="step-b">
+          {% for b in s.bullets %}<li>{{ b }}</li>{% endfor %}
+        </ul>
+        <div class="step-art">
+          {{ art(s.image) }}
+          {% if s.badge %}
+          <div class="badge {{ s.badge_tone or 'blue' }}">{{ s.badge }}</div>
+          {% endif %}
+        </div>
+      </div>
+      {% if not loop.last %}
+      <div class="chev">
+        <svg viewBox="0 0 11 14"><path d="M1,1 L9,7 L1,13" fill="none"
+          stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
+          stroke-linejoin="round"/></svg>
+      </div>
+      {% endif %}
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {# ---------- 2) 중앙 라인 레이아웃 ---------- #}
+  {% if L %}
+  <div class="band">
+    <div class="line-wrap">
+      <div class="stage">
+        {% for st in L.stations %}
+        <div class="st" style="flex: {{ st.width }} 1 0;">
+          <div class="st-art">
+            {{ art(st.image, st.kind) }}
+            {% for c in cones_by.get(st.id, []) %}
+            <div class="cone" style="left: {{ (c.offset * 100)|round(2) }}%;"></div>
+            {% endfor %}
+          </div>
+          <div class="zone-slot">
+            {% if st.show_zone_label and st.label %}
+            <div class="zone">
+              <div class="z1">{{ st.label }}</div>
+              {% if st.sublabel %}<div class="z2">{{ st.sublabel }}</div>{% endif %}
+            </div>
+            {% endif %}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+
+      {# 카메라 — 레이아웃 엔진이 겹치지 않게 레인을 배정한 절대 좌표 #}
+      {% for c in cams %}
+      <div class="cam" style="left: {{ c.x }}px; top: {{ c.cam_top }}px;">
+        {{ camera_svg }}
+        <div class="cam-l">
+          <div class="c1">{{ c.label }}</div>
+          {% if c.caption %}<div class="c2">{{ c.caption }}</div>{% endif %}
+        </div>
+      </div>
+      {% endfor %}
+
+      {% for co in callouts %}
+      <div class="callout" style="left: {{ co.x }}px; top: {{ co.y }}px;">
+        {% for ln in co.lines %}<div>{{ ln }}</div>{% endfor %}
+      </div>
+      {% endfor %}
+
+      {% for f in flows %}
+      <div class="flow" style="left: {{ f.x }}px; top: {{ f.y }}px;{% if f.reverse %} transform: translate(-50%, -50%) scaleX(-1);{% endif %}">
+        <svg width="34" height="12" viewBox="0 0 34 12">
+          <path d="M1,6 L26,6" stroke="{{ f.color }}" stroke-width="2.6"
+            stroke-linecap="round" {% if f.dashed %}stroke-dasharray="4 3"{% endif %}/>
+          <path d="M25,1.5 L33,6 L25,10.5 z" fill="{{ f.color }}"/>
+        </svg>
+      </div>
+      {% if f.label %}
+      <div class="flow-l" style="left: {{ f.x }}px; top: {{ f.label_y }}px;">{{ f.label }}</div>
+      {% endif %}
+      {% endfor %}
+
+      {% if L.outfeed_label %}
+      <div class="flow-l" style="left: {{ outfeed_x }}px; top: {{ outfeed_y }}px;
+           font-size: 11px;">{{ L.outfeed_label }}</div>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  {# ---------- 하단 3분할 ---------- #}
+  {% if spec.inspections or spec.system_diagram or spec.tables %}
+  <div class="band">
+    <div class="bottom">
+
+      {% if spec.inspections %}
+      <div class="panel">
+        <div class="panel-h">{{ spec.inspections_title }} (총 {{ spec.inspections|length }}종)</div>
+        <div class="panel-b">
+          <div class="insp">
+            {% for it in spec.inspections %}
+            <div class="insp-c">
+              <div class="insp-t">{{ it.title }}</div>
+              <div class="insp-a">{{ art(it.image) }}</div>
+              {% if it.detail %}<div class="insp-d">{{ it.detail }}</div>{% endif %}
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+      {% endif %}
+
+      {% if spec.system_diagram and spec.system_diagram.nodes %}
+      <div class="panel">
+        <div class="panel-h">{{ spec.system_title }}</div>
+        <div class="panel-b">
+          <div class="sys">
+            {% for col in sys_cols %}
+            <div class="sys-col">
+              {% for n in col %}
+              <div class="node {{ n.kind }}">
+                <div class="n1">{{ n.label }}</div>
+                {% if n.sublabel %}<div class="n2">{{ n.sublabel }}</div>{% endif %}
+              </div>
+              {% endfor %}
+            </div>
+            {% if not loop.last %}
+            <div class="sys-arrow">
+              <svg viewBox="0 0 16 10"><path d="M0,5 L11,5" stroke="currentColor"
+                stroke-width="1.6"/><path d="M10,1.5 L15.5,5 L10,8.5 z"
+                fill="currentColor"/></svg>
+            </div>
+            {% endif %}
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+      {% endif %}
+
+      {% if spec.tables %}
+      <div class="panel">
+        <div class="panel-h">{{ spec.tables[0].title }}</div>
+        <div class="panel-b">
+          {% for t in spec.tables %}
+          <div class="tbl {% if t.accent %}accent{% endif %}">
+            {% if not loop.first %}<div class="tbl-t">{{ t.title }}</div>{% endif %}
+            <table>
+              {% if t.headers %}
+              <tr>{% for h in t.headers %}<th>{{ h }}</th>{% endfor %}</tr>
+              {% endif %}
+              {% for r in t.rows %}
+              <tr>{% for c in r %}<td>{{ c }}</td>{% endfor %}</tr>
+              {% endfor %}
+            </table>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+
+    </div>
+  </div>
+  {% endif %}
+
+  {% if spec.footnote %}<div class="foot">{{ spec.footnote }}</div>{% endif %}
+</div>
+</body>
+</html>

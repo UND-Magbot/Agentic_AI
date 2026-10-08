@@ -1,0 +1,138 @@
+# 환경/시크릿 — 백업본(.env.bak.*) 포함 모두 제외, 예시 파일만 올림
+.env
+.env.*
+!.env.example
+
+# 압축 묶음(docs_upload.tgz 등 — 사내 자료·대용량)
+*.tgz
+*.tar.gz
+*.zip
+
+# 의존성
+node_modules/
+__pycache__/
+.venv/
+.venv-*/
+
+# 빌드 산출물
+dist/
+build/
+.next/
+*.tsbuildinfo
+*.egg-info/
+
+# 캐시
+.vllm-cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+
+# 공휴일 API 로컬 캐시
+backend/app/finance/data/holidays_cache.json
+
+# 문서(md) — 서비스 실행에 불필요. README 는 실행 안내용으로 유지
+*.md
+!README.md
+
+# 문서·원본 자료 폴더 전체(사내 자료 포함) — 서비스 실행에 불필요
+/docs/
+
+# 원본 자료·생성 결과물(pptx/pdf) — 적재 데이터는 DB 에 있음
+*.pptx
+*.pdf
+
+# 녹음 파일(회의 STT 테스트용)
+*.m4a
+*.mp3
+*.wav
+
+# 최상위 임시·디버그 산출물(_ 또는 .tmp_ 로 시작)
+/_*
+/.tmp_*
+/_capture/
+
+# 민감 이미지 — 서버에만 두고 git 에는 올리지 않음
+# 견적서 서명·직인(quote_xlsx.py 가 사용)
+backend/app/company_knowledge/data/quote/signature.*
+backend/app/company_knowledge/data/quote/seal.*
+# 영업 건 출하 사진(api_sales_deals.py 가 사용)
+backend/app/sales_deals/data/photos/
+# 영업 엑셀 이관용 중간 파일(고객사·담당자 정보 포함, build_sales_deals_preview.py 로 재생성)
+backend/app/sales_deals/data/legacy_snapshot.json
+# 공정 개념도 설비 사진(photo_rag.py 가 사용)
+backend/data/equipment_photos/
+
+# 실행 결과물·비교용 그림(서비스 실행에 불필요)
+/work/
+/mockups/
+/scripts/qa_sales/out/
+/concept_*.png
+/UND-logo.jpg
+/expense 테스트 자료.jpg
+
+# backend 안의 시험용 임시 파일(_ 로 시작, 서비스 코드에서 쓰지 않음)
+/backend/_*
+
+# 환경 파일 백업(.env.bak.* 등) — 토큰 포함
+.env.*
+!.env.example
+
+# 로컬 도구 설정
+.claude/
+
+# 루트 작업용 임시·덤프·캡처 파일(사내 자료 포함)
+/_*
+/.tmp_*
+/work/
+/mockups/
+/docs_upload.tgz
+/test-upload.txt
+/concept_map_*_spec.json
+/backend/_*
+*.m4a
+
+# 스크립트 실행 산출물
+/scripts/**/out/
+
+# Windows 경로 오입력으로 생긴 잔여물
+nul
+*;C
+
+# 실제 회사 회계 장부 데이터 — 공개 저장소 제외
+/scripts/data/ledger_*.json
+
+# 회사 계좌·대표자·주소 — 실제 값은 저장소 밖(company_profile.example.json 복사 후 채움)
+/backend/app/company_knowledge/data/company_profile.json
+
+# 실제 수금 거래처·결제 조건 — 저장소 밖(vendor_seed.example.json 참고)
+/backend/app/finance/data/vendor_seed.json
+
+# 재무 개발 스크립트 — 실제 장부(docs/finance)·계좌·잔액·거래처에 의존. 로컬 전용(목록: PRIVATE_FILES.md)
+/scripts/test_plan_from_closing.py
+/scripts/render_excel_steps.py
+/scripts/render_fund_walkthrough.py
+/scripts/compare_plan_vs_manual.py
+/scripts/test_fund_scenario_0529.py
+/scripts/render_plan_from_closing.py
+/scripts/test_fund_daily_reconcile.py
+/scripts/make_test_bank_deposits.py
+/scripts/render_excel_full.py
+/scripts/compare_daily.py
+/scripts/test_plan_service.py
+/scripts/regen_plan_vendor.py
+/scripts/apply_autotransfer_fix_validate.py
+/scripts/render_fund_full_dates.py
+/scripts/render_fund_cases.py
+/scripts/learn_autotransfer_rule.py
+/scripts/finance_reconcile.py
+/scripts/compare_fund_sheets.py
+/scripts/test_plan_generator.py
+/scripts/diag_missing_recur.py
+/scripts/audit_placement_rules.py

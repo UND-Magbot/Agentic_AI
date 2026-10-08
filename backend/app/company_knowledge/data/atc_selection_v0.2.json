@@ -1,0 +1,2614 @@
+{
+  "document_type": "UND_MAGBOT_tool_changer_selection_knowledge_seed",
+  "schema_version": "0.2",
+  "revision_date": "2026-10-01",
+  "language": "ko-KR",
+  "purpose": "주니어 영업용 짧은 질문과 검증 사례 축적을 통한 단품 모델 추천 지원",
+  "production_ready": false,
+  "sources": [
+    {
+      "id": "U1",
+      "type": "user_statement",
+      "date": "2026-10-01",
+      "description": "본 대화에서 제시한 UND 내부 선정 기준. 외부 인증된 제품 사양을 뜻하지 않음"
+    },
+    {
+      "id": "S1",
+      "type": "manufacturer_reference",
+      "url": "https://www.ati-ia.com/products/toolchanger/tool_changer_selection.aspx",
+      "use": "질량 외 무게중심과 모멘트 검토의 일반 원칙만 참조. 타사 수치 적용 금지"
+    },
+    {
+      "id": "S2",
+      "type": "manufacturer_reference",
+      "url": "https://www.ti.com/lit/an/slla272d/slla272d.pdf",
+      "use": "RS-485 물리규격, 배선과 종단 검토. UND 포고핀 통신 호환을 보증하지 않음"
+    },
+    {
+      "id": "S3",
+      "type": "manufacturer_reference",
+      "url": "https://www.universal-robots.com/manuals/EN/HTML/SW5_20/Content/prod-scriptmanual/G5/set_target_payload.htm",
+      "use": "로봇 부하의 질량, 무게중심, 관성 정보 구분"
+    },
+    {
+      "id": "U2",
+      "type": "user_statement",
+      "date": "2026-10-01",
+      "description": "주니어 중심의 직관적이고 간단한 질문, 툴 수량·사이즈·무게 중심 입력, 공정별 예측 개선을 위한 데이터 축적, JSON 유지"
+    }
+  ],
+  "scope": {
+    "included": [
+      "master_tool_changer",
+      "tool_plates",
+      "pogo_modules",
+      "pneumatic_modules",
+      "controller",
+      "standard_cables",
+      "agreed_component_accessories"
+    ],
+    "excluded": [
+      "system_design",
+      "tool_stand_system_supply",
+      "robot_programming",
+      "PLC_programming",
+      "cell_installation"
+    ],
+    "excluded_requests_action": "record_and_route_separately"
+  },
+  "data_policy": {
+    "unknown_value": null,
+    "never_treat_unknown_as_zero": true,
+    "answer_evidence_fields": [
+      "question_id",
+      "field_path",
+      "raw_answer",
+      "normalized_value",
+      "unit",
+      "source_document",
+      "source_location",
+      "status",
+      "confirmed_by",
+      "confirmed_date"
+    ],
+    "value_statuses": [
+      "confirmed",
+      "estimated",
+      "unknown",
+      "not_applicable"
+    ],
+    "do_not_infer_model_specs": true,
+    "units": {
+      "mass": "kg",
+      "dimensions": "mm",
+      "force": "N",
+      "moment": "N*m",
+      "pressure": "bar with pressure basis recorded",
+      "length": "m",
+      "current": "A",
+      "voltage": "V",
+      "speed": "explicit unit required"
+    },
+    "configuration_changes_require_owner_review": true
+  },
+  "user_provided_facts": {
+    "cobot_oriented_nominal_range_up_to_kg": 30,
+    "pogo_current_per_pin_A": 1,
+    "pogo_max_pins_per_module": 8,
+    "accessory_module_slots_max": 3,
+    "pneumatic_named_ports": 2,
+    "pneumatic_standard_pressure_bar": [
+      1,
+      5
+    ],
+    "pneumatic_review_at_or_above_bar": 6,
+    "master_controller_cable_m": 4,
+    "controller_system_cable_m": 1
+  },
+  "unresolved_configuration": [
+    {
+      "id": "P01",
+      "topic": "속도 단위와 기준",
+      "question": "70 및 50이 로봇 속도 오버라이드 %인지, 어느 프로그램과 최대 운전 조건을 기준으로 하는지 확정",
+      "blocked": [
+        "automatic_speed_rule"
+      ]
+    },
+    {
+      "id": "P02",
+      "topic": "산업용 정확히 50",
+      "question": "50 이하와 50 이상이 겹치는 경계에서 1단계 또는 2단계 중 어떤 기준을 적용할지 확정",
+      "blocked": [
+        "industrial_at_50"
+      ]
+    },
+    {
+      "id": "P03",
+      "topic": "산업용 고속 보정",
+      "question": "50 초과의 두 단계까지 고려를 일률 +2로 적용할지, +1~+2 내부 판단으로 둘지 확정",
+      "blocked": [
+        "final_uplift_for_industrial_above_50"
+      ]
+    },
+    {
+      "id": "P04",
+      "topic": "모델 순서와 정격 정의",
+      "question": "실제 모델명, 상향 순서, 30kg 기준의 적용 범위, 정격에 포함되는 부품 질량, 모멘트/관성/자세 한계를 등록",
+      "blocked": [
+        "actual_model_recommendation"
+      ]
+    },
+    {
+      "id": "P05",
+      "topic": "공압 미정 구간",
+      "question": "5bar 초과 6bar 미만 및 1bar 미만의 처리 기준과 압력의 게이지압 여부를 확정",
+      "blocked": [
+        "nonstandard_pressure_auto_selection"
+      ]
+    },
+    {
+      "id": "P06",
+      "topic": "공압 2포트 구조",
+      "question": "IN/OUT 2포트가 독립 통과 유로 2개인지 한 유로의 입출구인지 도면으로 확인",
+      "blocked": [
+        "pneumatic_module_auto_count"
+      ]
+    },
+    {
+      "id": "P07",
+      "topic": "포고핀 전기 정격",
+      "question": "1A의 연속/피크 조건, 정격전압, 전체 모듈 전류, 공통선, 병렬 사용 허용 여부, 신호 검증 범위를 확정",
+      "blocked": [
+        "electrical_compatibility_confirmation"
+      ]
+    },
+    {
+      "id": "P08",
+      "topic": "액세서리 부품 구성",
+      "question": "모델별 3개 장착 슬롯, 마스터/툴측 부품 판매 단위, 빈 슬롯/상대 모듈 없는 조합, 공통 핀 배열 호환성을 확정",
+      "blocked": [
+        "final_accessory_bom"
+      ]
+    },
+    {
+      "id": "P09",
+      "topic": "컨트롤러 구성",
+      "question": "모델별 컨트롤러 채널 수, 기본 포함품, 표준 케이블 정격/결선과 연장 허용 조건을 등록",
+      "blocked": [
+        "final_controller_bom"
+      ]
+    }
+  ],
+  "selection_rules": [
+    {
+      "id": "R01",
+      "name": "단품 범위",
+      "source": "user",
+      "status": "usable",
+      "logic": "supply_scope=component_only로 진행. 시스템/스탠드 요청은 별도 요구사항으로 기록하며 자동 BOM에 넣지 않는다."
+    },
+    {
+      "id": "R02",
+      "name": "기본 하중 후보",
+      "source": "engineering_proposal",
+      "status": "catalog_required",
+      "logic": "각 교체 툴과 적재 상태별 툴측 총질량을 구하고, 정격 정의를 맞춘 승인 모델 목록에서 기본 후보를 찾는다. 그리퍼 무게나 로봇 정격만으로 결정하지 않는다."
+    },
+    {
+      "id": "R03",
+      "name": "협동로봇 70 이하",
+      "source": "user",
+      "status": "P01_required",
+      "condition": "robot_type=cobot AND speed<=70",
+      "screening_uplift_steps": 0,
+      "logic": "사용자가 지정한 기본 후보 유지. 모멘트 등 다른 조건은 별도 검토."
+    },
+    {
+      "id": "R04",
+      "name": "협동로봇 70 초과",
+      "source": "user",
+      "status": "P01_required",
+      "condition": "robot_type=cobot AND speed>70",
+      "screening_uplift_steps": 1,
+      "logic": "승인된 모델 순서에서 한 단계 상향 후보."
+    },
+    {
+      "id": "R05",
+      "name": "산업용 50 미만",
+      "source": "user_with_boundary_separation",
+      "status": "P01_required",
+      "condition": "robot_type=industrial AND speed<50",
+      "screening_uplift_steps": 1,
+      "logic": "사용자 원문의 50 이하 중 경계값을 제외한 확실한 구간. 한 단계 상향 후보."
+    },
+    {
+      "id": "R06",
+      "name": "산업용 정확히 50",
+      "source": "unresolved_user_boundary",
+      "status": "engineering_review",
+      "condition": "robot_type=industrial AND speed=50",
+      "screening_uplift_steps": null,
+      "logic": "원문 조건이 겹친다. 후보는 +1/+2로 표시하되 최종 보정값은 null."
+    },
+    {
+      "id": "R07",
+      "name": "산업용 50 초과",
+      "source": "user",
+      "status": "engineering_review",
+      "condition": "robot_type=industrial AND speed>50",
+      "screening_uplift_steps": null,
+      "max_steps_to_consider": 2,
+      "logic": "두 단계까지 상향 검토. 일률 +2 확정은 P03 승인 전 금지. 산업용 +1에 다시 +2를 더하지 않는다."
+    },
+    {
+      "id": "R08",
+      "name": "편심과 동하중",
+      "source": "user_and_engineering_proposal",
+      "status": "catalog_required",
+      "logic": "무게중심, 틸팅, 가감속, 관성, 공정 반력, 케이블 반력을 툴별 모든 적재 상태에서 검토한다. 한계나 데이터가 없으면 선정 확정 중단."
+    },
+    {
+      "id": "R09",
+      "name": "상향 가능 모델 없음",
+      "source": "engineering_proposal",
+      "status": "usable",
+      "logic": "승인 목록에 다음 모델이 없거나 보정 후보가 등록된 협동용 범위 30kg를 넘으면 내부 검토. 임의 모델명 생성 금지. 30kg 초과 제품이 없다고 단정하지 않는다."
+    },
+    {
+      "id": "R10",
+      "name": "툴플레이트",
+      "source": "user",
+      "status": "usable",
+      "logic": "서로 분리해 교체하는 실제 툴 조립체 수만큼 산정하고 예비품은 별도 가산. 제품 종류 수나 작업 수로 계산하지 않는다."
+    },
+    {
+      "id": "R11",
+      "name": "포고핀 도체 수",
+      "source": "user_and_engineering_proposal",
+      "status": "pin_map_required",
+      "logic": "전원 공급선, 리턴/공통선, DI, DO, 통신선과 필요한 기준선, 별도 접지/차폐 접점, 합의된 예비핀을 중복 없이 합산. 모듈 하한=ceil(사용 도체 수/8)."
+    },
+    {
+      "id": "R12",
+      "name": "포고핀 전류",
+      "source": "user_and_engineering_proposal",
+      "status": "rating_conditions_required",
+      "logic": "각 핀은 사용자 기준 1A 이내 사용. 리턴선은 동시에 흐르는 합산전류로 검토. 1A 초과 연속/피크는 내부 검토. 병렬 핀으로 자동 증설하거나 8핀=8A로 계산 금지."
+    },
+    {
+      "id": "R13",
+      "name": "통신",
+      "source": "engineering_proposal",
+      "status": "validated_matrix_required",
+      "logic": "DIO 이외는 물리규격과 프로토콜을 분리 기록. RS-485 등은 도체 수만 예비 산정하고 전기/신호 검증 이력 없으면 내부 검토. 핀 여유만으로 통신 가능 확정 금지."
+    },
+    {
+      "id": "R14",
+      "name": "공압 압력",
+      "source": "user_with_uncovered_ranges",
+      "status": "usable_with_exceptions",
+      "logic": "양압 운전 전 구간이 1~5bar 안이면 압력 조건상 표준 후보. 6bar 이상은 별도 의사결정. 5 초과 6 미만, 1 미만, 진공/기타 유체는 미정 또는 별도 검토. 유량과 연결 규격도 확인."
+    },
+    {
+      "id": "R15",
+      "name": "공압 수량",
+      "source": "user_with_unresolved_topology",
+      "status": "P06_required",
+      "logic": "IN/OUT 2포트 사실만 저장. 독립 통과 유로 2개로 확인된 경우에만 ceil(필요 독립 유로 수/2)를 하한으로 사용. 확인 전 모듈 수는 null."
+    },
+    {
+      "id": "R16",
+      "name": "모듈 슬롯",
+      "source": "user_and_engineering_proposal",
+      "status": "compatibility_required",
+      "logic": "마스터 한 결합 구성에서 전기+공압+기타 슬롯 사용 수<=3. 각 툴과 공통 슬롯 위치/핀배열/전압/상대 부품 호환 확인. 모든 툴의 수요를 단순 합산하거나 모듈 개수의 최댓값만으로 확정하지 않는다."
+    },
+    {
+      "id": "R17",
+      "name": "케이블",
+      "source": "user",
+      "status": "usable",
+      "logic": "마스터→컨트롤러 4m, 컨트롤러→PLC/로봇 1m. 각 경로별 가동 여유를 포함해 판단. 연장 또는 표준 케이블 변경은 전압강하·피크전류·신호·굴곡 조건 내부 검토."
+    },
+    {
+      "id": "R18",
+      "name": "로봇 총부하 재검산",
+      "source": "engineering_proposal",
+      "status": "robot_data_required",
+      "logic": "후보 모델 변경 후 마스터, 어댑터와 모든 부가질량을 포함한 로봇 플랜지 총부하, CoG와 관성을 다시 확인. 상향한 TC가 로봇 부하 한계를 넘으면 후보 반려."
+    },
+    {
+      "id": "R19",
+      "name": "수량 단위",
+      "source": "engineering_proposal",
+      "status": "sku_required",
+      "logic": "포고핀 수, 8핀 모듈 수, 마스터측 부품 수, 툴측 부품 수와 판매 세트 수를 별도 저장. 공압 모듈도 동일. SKU의 포함품과 컨트롤러 채널 수를 확인 후 발주 수량 확정."
+    },
+    {
+      "id": "R20",
+      "name": "누락 처리",
+      "source": "engineering_proposal",
+      "status": "usable",
+      "logic": "미확인 값은 null이며 0/없음/false로 치환하지 않는다. 추정값은 별도 표시하고 근거를 남긴다. 상충 답변은 재질문. 핵심 입력 또는 모델 DB가 없으면 최종 모델은 null."
+    },
+    {
+      "id": "R21",
+      "name": "간단 입력과 상세 검토 연결",
+      "source": "user_and_design_proposal",
+      "status": "usable",
+      "logic": "주니어는 J01~J10과 해당하는 후속 질문에 답한다. 답변을 기존 상세 입력에 연결하되 미확인 기술 값을 임의 채우지 않는다."
+    },
+    {
+      "id": "R22",
+      "name": "사례 기반 후보 순위",
+      "source": "design_proposal",
+      "status": "case_data_required",
+      "logic": "관련 공정의 검증된 적용 사례를 찾아 후보와 질문 우선순위를 보완한다. 실제 조건 차이와 실패 이력도 표시하며 승인 사양과 규칙을 통과한 후보에만 적용한다."
+    }
+  ],
+  "calculation_guidance": {
+    "tool_side_mass": "sum of gripper + maximum simultaneously carried workpieces + tool plate + tool-side adapter + tool-side accessories; avoid double counting and align model rating definition",
+    "robot_total_mass": "tool-side mass + master + robot-side adapter + other mass borne by flange; cable effects also evaluated",
+    "static_moment": "M = r cross (m*g); magnitude=m*9.81*r_perpendicular_m. Coordinate frame and worst posture required; static illustration only",
+    "dynamic_load": "evaluate translation, rotational inertia, combined loads and process wrench using validated engineering model; speed percentage alone is insufficient",
+    "pogo_modules_lower_bound": "ceil(unique_required_conductors / 8); compatibility can require more or rule out standard assembly",
+    "pneumatic_modules_lower_bound": "ceil(required_independent_paths / approved_independent_paths_per_module); disabled while denominator unknown",
+    "voltage_drop": "DeltaV = I_peak * R_actual_loop; include supply and return conductors plus connectors. If loop is a symmetric two-wire copper circuit only: R_loop=2*rho*L_oneway/A. Do not sum 4m+1m as one power loop without wiring proof",
+    "multi_tool_master": "find one physically and electrically compatible slot assignment supporting every tool. Validate absent counterpart modules and blanking parts. Sum across tool inventory for tool-side purchase counts only",
+    "mass_normalization": "J04 is the observed tool assembly mass, excluding carried workpieces. Before engineering calculations, confirm which gripper, bracket, adapter and accessories it includes. Do not add both assembly mass and its component masses. Known partial mass yields only a provisional lower bound; missing components remain null."
+  },
+  "model_catalog": [],
+  "model_catalog_record_template": {
+    "model_id": null,
+    "model_name": null,
+    "model_series": null,
+    "rank_in_approved_series": null,
+    "approved_successor_model_ids": [],
+    "rated_payload_kg": null,
+    "payload_definition": null,
+    "permitted_robot_types": [],
+    "reference_load_plane": null,
+    "permitted_orientations": [],
+    "allowable_forces_N": {
+      "Fx": null,
+      "Fy": null,
+      "Fz": null
+    },
+    "allowable_moments_Nm": {
+      "Mx": null,
+      "My": null,
+      "Mz": null
+    },
+    "combined_load_evaluation_method": null,
+    "inertia_limits_kg_m2": null,
+    "approved_motion_envelope": null,
+    "engineering_margin_policy": null,
+    "master_mass_kg": null,
+    "tool_plate_mass_kg": null,
+    "accessory_masses_kg": null,
+    "flange_patterns": [],
+    "coupled_dimensions_mm": null,
+    "repeatability": null,
+    "slots": [],
+    "compatible_tool_plate_ids": [],
+    "compatible_accessory_ids": [],
+    "magnetic_interface_limits": null,
+    "temperature_limits_C": null,
+    "environment_ratings": null,
+    "pogo_voltage_rating_V": null,
+    "pogo_continuous_A_per_pin": 1,
+    "pogo_peak_current_envelope": null,
+    "module_total_current_limit_A": null,
+    "parallel_pin_approval": null,
+    "validated_communication_profiles": [],
+    "pneumatic_port_count_named": 2,
+    "pneumatic_independent_through_paths": null,
+    "pneumatic_pressure_range_bar_user": [
+      1,
+      5
+    ],
+    "pneumatic_flow_curve": null,
+    "vacuum_approval": null,
+    "controller_sku": null,
+    "controller_channel_capacity": null,
+    "controller_control_interface": null,
+    "standard_cable_lengths_m": {
+      "master_to_controller": 4,
+      "controller_to_system": 1
+    },
+    "cable_conductor_details": null,
+    "approved_extension_profiles": [],
+    "sku_inclusions": [],
+    "master_side_sku": null,
+    "tool_side_sku": null,
+    "revision": null,
+    "source_document": null,
+    "approved_by": null,
+    "approved_date": null
+  },
+  "input_record_template": {
+    "project": {
+      "id": null,
+      "supply_scope": "component_only",
+      "process": {
+        "category": null,
+        "description": null,
+        "has_contact_force": null,
+        "contact_operation": null
+      },
+      "cycle_time_s": null,
+      "exchanges_per_day": null,
+      "operating_hours_per_day": null,
+      "environment": {
+        "has_special_conditions": null,
+        "tags": [],
+        "details": null,
+        "photo_refs": []
+      },
+      "tool_stand_interface": null,
+      "optional_items": [],
+      "customer_supplied_items": [],
+      "spare_quantities": null,
+      "acceptance_requirements": null,
+      "tool_count": null
+    },
+    "robots": [
+      {
+        "id": "R1",
+        "type": null,
+        "manufacturer": null,
+        "model": null,
+        "rated_payload_kg": null,
+        "flange_drawing_ref": null,
+        "master_interface_count": null,
+        "speed": {
+          "value": null,
+          "unit": null,
+          "reference": null,
+          "maximum_operating_value": null,
+          "screen_ref": null
+        },
+        "motion": null,
+        "mounting": null,
+        "cables": {
+          "master_to_controller_required_m": null,
+          "controller_to_system_required_m": null,
+          "master_route": null,
+          "master_4m_sufficient": null,
+          "system_1m_sufficient": null
+        },
+        "controller": {
+          "target": null,
+          "power": null,
+          "interface": null
+        },
+        "interlocks": null,
+        "quantity": null,
+        "nameplate_ref": null
+      }
+    ],
+    "tools": [
+      {
+        "id": "T1",
+        "model": null,
+        "robot_ids": [
+          "R1"
+        ],
+        "installed_quantity": null,
+        "workpiece_count": null,
+        "mass_components": {
+          "gripper_kg": null,
+          "max_simultaneous_workpieces_kg": null,
+          "tool_plate_kg": null,
+          "tool_adapter_kg": null,
+          "tool_accessories_kg": null
+        },
+        "mass_inclusions": null,
+        "envelope_mm": {
+          "x": null,
+          "y": null,
+          "z": null
+        },
+        "tip_distance_mm": null,
+        "drawing_refs": [],
+        "load_cases": [
+          {
+            "id": "loaded",
+            "cog_mm": {
+              "x": null,
+              "y": null,
+              "z": null
+            },
+            "reference_frame": null,
+            "evidence": null
+          }
+        ],
+        "orientation": null,
+        "variable_geometry": null,
+        "process_loads": null,
+        "dress_pack_loads": null,
+        "mounting": null,
+        "required_repeatability": null,
+        "electrical": {
+          "power_circuits": null,
+          "dio": null,
+          "sensor_list": null,
+          "communications": null,
+          "pin_requirements": null,
+          "exchange_sequence": null,
+          "power_loss_requirement": null,
+          "power_document_ref": null,
+          "control_method_raw": null,
+          "wiring_document_ref": null
+        },
+        "pneumatic": {
+          "medium": null,
+          "required_independent_paths": null,
+          "circuit_ref": null,
+          "pressure_bar": null,
+          "flow": null,
+          "fittings": null,
+          "valve_location": null,
+          "disconnect_state": null,
+          "observed_hose_count": null
+        },
+        "name": null,
+        "intake": {
+          "dimensions_mm": {
+            "x": null,
+            "y": null,
+            "z": null
+          },
+          "tool_assembly_mass_kg": null,
+          "workpiece_name": null,
+          "tilts_or_flips": null,
+          "needs_power": null,
+          "needs_air": null,
+          "has_sensors_or_signals": null
+        },
+        "utility_document_refs": []
+      }
+    ],
+    "answer_evidence": []
+  },
+  "output_record_template": {
+    "record_id": null,
+    "rules_revision": "0.2",
+    "catalog_revision": null,
+    "status": "needs_information",
+    "screening_candidates": [],
+    "final_selected_model_id": null,
+    "master_layout": [],
+    "tool_layouts": [],
+    "bom": [],
+    "engineering_review_reasons": [],
+    "missing_fields": [],
+    "followup_questions": [],
+    "rule_trace": [],
+    "assumptions": [],
+    "validation_evidence": [],
+    "approval": null,
+    "junior_summary": {
+      "candidate_model": null,
+      "tool_plate_quantity": null,
+      "pogo_modules": null,
+      "pneumatic_modules": null,
+      "controller_and_cables": null,
+      "reason_in_plain_korean": null,
+      "next_questions": [],
+      "evidence_status": null
+    },
+    "similar_cases": [],
+    "similar_case_differences": [],
+    "intake_completed": false
+  },
+  "output_statuses": {
+    "needs_information": "필수 입력 또는 제품 데이터 미확인. 누락 항목과 재질문 출력",
+    "engineering_review": "검증된 적용 범위 밖이거나 규칙이 미정. 가능한 초기 후보만 보존",
+    "standard_candidate": "입력과 승인 사양을 충족한 표준 후보. 최종 승인과 별개",
+    "nonstandard_or_out_of_range": "등록된 표준 모델 또는 슬롯으로 수용 불가. 커스텀 불가를 의미하지 않음"
+  },
+  "output_statuses_ko": {
+    "needs_information": "정보 보완 필요",
+    "engineering_review": "내부 엔지니어 검토",
+    "standard_candidate": "표준 후보 도출",
+    "nonstandard_or_out_of_range": "비표준 또는 범위 초과"
+  },
+  "status_policy": "여러 사유는 동시에 유지. 표준 후보 상태는 필수 정보, 승인 DB와 호환 검증이 모두 있을 때만 사용. 최종 선정은 승인 기록과 함께 저장.",
+  "bom_line_template": {
+    "item_category": null,
+    "sku": null,
+    "side": null,
+    "robot_id": null,
+    "tool_id": null,
+    "quantity": null,
+    "unit": null,
+    "included_in_base_package": null,
+    "customer_supplied": null,
+    "quantity_basis": null,
+    "status": null
+  },
+  "acceptance_test_cases": [
+    {
+      "id": "T01",
+      "given": {
+        "robot_type": "cobot",
+        "speed": 70,
+        "speed_basis_approved": true
+      },
+      "expected": {
+        "screening_uplift_steps": 0,
+        "final_model_requires_other_checks": true
+      }
+    },
+    {
+      "id": "T02",
+      "given": {
+        "robot_type": "cobot",
+        "speed": 71,
+        "speed_basis_approved": true
+      },
+      "expected": {
+        "screening_uplift_steps": 1
+      }
+    },
+    {
+      "id": "T03",
+      "given": {
+        "robot_type": "industrial",
+        "speed": 49,
+        "speed_basis_approved": true
+      },
+      "expected": {
+        "screening_uplift_steps": 1
+      }
+    },
+    {
+      "id": "T04",
+      "given": {
+        "robot_type": "industrial",
+        "speed": 50,
+        "speed_basis_approved": true
+      },
+      "expected": {
+        "screening_uplift_steps": null,
+        "reason": "P02"
+      }
+    },
+    {
+      "id": "T05",
+      "given": {
+        "robot_type": "industrial",
+        "speed": 60,
+        "speed_basis_approved": true
+      },
+      "expected": {
+        "screening_uplift_steps": null,
+        "max_steps_to_consider": 2,
+        "reason": "P03",
+        "must_not_add_industrial_uplift_twice": true
+      }
+    },
+    {
+      "id": "T06",
+      "given": {
+        "robot_type": "cobot",
+        "speed": 60,
+        "speed_unit": null
+      },
+      "expected": {
+        "screening_uplift_steps": null,
+        "reason": "P01"
+      }
+    },
+    {
+      "id": "T07",
+      "given": {
+        "pressure_min_bar": 1,
+        "pressure_max_bar": 5,
+        "medium": "compressed_air"
+      },
+      "expected": {
+        "pressure_screening": "standard_range_only",
+        "application_approved": false
+      }
+    },
+    {
+      "id": "T08",
+      "given": {
+        "pressure_bar": 5.5
+      },
+      "expected": {
+        "reason": "P05",
+        "engineering_review": true
+      }
+    },
+    {
+      "id": "T09",
+      "given": {
+        "pressure_bar": 6
+      },
+      "expected": {
+        "engineering_review": true
+      }
+    },
+    {
+      "id": "T10",
+      "given": {
+        "power_supply_pins": 1,
+        "power_return_pins": 1,
+        "DI": 2,
+        "DO": 2,
+        "other_pins": 0,
+        "currents_each_pin_within_1A": true
+      },
+      "expected": {
+        "physical_pin_count": 6,
+        "pogo_module_lower_bound": 1,
+        "compatibility_check_still_required": true
+      }
+    },
+    {
+      "id": "T11",
+      "given": {
+        "supply_circuits_A": [
+          0.7,
+          0.7
+        ],
+        "shared_return_pin_count": 1
+      },
+      "expected": {
+        "shared_return_A": 1.4,
+        "engineering_review": true
+      }
+    },
+    {
+      "id": "T12",
+      "given": {
+        "continuous_A": 0.8,
+        "peak_A": 2.5
+      },
+      "expected": {
+        "engineering_review": true,
+        "automatic_parallel_pins": false
+      }
+    },
+    {
+      "id": "T13",
+      "given": {
+        "pogo_modules": 2,
+        "pneumatic_modules": 2
+      },
+      "expected": {
+        "slot_sum": 4,
+        "standard_layout_possible": false
+      }
+    },
+    {
+      "id": "T14",
+      "given": {
+        "required_air_paths": 2,
+        "named_ports": 2,
+        "confirmed_independent_paths_per_module": null
+      },
+      "expected": {
+        "pneumatic_module_count": null,
+        "reason": "P06"
+      }
+    },
+    {
+      "id": "T15",
+      "given": {
+        "master_controller_m": 4.5,
+        "controller_system_m": 1
+      },
+      "expected": {
+        "engineering_review": true
+      }
+    },
+    {
+      "id": "T16",
+      "given": {
+        "cog_unknown": true,
+        "tilting": true,
+        "within_nominal_mass": true
+      },
+      "expected": {
+        "final_model": null,
+        "missing_information": true
+      }
+    },
+    {
+      "id": "T17",
+      "given": {
+        "model_catalog_empty": true
+      },
+      "expected": {
+        "final_model": null,
+        "invent_model_name": false
+      }
+    },
+    {
+      "id": "T18",
+      "given": {
+        "tools_physical_quantity": 3,
+        "tool_types": 2,
+        "spare_tool_plates": 1
+      },
+      "expected": {
+        "operating_tool_plates": 3,
+        "spare_tool_plates": 1,
+        "total_tool_plates": 4
+      }
+    },
+    {
+      "id": "T19",
+      "given": {
+        "protocol": "RS-485",
+        "signal_pins_available": 2,
+        "validated_profile": false
+      },
+      "expected": {
+        "communication_approved": false,
+        "engineering_review": true
+      }
+    },
+    {
+      "id": "T20",
+      "given": {
+        "tools_require_same_slot_different_voltage": true
+      },
+      "expected": {
+        "master_layout_compatible": false,
+        "engineering_review": true
+      }
+    }
+  ],
+  "agent_instruction_ko": "주니어 영업사원에게 J01~J10을 짧게 묻는다. 미팅 메모에 있는 내용은 먼저 채우고 미확인 값만 확인한다. 툴별 수량·크기·무게와 한 번에 드는 제품 무게를 따로 기록한다. 모르면 모델명·사진·도면으로 진행하고 같은 기술 질문을 반복하지 않는다. 답변에 해당하는 후속 질문만 표시한다. 무게중심·핀 배열·통신 검증 등은 내부 검토로 연결한다. 승인된 제품 사양과 선정 규칙으로 후보와 구성품 수량을 산정하고, 유사한 검증 사례가 있으면 차이점과 함께 추천 근거를 보완한다. AI 추천 모델, 엔지니어 확정 모델, 실제 설치 구성, 운전 결과와 변경 이유를 따로 저장한다. 사례 저장만으로 모델이 자동 재학습된다고 설명하지 않는다. 사양과 미확정 규칙은 사례 빈도로 변경하지 않는다.",
+  "revision_notes": [
+    "최초 질문을 10개 묶음으로 단순화",
+    "응답에 해당하는 후속 질문만 표시",
+    "기술 상세 질문은 엔지니어용으로 이동",
+    "선정 모델과 적용 결과 및 변경 이유를 사례 데이터로 축적"
+  ],
+  "engineer_question_bank": [
+    {
+      "id": "Q01",
+      "group": "common",
+      "scope": "project",
+      "question_ko": "이번 요청의 납품 범위는 무엇입니까?",
+      "answer_format_ko": "단품 / 시스템 / 미정. 시스템이면 본 선정 건과 별도 요구사항으로 기록.",
+      "field_paths": [
+        "project.supply_scope"
+      ],
+      "required_when": "always",
+      "selection_use_ko": "본 자료는 단품 선정에만 적용",
+      "unknown_allowed": true,
+      "audience": "engineer",
+      "initial_screen_visible": false
+    },
+    {
+      "id": "Q02",
+      "group": "common",
+      "scope": "project",
+      "question_ko": "툴체인저를 장착할 로봇 플랜지와 교체할 툴은 각각 몇 개입니까?",
+      "answer_format_ko": "로봇별 장착 플랜지 수, 실제 교체 툴 수, 동일 툴의 수량, 예비품 수량을 분리.",
+      "field_paths": [
+        "robots[].master_interface_count",
+        "tools[].installed_quantity",
+        "project.spare_quantities"
+      ],
+      "required_when": "always",
+      "selection_use_ko": "마스터와 툴플레이트 수량 산정",
+      "unknown_allowed": true,
+      "audience": "engineer",
+      "initial_screen_visible": false
+    },
+    {
+      "id": "Q03",
+      "group": "common",
+      "scope": "robot",
+      "question_ko": "로봇의 종류와 정확한 모델은 무엇입니까?",
+      "answer_format_ko": "협동 / 산업용 / 기타 / 미정, 제조사, 모델, 정격 가반하중 kg, 플랜지 도면.",
+      "field_paths": [
+        "robots[].type",
+        "robots[].manufacturer",
+        "robots[].model",
+        "robots[].rated_payload_kg",
+        "robots[].flange_drawing_ref"
+      ],
+      "required_when": "always",
+      "selection_use_ko": "로봇 종류별 후보 보정 및 장착 검토",
+      "unknown_allowed": true,
+      "audience": "engineer",
+      "initial_screen_visible": false
+    },
+    {
+      "id": "Q04",
+      "group": "common",
+      "scope": "robot",
+      "question_ko": "툴을 장착하고 운전할 때 최대 속도 설정은 얼마입니까?",
+      "answer_format_ko": "설정값과 단위를 함께 기입. 오버라이드 %인지 프로그램 속도인지, 최대 운전 조건인지 확인.",
+      "field_paths": [
+        "robots[].speed.value",
+        "robots[].speed.unit",
+        "robots[].speed.reference",
+        "robots[].speed.maximum_operating_value"
+      ],
+      "required_when": "always",
+      "selection_use_ko": "70 및 50 기준 적용 가능 여부 판단",
+      "unknown_allowed": true,
+      "audience": "engineer",
+      "initial_screen_visible": false
+    },
+    {
+      "id": "Q05",
+      "group": "common",
+      "scope": "robot",
+      "question_ko": "실제 최대 속도와 가감속 자료가 있습니까?",
+      "answer_format_ko": "TCP 속도 m/s, 병진 가감속 m/s², 회전속도 rad/s, 회전가감속 rad/s², 급정지 조건. 없으면 미확인.",
+      "field_paths": [
+        "robots[].motion"
+      ],
+      "required_when": "always",
+      "selection_use_ko": "속도 설정값으로 알 수 없는 동하중 검토",
+      "unknown_allowed": true,
+      "audience": "engineer",
+      "initial_screen_visible": false
+    },
+    {
+      "id": "Q06",
+      "group": "common",
+      "scope": "project",
+      "question_ko": "어떤 작업을 하며 얼마나 자주 툴을 교환합니까?",
+      "answer_format_ko": "이송 / 조립 / 가공 / 기타, 작업 설명, 사이클 초, 교환 횟수/일, 가동 시간/일.",
+      "field_paths": [
+        "project.process",
+        "project.cycle_time_s",
+        "project.exchanges_per_day",
+        "project.operating_hours_per_day"
+      ],
+      "required_when": "always",
+      "selection_use_ko": "작업 반력 질문 분기 및 수명 검토",
+      "unknown_allowed": true,
+      "audience": "engineer",
+      "initial_screen_visible": false
+    },
+    {
+      "id": "Q07",
+      "group": "mechanical",
+      "scope": "tool",
+      "question_ko": "교체하는 그리퍼 또는 툴의 명칭과 모델은 무엇입니까?",
+      "answer_format_ko": "툴 ID, 제조사/모델, 종류, 사용 로봇 ID, 실물 수량. 교체 툴마다 반복 입력.",
+      "field_paths": [
+        "tools[].id",
+        "tools[].model",
+        "tools[].robot_ids",
+        "tools[].installed_quantity"
+      ],
+      "required_when": "always",
+      "selection_use_ko": "툴별 독립 기록 및 호환 그룹 작성",
+      "unknown_allowed": true,
+      "audience": "engineer",
+      "initial_screen_visible": false
+    },
+    {
+      "id": "Q08",
+      "group": "mechanical",
+      "scope": "tool",
+      "question_ko": "그리퍼와 실제 운반물을 포함한 무게는 얼마입니까?",
+      "answer_format_ko": "그리퍼, 최대 동시 운반물, 툴플레이트, 툴측 어댑터, 툴측 액세서리의 질량 kg를 각각 기록. 중복 포함 여부도 표시.",
+      "field_paths": [
+        "tools[].mass_components",
+        "tools[].workpiece_count",
+        "tools[].mass_inclusions"
+      ],
+      "required_when": "always",
+      "selection_use_ko": "툴측 총질량 및 로봇측 총부하 계산",
+      "unknown_allowed": true,
+      "audience": "engineer",
+      "initial_screen_visible": false
+    },
+    {
+      "id": "Q09",
+      "group": "mechanical",
+      "scope": "tool",
+      "question_ko": "툴과 운반물을 합친 최대 외형과 돌출 길이는 얼마입니까?",
+      "answer_format_ko": "가로/세로/높이 mm, 결합 기준면부터 최외곽 길이 mm, 도면 또는 사진.",
+      "field_paths": [
+        "tools[].envelope_mm",
+        "tools[].tip_distance_mm",
+        "tools[].drawing_refs"
+      ],
+      "required_when": "always",
+      "selection_use_ko": "간섭과 긴 돌출 구조 검토",
+      "unknown_allowed": true,
+      "audience": "engineer",
+      "initial_screen_visible": false
+    },
+    {
+      "id": "Q10",
+      "group": "mechanical",
+      "scope": "tool",
+      "question_ko": "툴과 운반물을 합친 무게중심은 어디입니까?",
+      "answer_format_ko": "기준 원점과 축 방향을 표시한 X/Y/Z mm. 무부하와 최대 적재, 가변 자세별 CAD 또는 실측값. 모르면 도면 확보.",
+      "field_paths": [
+        "tools[].load_cases[].cog_mm",
+        "tools[].load_cases[].reference_frame",
+        "tools[].load_cases[].evidence"
+      ],
+      "required_when": "always",
+      "selection_use_ko": "편심 모멘트 검토. 외형 치수로 무게중심을 추정해 확정하지 않음",
+      "unknown_allowed": true,
+      "audience": "engineer",
+      "initial_screen_visible": false
+    },
+    {
+      "id": "Q11",
+      "group": "mechanical",
+      "scope": "tool",
+      "question_ko": "작업 중 틸팅이나 뒤집기 회전이 있습니까?",
+      "answer_format_ko": "유/무/미정, 최대 각도 deg, 정지 및 이동 자세, 편심 회전, 이동 중 그리퍼 형상 변화.",
+      "field_paths": [
+        "tools[].orientation",
+        "tools[].variable_geometry"
+      ],
+      "required_when": "always",
+      "selection_use_ko": "중량과 무게중심이 같은 경우에도 자세별 하중 재검토",
+      "unknown_allowed": true,
+      "audience": "engineer",
+      "initial_screen_visible": false
+    },
+    {
+      "id": "Q12",
+      "group": "mechanical",
+      "scope": "tool",
+      "question_ko": "누르기나 삽입 절삭 등 외력이 발생합니까?",
+      "answer_format_ko": "유/무/미정, 작용점 mm, 힘 N, 토크 N·m, 방향, 충격 유무. 케이블 및 호스 당김도 포함.",
+      "field_paths": [
+        "tools[].process_loads",
+        "tools[].dress_pack_loads"
+      ],
+      "required_when": "always",
+      "selection_use_ko": "질량 외의 추가 하중 반영",
+      "unknown_allowed": true,
+      "audience": "engineer",
+      "initial_screen_visible": false
+    },
+    {
+      "id": "Q13",
+      "group": "mechanical",
+      "scope": "robot_and_tool",
+      "question_ko": "로봇과 그리퍼 장착면 및 필요한 위치 정밀도는 무엇입니까?",
+      "answer_format_ko": "양쪽 체결 도면, 볼트/핀/PCD, 어댑터 필요 여부, 허용 TCP 오차 mm와 회전 오차 deg.",
+      "field_paths": [
+        "robots[].mounting",
+        "tools[].mounting",
+        "tools[].required_repeatability"
+      ],
+      "required_when": "always",
+      "selection_use_ko": "장착 호환, 추가 질량, TCP 변화와 정밀도 검토",
+      "unknown_allowed": true,
+      "audience": "engineer",
+      "initial_screen_visible": false
+    },
+    {
+      "id": "Q14",
+      "group": "electrical_air",
+      "scope": "tool",
+      "question_ko": "그리퍼와 툴측 기기의 전원 조건은 무엇입니까?",
+      "answer_format_ko": "전원 불필요 / DC / AC, 전압 V, 정상 및 최대 연속전류 A, 기동/돌입전류 A와 지속시간 ms, 전원 회로 수.",
+      "field_paths": [
+        "tools[].electrical.power_circuits"
+      ],
+      "required_when": "always",
+      "selection_use_ko": "1핀 1A 기준 및 전압 호환 검토",
+      "unknown_allowed": true,
+      "audience": "engineer",
+      "initial_screen_visible": false
+    },
+    {
+      "id": "Q15",
+      "group": "electrical_air",
+      "scope": "tool",
+      "question_ko": "필요한 센서와 제어 신호는 몇 개입니까?",
+      "answer_format_ko": "로봇/PLC 기준 DI와 DO 수, PNP/NPN, 전압, 공통선, 툴 ID, 차폐/접지. 센서 종류와 결선도 첨부.",
+      "field_paths": [
+        "tools[].electrical.dio",
+        "tools[].electrical.sensor_list"
+      ],
+      "required_when": "always",
+      "selection_use_ko": "실제 사용 도체 수 기준 핀 산정",
+      "unknown_allowed": true,
+      "audience": "engineer",
+      "initial_screen_visible": false
+    },
+    {
+      "id": "Q16",
+      "group": "electrical_air",
+      "scope": "tool",
+      "question_ko": "DIO 외에 어떤 통신을 사용합니까?",
+      "answer_format_ko": "없음 / RS-485 / RS-232 / CAN / IO-Link / Ethernet 계열 / 기타. 물리규격과 프로토콜, 채널 수, 통신속도, 배선도.",
+      "field_paths": [
+        "tools[].electrical.communications"
+      ],
+      "required_when": "통신 사용 또는 미정",
+      "selection_use_ko": "통신별 검증 이력과 핀 배치 확인",
+      "unknown_allowed": true,
+      "audience": "engineer",
+      "initial_screen_visible": false
+    },
+    {
+      "id": "Q17",
+      "group": "electrical_air",
+      "scope": "tool",
+      "question_ko": "전원과 신호의 핀별 배선표가 있습니까?",
+      "answer_format_ko": "핀별 기능, 전압, 최대 전류, 리턴/공통선, 통신 기준선, 차폐 처리, 예비 핀. 무전원 도통만 필요한지도 확인.",
+      "field_paths": [
+        "tools[].electrical.pin_requirements"
+      ],
+      "required_when": "always",
+      "selection_use_ko": "전원과 신호 중복 계산 방지 및 공통선 전류 검토",
+      "unknown_allowed": true,
+      "audience": "engineer",
+      "initial_screen_visible": false
+    },
+    {
+      "id": "Q18",
+      "group": "electrical_air",
+      "scope": "tool",
+      "question_ko": "공압 또는 진공이 필요합니까?",
+      "answer_format_ko": "없음 / 양압 / 진공 / 둘 다 / 기타 유체. TC 결합면을 실제 통과할 독립 유로 수와 각 용도.",
+      "field_paths": [
+        "tools[].pneumatic.medium",
+        "tools[].pneumatic.required_independent_paths",
+        "tools[].pneumatic.circuit_ref"
+      ],
+      "required_when": "always",
+      "selection_use_ko": "그리퍼 개수 대신 통과 유로로 공압 수량 검토",
+      "unknown_allowed": true,
+      "audience": "engineer",
+      "initial_screen_visible": false
+    },
+    {
+      "id": "Q19",
+      "group": "electrical_air",
+      "scope": "tool",
+      "question_ko": "공압 사용 압력과 유량은 얼마입니까?",
+      "answer_format_ko": "최소/정상/최대 압력 bar, 순간 최대압력, 필요 유량 L/min의 기준조건, 튜브 내경/외경, 피팅 규격.",
+      "field_paths": [
+        "tools[].pneumatic.pressure_bar",
+        "tools[].pneumatic.flow",
+        "tools[].pneumatic.fittings"
+      ],
+      "required_when": "공압 또는 진공 사용",
+      "selection_use_ko": "1~5bar 범위와 압력 손실 검토",
+      "unknown_allowed": true,
+      "audience": "engineer",
+      "initial_screen_visible": false
+    },
+    {
+      "id": "Q20",
+      "group": "electrical_air",
+      "scope": "tool",
+      "question_ko": "밸브는 어디에 있고 분리 시 압력은 어떻게 처리합니까?",
+      "answer_format_ko": "밸브 위치 로봇측/툴측, 회로도, 잔압 배출/차단 방식, 진공 유지 필요 여부.",
+      "field_paths": [
+        "tools[].pneumatic.valve_location",
+        "tools[].pneumatic.disconnect_state"
+      ],
+      "required_when": "공압 또는 진공 사용",
+      "selection_use_ko": "IN/OUT 명칭과 독립 유로 수의 혼동 방지",
+      "unknown_allowed": true,
+      "audience": "engineer",
+      "initial_screen_visible": false
+    },
+    {
+      "id": "Q21",
+      "group": "electrical_air",
+      "scope": "tool",
+      "question_ko": "툴 교환할 때 전원을 끄거나 통신을 재연결할 수 있습니까?",
+      "answer_format_ko": "통전 분리 요구, 전원 차단 순서, 재기동 시간, 통신 재접속 시간, 정전 시 그리퍼 파지 유지 필요 여부.",
+      "field_paths": [
+        "tools[].electrical.exchange_sequence",
+        "tools[].electrical.power_loss_requirement"
+      ],
+      "required_when": "전기 사용",
+      "selection_use_ko": "접점 수명, 돌입전류, 통신 재연결과 파지 유지 검토",
+      "unknown_allowed": true,
+      "audience": "engineer",
+      "initial_screen_visible": false
+    },
+    {
+      "id": "Q22",
+      "group": "installation",
+      "scope": "robot",
+      "question_ko": "마스터에서 컨트롤러까지 4m 케이블로 충분합니까?",
+      "answer_format_ko": "필요 실제 배선 길이 m, 드레스팩/가동 여유 포함, 케이블 경로와 반복 굴곡 여부.",
+      "field_paths": [
+        "robots[].cables.master_to_controller_required_m",
+        "robots[].cables.master_route"
+      ],
+      "required_when": "always",
+      "selection_use_ko": "4m 초과 또는 표준 케이블 변경 시 내부 검토",
+      "unknown_allowed": true,
+      "audience": "engineer",
+      "initial_screen_visible": false
+    },
+    {
+      "id": "Q23",
+      "group": "installation",
+      "scope": "robot",
+      "question_ko": "컨트롤러에서 PLC 또는 로봇까지 1m 케이블로 충분합니까?",
+      "answer_format_ko": "연결 대상과 제조사/모델, 설치 위치, 필요 실제 길이 m.",
+      "field_paths": [
+        "robots[].controller.target",
+        "robots[].cables.controller_to_system_required_m"
+      ],
+      "required_when": "always",
+      "selection_use_ko": "1m 초과 또는 결선 변경 시 내부 검토",
+      "unknown_allowed": true,
+      "audience": "engineer",
+      "initial_screen_visible": false
+    },
+    {
+      "id": "Q24",
+      "group": "installation",
+      "scope": "robot",
+      "question_ko": "컨트롤러 전원과 제어 인터페이스는 무엇입니까?",
+      "answer_format_ko": "공급 전압/전류, SMPS 모델, 다른 부하 공유 여부, 케이블 굵기, PLC/로봇 I/O 전압과 PNP/NPN, 요구 상태 신호.",
+      "field_paths": [
+        "robots[].controller.power",
+        "robots[].controller.interface"
+      ],
+      "required_when": "always",
+      "selection_use_ko": "흡탈착 순간 전압과 전류 및 제어 호환 확인",
+      "unknown_allowed": true,
+      "audience": "engineer",
+      "initial_screen_visible": false
+    },
+    {
+      "id": "Q25",
+      "group": "installation",
+      "scope": "project",
+      "question_ko": "분진이나 철분 이물 등 어떤 환경에서 사용합니까?",
+      "answer_format_ko": "온도, 습도, 철분 칩, 분진, 오일/절삭유/물, 세정, 부식, 방진방수 및 클린룸 요구, 자기장 민감 기기.",
+      "field_paths": [
+        "project.environment"
+      ],
+      "required_when": "always",
+      "selection_use_ko": "결합면 관리, 재질, 보호등급과 자기 영향 검토",
+      "unknown_allowed": true,
+      "audience": "engineer",
+      "initial_screen_visible": false
+    },
+    {
+      "id": "Q26",
+      "group": "installation",
+      "scope": "robot",
+      "question_ko": "체결 상태 확인과 툴 분리 허용 조건은 무엇입니까?",
+      "answer_format_ko": "결합/분리 감지, 툴 ID, 오결합 방지, 툴 안착 확인, 잘못된 해제 명령 방지. 제공 신호와 고객 구현 책임 확인.",
+      "field_paths": [
+        "robots[].interlocks"
+      ],
+      "required_when": "always",
+      "selection_use_ko": "단품 인터페이스 정의. 기능 제공 여부는 제품 DB로 확인",
+      "unknown_allowed": true,
+      "audience": "engineer",
+      "initial_screen_visible": false
+    },
+    {
+      "id": "Q27",
+      "group": "installation",
+      "scope": "project",
+      "question_ko": "툴 거치대와 주변 설비는 누가 준비합니까?",
+      "answer_format_ko": "고객 준비 / UND 시스템 별도 검토 / 미정. 거치 도면, 접근 방향, 정렬 여유, 고객측 자동 교환 준비 상태.",
+      "field_paths": [
+        "project.tool_stand_interface"
+      ],
+      "required_when": "always",
+      "selection_use_ko": "단품 BOM에 스탠드를 자동 포함하지 않고 교환 가능 조건 확인",
+      "unknown_allowed": true,
+      "audience": "engineer",
+      "initial_screen_visible": false
+    },
+    {
+      "id": "Q28",
+      "group": "installation",
+      "scope": "project",
+      "question_ko": "추가 구매품이나 지정 조건이 있습니까?",
+      "answer_format_ko": "어댑터, 브래킷, 보호커버, 예비 툴플레이트/접점/실, 지정 인증·검사 조건. 고객 지급품도 분리.",
+      "field_paths": [
+        "project.optional_items",
+        "project.customer_supplied_items",
+        "project.acceptance_requirements"
+      ],
+      "required_when": "always",
+      "selection_use_ko": "품목 누락과 중복 납품 방지",
+      "unknown_allowed": true,
+      "audience": "engineer",
+      "initial_screen_visible": false
+    }
+  ],
+  "question_bank": [
+    {
+      "id": "J01",
+      "question_ko": "어떤 로봇을 사용하나요?",
+      "scope": "robot",
+      "fields": [
+        {
+          "path": "robots[].manufacturer",
+          "type": "string",
+          "label_ko": "제조사",
+          "unknown_allowed": true,
+          "unknown_value": null
+        },
+        {
+          "path": "robots[].model",
+          "type": "string",
+          "label_ko": "모델명",
+          "unknown_allowed": true,
+          "unknown_value": null
+        },
+        {
+          "path": "robots[].type",
+          "type": "enum",
+          "label_ko": "로봇 종류",
+          "unknown_allowed": true,
+          "unknown_value": null,
+          "options": [
+            "cobot",
+            "industrial",
+            "other",
+            null
+          ]
+        },
+        {
+          "path": "robots[].quantity",
+          "type": "integer",
+          "label_ko": "로봇 수량",
+          "unknown_allowed": true,
+          "unknown_value": null,
+          "unit": "대"
+        }
+      ],
+      "help_text_ko": "협동 / 산업용 / 모름. 모델명을 모르면 로봇 명판 사진을 받으세요. 다른 모델은 한 줄 더 추가하세요.",
+      "help_collapsed_by_default": true,
+      "required_for_intake_completion": false,
+      "allow_unknown_and_continue": true,
+      "prefill_from_meeting_notes": true,
+      "ask_only_unanswered_fields": true,
+      "maps_to_engineer_question_ids": [
+        "Q02",
+        "Q03"
+      ]
+    },
+    {
+      "id": "J02",
+      "question_ko": "어떤 작업에 사용하나요?",
+      "scope": "project",
+      "fields": [
+        {
+          "path": "project.process.category",
+          "type": "enum",
+          "label_ko": "작업 종류",
+          "unknown_allowed": true,
+          "unknown_value": null,
+          "options": [
+            "transfer",
+            "assembly",
+            "machining",
+            "inspection",
+            "other",
+            null
+          ]
+        },
+        {
+          "path": "project.process.description",
+          "type": "string",
+          "label_ko": "작업 설명",
+          "unknown_allowed": true,
+          "unknown_value": null
+        }
+      ],
+      "help_text_ko": "이송 / 조립 / 가공 / 검사 / 기타. 예: 부품을 집어서 설비에 넣는 작업.",
+      "help_collapsed_by_default": true,
+      "required_for_intake_completion": false,
+      "allow_unknown_and_continue": true,
+      "prefill_from_meeting_notes": true,
+      "ask_only_unanswered_fields": true,
+      "maps_to_engineer_question_ids": [
+        "Q06",
+        "Q12"
+      ]
+    },
+    {
+      "id": "J03",
+      "question_ko": "교체해서 사용할 툴은 몇 개인가요?",
+      "scope": "project",
+      "fields": [
+        {
+          "path": "project.tool_count",
+          "type": "integer",
+          "label_ko": "사용 툴 수량",
+          "unknown_allowed": true,
+          "unknown_value": null,
+          "unit": "개"
+        }
+      ],
+      "help_text_ko": "교체하는 그리퍼 등 실제 툴 수량입니다. 같은 모델 2개도 2개로 적으세요. 예비품은 나중에 따로 확인합니다.",
+      "help_collapsed_by_default": true,
+      "required_for_intake_completion": false,
+      "allow_unknown_and_continue": true,
+      "prefill_from_meeting_notes": true,
+      "ask_only_unanswered_fields": true,
+      "maps_to_engineer_question_ids": [
+        "Q02",
+        "Q07"
+      ]
+    },
+    {
+      "id": "J04",
+      "question_ko": "툴별 크기와 무게는 얼마인가요?",
+      "scope": "tool",
+      "fields": [
+        {
+          "path": "tools[].name",
+          "type": "string",
+          "label_ko": "툴 이름",
+          "unknown_allowed": true,
+          "unknown_value": null
+        },
+        {
+          "path": "tools[].model",
+          "type": "string",
+          "label_ko": "모델명",
+          "unknown_allowed": true,
+          "unknown_value": null
+        },
+        {
+          "path": "tools[].robot_ids",
+          "type": "array",
+          "label_ko": "사용 로봇",
+          "unknown_allowed": true,
+          "unknown_value": null
+        },
+        {
+          "path": "tools[].installed_quantity",
+          "type": "integer",
+          "label_ko": "수량",
+          "unknown_allowed": true,
+          "unknown_value": null,
+          "unit": "개"
+        },
+        {
+          "path": "tools[].intake.dimensions_mm.x",
+          "type": "number",
+          "label_ko": "가로",
+          "unknown_allowed": true,
+          "unknown_value": null,
+          "unit": "mm"
+        },
+        {
+          "path": "tools[].intake.dimensions_mm.y",
+          "type": "number",
+          "label_ko": "세로",
+          "unknown_allowed": true,
+          "unknown_value": null,
+          "unit": "mm"
+        },
+        {
+          "path": "tools[].intake.dimensions_mm.z",
+          "type": "number",
+          "label_ko": "높이",
+          "unknown_allowed": true,
+          "unknown_value": null,
+          "unit": "mm"
+        },
+        {
+          "path": "tools[].intake.tool_assembly_mass_kg",
+          "type": "number",
+          "label_ko": "제품을 제외한 툴 무게",
+          "unknown_allowed": true,
+          "unknown_value": null,
+          "unit": "kg"
+        }
+      ],
+      "help_text_ko": "예: 200 × 150 × 100mm / 3kg. 무게에 포함한 부품은 사진이나 도면으로 확인합니다. 모르면 모델명·사진부터 받으세요.",
+      "help_collapsed_by_default": true,
+      "required_for_intake_completion": false,
+      "allow_unknown_and_continue": true,
+      "prefill_from_meeting_notes": true,
+      "ask_only_unanswered_fields": true,
+      "maps_to_engineer_question_ids": [
+        "Q07",
+        "Q08",
+        "Q09",
+        "Q13"
+      ]
+    },
+    {
+      "id": "J05",
+      "question_ko": "한 번에 드는 제품의 최대 무게는 얼마인가요?",
+      "scope": "tool",
+      "fields": [
+        {
+          "path": "tools[].intake.workpiece_name",
+          "type": "string",
+          "label_ko": "제품명",
+          "unknown_allowed": true,
+          "unknown_value": null
+        },
+        {
+          "path": "tools[].workpiece_count",
+          "type": "integer",
+          "label_ko": "한 번에 드는 수량",
+          "unknown_allowed": true,
+          "unknown_value": null,
+          "unit": "개"
+        },
+        {
+          "path": "tools[].mass_components.max_simultaneous_workpieces_kg",
+          "type": "number",
+          "label_ko": "한 번에 드는 제품 총무게",
+          "unknown_allowed": true,
+          "unknown_value": null,
+          "unit": "kg"
+        }
+      ],
+      "help_text_ko": "여러 개를 함께 들면 합계 무게입니다. 예: 0.5kg 제품 4개 = 2kg. 제품을 들지 않는 툴은 해당 없음으로 표시합니다.",
+      "help_collapsed_by_default": true,
+      "required_for_intake_completion": false,
+      "allow_unknown_and_continue": true,
+      "prefill_from_meeting_notes": true,
+      "ask_only_unanswered_fields": true,
+      "maps_to_engineer_question_ids": [
+        "Q08"
+      ]
+    },
+    {
+      "id": "J06",
+      "question_ko": "로봇 운전 속도는 얼마인가요?",
+      "scope": "robot",
+      "fields": [
+        {
+          "path": "robots[].speed.value",
+          "type": "number",
+          "label_ko": "최대 운전 설정값",
+          "unknown_allowed": true,
+          "unknown_value": null
+        },
+        {
+          "path": "robots[].speed.unit",
+          "type": "string",
+          "label_ko": "표시 단위",
+          "unknown_allowed": true,
+          "unknown_value": null
+        },
+        {
+          "path": "robots[].speed.screen_ref",
+          "type": "attachment",
+          "label_ko": "속도 화면 사진",
+          "unknown_allowed": true,
+          "unknown_value": null
+        }
+      ],
+      "help_text_ko": "예: 60%. 고객 화면에 적힌 값과 단위를 그대로 적으세요. 모르면 화면 사진을 요청하세요.",
+      "help_collapsed_by_default": true,
+      "required_for_intake_completion": false,
+      "allow_unknown_and_continue": true,
+      "prefill_from_meeting_notes": true,
+      "ask_only_unanswered_fields": true,
+      "maps_to_engineer_question_ids": [
+        "Q04",
+        "Q05"
+      ]
+    },
+    {
+      "id": "J07",
+      "question_ko": "작업 중 툴을 기울이거나 뒤집나요?",
+      "scope": "tool",
+      "fields": [
+        {
+          "path": "tools[].intake.tilts_or_flips",
+          "type": "boolean",
+          "label_ko": "기울임 또는 뒤집기",
+          "unknown_allowed": true,
+          "unknown_value": null,
+          "options": [
+            {
+              "value": true,
+              "label_ko": "있음"
+            },
+            {
+              "value": false,
+              "label_ko": "없음"
+            },
+            {
+              "value": null,
+              "label_ko": "모름"
+            }
+          ]
+        }
+      ],
+      "help_text_ko": "있음 / 없음 / 모름. 툴마다 다르면 각각 표시하세요.",
+      "help_collapsed_by_default": true,
+      "required_for_intake_completion": false,
+      "allow_unknown_and_continue": true,
+      "prefill_from_meeting_notes": true,
+      "ask_only_unanswered_fields": true,
+      "maps_to_engineer_question_ids": [
+        "Q10",
+        "Q11"
+      ]
+    },
+    {
+      "id": "J08",
+      "question_ko": "툴에 전기, 공압, 센서가 필요한가요?",
+      "scope": "tool",
+      "fields": [
+        {
+          "path": "tools[].intake.needs_power",
+          "type": "boolean",
+          "label_ko": "전기",
+          "unknown_allowed": true,
+          "unknown_value": null,
+          "options": [
+            {
+              "value": true,
+              "label_ko": "있음"
+            },
+            {
+              "value": false,
+              "label_ko": "없음"
+            },
+            {
+              "value": null,
+              "label_ko": "모름"
+            }
+          ]
+        },
+        {
+          "path": "tools[].intake.needs_air",
+          "type": "boolean",
+          "label_ko": "공압 또는 진공",
+          "unknown_allowed": true,
+          "unknown_value": null,
+          "options": [
+            {
+              "value": true,
+              "label_ko": "있음"
+            },
+            {
+              "value": false,
+              "label_ko": "없음"
+            },
+            {
+              "value": null,
+              "label_ko": "모름"
+            }
+          ]
+        },
+        {
+          "path": "tools[].intake.has_sensors_or_signals",
+          "type": "boolean",
+          "label_ko": "센서 또는 제어 신호",
+          "unknown_allowed": true,
+          "unknown_value": null,
+          "options": [
+            {
+              "value": true,
+              "label_ko": "있음"
+            },
+            {
+              "value": false,
+              "label_ko": "없음"
+            },
+            {
+              "value": null,
+              "label_ko": "모름"
+            }
+          ]
+        }
+      ],
+      "help_text_ko": "전기·공압·센서를 각각 있음 / 없음 / 모름으로 표시하세요. 전기 구동이 없어도 센서는 사용할 수 있습니다.",
+      "help_collapsed_by_default": true,
+      "required_for_intake_completion": false,
+      "allow_unknown_and_continue": true,
+      "prefill_from_meeting_notes": true,
+      "ask_only_unanswered_fields": true,
+      "maps_to_engineer_question_ids": [
+        "Q14",
+        "Q15",
+        "Q16",
+        "Q18"
+      ]
+    },
+    {
+      "id": "J09",
+      "question_ko": "기본 케이블 길이로 충분한가요?",
+      "scope": "robot",
+      "fields": [
+        {
+          "path": "robots[].cables.master_4m_sufficient",
+          "type": "boolean",
+          "label_ko": "툴체인저에서 컨트롤러까지 4m",
+          "unknown_allowed": true,
+          "unknown_value": null,
+          "options": [
+            {
+              "value": true,
+              "label_ko": "충분"
+            },
+            {
+              "value": false,
+              "label_ko": "부족"
+            },
+            {
+              "value": null,
+              "label_ko": "모름"
+            }
+          ]
+        },
+        {
+          "path": "robots[].cables.system_1m_sufficient",
+          "type": "boolean",
+          "label_ko": "컨트롤러에서 PLC 또는 로봇까지 1m",
+          "unknown_allowed": true,
+          "unknown_value": null,
+          "options": [
+            {
+              "value": true,
+              "label_ko": "충분"
+            },
+            {
+              "value": false,
+              "label_ko": "부족"
+            },
+            {
+              "value": null,
+              "label_ko": "모름"
+            }
+          ]
+        }
+      ],
+      "help_text_ko": "두 구간을 따로 충분 / 부족 / 모름으로 표시하세요. 로봇이 움직일 때 필요한 여유 길이도 포함합니다.",
+      "help_collapsed_by_default": true,
+      "required_for_intake_completion": false,
+      "allow_unknown_and_continue": true,
+      "prefill_from_meeting_notes": true,
+      "ask_only_unanswered_fields": true,
+      "maps_to_engineer_question_ids": [
+        "Q22",
+        "Q23"
+      ]
+    },
+    {
+      "id": "J10",
+      "question_ko": "철가루 물 기름 고온 등 특별한 사용 환경이 있나요?",
+      "scope": "project",
+      "fields": [
+        {
+          "path": "project.environment.has_special_conditions",
+          "type": "boolean",
+          "label_ko": "특별한 환경",
+          "unknown_allowed": true,
+          "unknown_value": null,
+          "options": [
+            {
+              "value": true,
+              "label_ko": "있음"
+            },
+            {
+              "value": false,
+              "label_ko": "없음"
+            },
+            {
+              "value": null,
+              "label_ko": "모름"
+            }
+          ]
+        },
+        {
+          "path": "project.environment.tags",
+          "type": "array",
+          "label_ko": "환경 종류",
+          "unknown_allowed": true,
+          "unknown_value": null
+        }
+      ],
+      "help_text_ko": "해당 없음 / 철가루 / 물·기름 / 고온 / 기타 / 모름. 사진이 있으면 함께 받으세요.",
+      "help_collapsed_by_default": true,
+      "required_for_intake_completion": false,
+      "allow_unknown_and_continue": true,
+      "prefill_from_meeting_notes": true,
+      "ask_only_unanswered_fields": true,
+      "maps_to_engineer_question_ids": [
+        "Q25"
+      ]
+    }
+  ],
+  "followup_question_bank": [
+    {
+      "id": "F01",
+      "question_ko": "툴 사진이나 도면을 받을 수 있나요?",
+      "scope": "tool",
+      "show_when": {
+        "any": [
+          {
+            "field": "tools[].intake.tool_assembly_mass_kg",
+            "op": "is_unknown",
+            "value": null
+          },
+          {
+            "field": "tools[].intake.dimensions_mm",
+            "op": "has_unknown_child",
+            "value": null
+          },
+          {
+            "field": "tools[].intake.tilts_or_flips",
+            "op": "eq",
+            "value": true
+          }
+        ]
+      },
+      "fields": [
+        {
+          "path": "tools[].drawing_refs",
+          "type": "array",
+          "label_ko": "사진 또는 도면",
+          "unknown_allowed": true,
+          "unknown_value": null
+        }
+      ],
+      "route_to_engineer_question_ids": [
+        "Q08",
+        "Q09",
+        "Q10",
+        "Q13"
+      ],
+      "help_text_ko": "무게중심 좌표를 직접 계산할 필요는 없습니다. 자료를 받아 엔지니어에게 넘기세요.",
+      "allow_unknown_and_continue": true,
+      "ask_once_per_entity": true
+    },
+    {
+      "id": "F02",
+      "question_ko": "전압과 전류가 적힌 라벨이나 사양서가 있나요?",
+      "scope": "tool",
+      "show_when": {
+        "field": "tools[].intake.needs_power",
+        "op": "eq",
+        "value": true
+      },
+      "fields": [
+        {
+          "path": "tools[].electrical.power_document_ref",
+          "type": "attachment",
+          "label_ko": "라벨 또는 사양서",
+          "unknown_allowed": true,
+          "unknown_value": null
+        },
+        {
+          "path": "tools[].electrical.power_circuits",
+          "type": "array",
+          "label_ko": "확인된 전원 조건",
+          "unknown_allowed": true,
+          "unknown_value": null
+        }
+      ],
+      "route_to_engineer_question_ids": [
+        "Q14"
+      ],
+      "help_text_ko": "알면 전압 V와 전류 A를 적고, 모르면 그리퍼 모델명이나 라벨 사진을 받으세요.",
+      "allow_unknown_and_continue": true,
+      "ask_once_per_entity": true
+    },
+    {
+      "id": "F03",
+      "question_ko": "센서나 연결할 기기의 이름과 수량은 무엇인가요?",
+      "scope": "tool",
+      "show_when": {
+        "field": "tools[].intake.has_sensors_or_signals",
+        "op": "eq",
+        "value": true
+      },
+      "fields": [
+        {
+          "path": "tools[].electrical.sensor_list",
+          "type": "array",
+          "label_ko": "기기명과 수량",
+          "unknown_allowed": true,
+          "unknown_value": null
+        }
+      ],
+      "route_to_engineer_question_ids": [
+        "Q15"
+      ],
+      "help_text_ko": "예: 그리퍼 열림 감지 1개, 닫힘 감지 1개. 모르면 모델명이나 사진을 받으세요.",
+      "allow_unknown_and_continue": true,
+      "ask_once_per_entity": true
+    },
+    {
+      "id": "F04",
+      "question_ko": "고객이 지정한 제어 방식이나 배선도가 있나요?",
+      "scope": "tool",
+      "show_when": {
+        "any": [
+          {
+            "field": "tools[].intake.needs_power",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "field": "tools[].intake.has_sensors_or_signals",
+            "op": "eq",
+            "value": true
+          }
+        ]
+      },
+      "fields": [
+        {
+          "path": "tools[].electrical.control_method_raw",
+          "type": "string",
+          "label_ko": "고객이 말한 제어 방식",
+          "unknown_allowed": true,
+          "unknown_value": null
+        },
+        {
+          "path": "tools[].electrical.wiring_document_ref",
+          "type": "attachment",
+          "label_ko": "배선도",
+          "unknown_allowed": true,
+          "unknown_value": null
+        }
+      ],
+      "route_to_engineer_question_ids": [
+        "Q15",
+        "Q16",
+        "Q17",
+        "Q21"
+      ],
+      "help_text_ko": "고객이 말한 DIO, RS-485 등의 명칭을 그대로 기록하세요. 모르면 배선도를 요청하세요.",
+      "allow_unknown_and_continue": true,
+      "ask_once_per_entity": true
+    },
+    {
+      "id": "F05",
+      "question_ko": "사용 압력은 몇 bar인가요?",
+      "scope": "tool",
+      "show_when": {
+        "field": "tools[].intake.needs_air",
+        "op": "eq",
+        "value": true
+      },
+      "fields": [
+        {
+          "path": "tools[].pneumatic.medium",
+          "type": "string",
+          "label_ko": "공기 또는 진공",
+          "unknown_allowed": true,
+          "unknown_value": null
+        },
+        {
+          "path": "tools[].pneumatic.pressure_bar",
+          "type": "object",
+          "label_ko": "사용 압력",
+          "unknown_allowed": true,
+          "unknown_value": null,
+          "unit": "bar"
+        }
+      ],
+      "route_to_engineer_question_ids": [
+        "Q18",
+        "Q19"
+      ],
+      "help_text_ko": "예: 압축공기 5bar. 진공이면 진공이라고 적고 사양서를 받으세요.",
+      "allow_unknown_and_continue": true,
+      "ask_once_per_entity": true
+    },
+    {
+      "id": "F06",
+      "question_ko": "툴에 연결되는 에어호스는 몇 개인가요?",
+      "scope": "tool",
+      "show_when": {
+        "field": "tools[].intake.needs_air",
+        "op": "eq",
+        "value": true
+      },
+      "fields": [
+        {
+          "path": "tools[].pneumatic.observed_hose_count",
+          "type": "integer",
+          "label_ko": "보이는 호스 수",
+          "unknown_allowed": true,
+          "unknown_value": null,
+          "unit": "개"
+        },
+        {
+          "path": "tools[].pneumatic.circuit_ref",
+          "type": "attachment",
+          "label_ko": "사진 또는 회로도",
+          "unknown_allowed": true,
+          "unknown_value": null
+        }
+      ],
+      "route_to_engineer_question_ids": [
+        "Q18",
+        "Q20"
+      ],
+      "help_text_ko": "보이는 수와 사진을 기록하세요. 실제 통과 유로 수와 공압 모듈 수는 별도로 검토합니다.",
+      "allow_unknown_and_continue": true,
+      "ask_once_per_entity": true
+    },
+    {
+      "id": "F07",
+      "question_ko": "부족한 구간은 몇 m가 필요한가요?",
+      "scope": "robot",
+      "show_when": {
+        "any": [
+          {
+            "field": "robots[].cables.master_4m_sufficient",
+            "op": "eq",
+            "value": false
+          },
+          {
+            "field": "robots[].cables.system_1m_sufficient",
+            "op": "eq",
+            "value": false
+          }
+        ]
+      },
+      "fields": [
+        {
+          "path": "robots[].cables.master_to_controller_required_m",
+          "type": "number",
+          "label_ko": "툴체인저에서 컨트롤러",
+          "unknown_allowed": true,
+          "unknown_value": null,
+          "unit": "m"
+        },
+        {
+          "path": "robots[].cables.controller_to_system_required_m",
+          "type": "number",
+          "label_ko": "컨트롤러에서 PLC 또는 로봇",
+          "unknown_allowed": true,
+          "unknown_value": null,
+          "unit": "m"
+        }
+      ],
+      "route_to_engineer_question_ids": [
+        "Q22",
+        "Q23",
+        "Q24"
+      ],
+      "help_text_ko": "부족한 구간만 확인하세요. 연장 적용은 내부 엔지니어가 검토합니다.",
+      "allow_unknown_and_continue": true,
+      "ask_once_per_entity": true
+    },
+    {
+      "id": "F08",
+      "question_ko": "가장 많이 기울어진 자세를 보여줄 수 있나요?",
+      "scope": "tool",
+      "show_when": {
+        "field": "tools[].intake.tilts_or_flips",
+        "op": "eq",
+        "value": true
+      },
+      "fields": [
+        {
+          "path": "tools[].orientation",
+          "type": "object",
+          "label_ko": "사진 영상 또는 각도",
+          "unknown_allowed": true,
+          "unknown_value": null
+        }
+      ],
+      "route_to_engineer_question_ids": [
+        "Q10",
+        "Q11"
+      ],
+      "help_text_ko": "사진·영상 또는 알고 있는 각도로 답하면 됩니다.",
+      "allow_unknown_and_continue": true,
+      "ask_once_per_entity": true
+    },
+    {
+      "id": "F09",
+      "question_ko": "누르거나 끼우거나 자르는 작업이 있나요?",
+      "scope": "project",
+      "show_when": {
+        "field": "project.process.category",
+        "op": "in",
+        "value": [
+          "assembly",
+          "machining",
+          "other"
+        ]
+      },
+      "fields": [
+        {
+          "path": "project.process.has_contact_force",
+          "type": "boolean",
+          "label_ko": "힘을 주는 작업",
+          "unknown_allowed": true,
+          "unknown_value": null,
+          "options": [
+            {
+              "value": true,
+              "label_ko": "있음"
+            },
+            {
+              "value": false,
+              "label_ko": "없음"
+            },
+            {
+              "value": null,
+              "label_ko": "모름"
+            }
+          ]
+        },
+        {
+          "path": "project.process.contact_operation",
+          "type": "string",
+          "label_ko": "작업 내용",
+          "unknown_allowed": true,
+          "unknown_value": null
+        }
+      ],
+      "route_to_engineer_question_ids": [
+        "Q12"
+      ],
+      "help_text_ko": "있다면 작업 내용을 적거나 영상을 받으세요. 필요한 힘 계산은 내부 검토로 넘깁니다.",
+      "allow_unknown_and_continue": true,
+      "ask_once_per_entity": true
+    },
+    {
+      "id": "F10",
+      "question_ko": "사용 환경을 사진이나 설명으로 알려주세요",
+      "scope": "project",
+      "show_when": {
+        "field": "project.environment.has_special_conditions",
+        "op": "eq",
+        "value": true
+      },
+      "fields": [
+        {
+          "path": "project.environment.details",
+          "type": "string",
+          "label_ko": "환경 설명",
+          "unknown_allowed": true,
+          "unknown_value": null
+        },
+        {
+          "path": "project.environment.photo_refs",
+          "type": "array",
+          "label_ko": "현장 사진",
+          "unknown_allowed": true,
+          "unknown_value": null
+        }
+      ],
+      "route_to_engineer_question_ids": [
+        "Q25"
+      ],
+      "help_text_ko": "철가루가 붙는지, 물이나 기름이 직접 닿는지 등 고객 설명을 기록하세요.",
+      "allow_unknown_and_continue": true,
+      "ask_once_per_entity": true
+    },
+    {
+      "id": "F11",
+      "question_ko": "로봇 모델명이나 명판 사진을 받을 수 있나요?",
+      "scope": "robot",
+      "show_when": {
+        "any": [
+          {
+            "field": "robots[].model",
+            "op": "is_unknown",
+            "value": null
+          },
+          {
+            "field": "robots[].type",
+            "op": "is_unknown",
+            "value": null
+          }
+        ]
+      },
+      "fields": [
+        {
+          "path": "robots[].nameplate_ref",
+          "type": "attachment",
+          "label_ko": "로봇 명판",
+          "unknown_allowed": true,
+          "unknown_value": null
+        }
+      ],
+      "route_to_engineer_question_ids": [
+        "Q03"
+      ],
+      "help_text_ko": "종류를 추측하지 않고 모델 자료로 확인합니다.",
+      "allow_unknown_and_continue": true,
+      "ask_once_per_entity": true
+    },
+    {
+      "id": "F12",
+      "question_ko": "툴 모델명이나 제품 사진을 받을 수 있나요?",
+      "scope": "tool",
+      "show_when": {
+        "any": [
+          {
+            "field": "tools[].intake.needs_power",
+            "op": "is_unknown",
+            "value": null
+          },
+          {
+            "field": "tools[].intake.needs_air",
+            "op": "is_unknown",
+            "value": null
+          },
+          {
+            "field": "tools[].intake.has_sensors_or_signals",
+            "op": "is_unknown",
+            "value": null
+          }
+        ]
+      },
+      "fields": [
+        {
+          "path": "tools[].utility_document_refs",
+          "type": "array",
+          "label_ko": "툴 사진 또는 제품 자료",
+          "unknown_allowed": true,
+          "unknown_value": null
+        }
+      ],
+      "route_to_engineer_question_ids": [
+        "Q14",
+        "Q15",
+        "Q18"
+      ],
+      "help_text_ko": "전기·공압을 모르면 자료 요청으로 전환하고, 같은 질문을 반복하지 않습니다.",
+      "allow_unknown_and_continue": true,
+      "ask_once_per_entity": true
+    }
+  ],
+  "ui_policy": {
+    "audience": "junior_sales",
+    "initial_question_group_count": 10,
+    "one_question_group_at_a_time": true,
+    "scope_fixed_to": "component_only",
+    "system_requests": "record_separately_and_route",
+    "all_fields_allow_unknown": true,
+    "unknown_does_not_block_intake": true,
+    "unknown_can_block_final_selection": true,
+    "default_help_collapsed": true,
+    "hide_engineering_question_bank_from_initial_view": true,
+    "tool_question_groups": [
+      "J04",
+      "J05",
+      "J07",
+      "J08"
+    ],
+    "robot_question_groups": [
+      "J01",
+      "J06",
+      "J09"
+    ],
+    "record_tool_units_individually_or_group_identical_units_with_quantity": true,
+    "confirm_sum_of_tool_quantities_matches_J03": true,
+    "different_robot_model_requires_separate_record": true,
+    "reuse_answered_fields": true,
+    "review_extracted_values_before_confirmed": true,
+    "unknown_followup": "Ask once for model/photo/drawing; if unavailable, record missing field and route to engineer. Do not repeatedly demand numeric engineering answers.",
+    "must_not_derive": [
+      "center_of_gravity_from_dimensions_only",
+      "air_paths_from_observed_hose_count_only",
+      "verified_communication_from_pin_count",
+      "success_from_quote_or_delivery"
+    ]
+  },
+  "condition_language": {
+    "operators": [
+      "eq",
+      "in",
+      "is_unknown",
+      "has_unknown_child"
+    ],
+    "logical_operators": [
+      "any",
+      "all"
+    ],
+    "repeat_scope": "Resolve [] against the current tool or robot; process conditions use the current project. Evaluate after prefill and each edited answer. Never combine different tools into one triggering state.",
+    "unknown_semantics": "is_unknown means absent or null. has_unknown_child means any expected coordinate missing/null. eq true/false never matches null.",
+    "answer_invalidation": "If a triggering answer changes, reevaluate affected followups and recommendations; retain prior values as history, not active facts."
+  },
+  "case_record_template": {
+    "case_id": null,
+    "project_group_id": null,
+    "revision": 1,
+    "linked_prior_revision": null,
+    "process_tags": [],
+    "process_description": null,
+    "input_snapshot": null,
+    "evidence_refs": [],
+    "answer_status_by_field": {},
+    "input_completeness": {
+      "missing_fields": [],
+      "estimated_fields": []
+    },
+    "ai_recommendation": {
+      "candidate_model_ids": [],
+      "candidate_ranking": [],
+      "reason": null,
+      "bom_snapshot": null,
+      "rules_revision": null,
+      "catalog_revision": null,
+      "recommender_revision": null,
+      "retrieved_case_ids": []
+    },
+    "engineering_decision": {
+      "status": "pending",
+      "selected_model_id": null,
+      "approved_bom_snapshot": null,
+      "difference_from_ai": null,
+      "change_reason_codes": [],
+      "change_reason_text": null,
+      "reviewer": null,
+      "reviewed_at": null
+    },
+    "installation": {
+      "status": "not_confirmed",
+      "installed_model_id": null,
+      "installed_bom_snapshot": null,
+      "installed_at": null,
+      "conditions_match_approved": null,
+      "actual_input_snapshot": null
+    },
+    "outcome_observations": [],
+    "outcome_observation_template": {
+      "observed_at": null,
+      "status": "not_verified",
+      "operating_hours": null,
+      "exchange_cycles": null,
+      "actual_speed_and_unit": null,
+      "actual_load_kg": null,
+      "posture": null,
+      "environment": null,
+      "issues": [],
+      "corrective_action": null,
+      "model_before": null,
+      "model_after": null,
+      "retest_result": null,
+      "acceptance_criteria_ref": null,
+      "evidence_refs": [],
+      "verified_by": null
+    },
+    "outcome_status_values": [
+      "not_verified",
+      "trial_only",
+      "verified_success",
+      "conditional_success",
+      "verified_failure"
+    ],
+    "training_use": {
+      "review_status": "pending",
+      "label_type": null,
+      "eligible_for_positive_case_retrieval": false,
+      "eligible_for_failure_analysis": false,
+      "approved_by": null,
+      "approved_at": null,
+      "dataset_split_group": null
+    }
+  },
+  "improvement_policy": {
+    "goal": "공정별 검증 사례를 축적하여 초기 후보 순위와 추가 질문의 적합성을 개선",
+    "automatic_model_weight_learning_from_saved_records": false,
+    "stages": [
+      {
+        "stage": 1,
+        "method": "approved_rules_and_catalog",
+        "description_ko": "초기에는 제품 사양과 선정 규칙으로 후보를 만든다."
+      },
+      {
+        "stage": 2,
+        "method": "verified_case_retrieval_and_reranking",
+        "description_ko": "검증된 유사 공정을 찾아 후보와 추가 질문 순서를 보완한다."
+      },
+      {
+        "stage": 3,
+        "method": "evaluated_model_training_if_justified",
+        "description_ko": "품질이 확인된 사례가 쌓이면 별도 학습과 평가를 수행하고, 기존 방식보다 개선된 버전만 적용한다."
+      }
+    ],
+    "retrieval_features": [
+      "process_category",
+      "robot_type_and_model",
+      "tool_total_load",
+      "dimensions_and_cog",
+      "motion_and_tilting",
+      "process_force",
+      "electrical_and_communication",
+      "pneumatics",
+      "environment",
+      "accessory_layout",
+      "cable_conditions"
+    ],
+    "positive_label_requirements": [
+      "engineer-approved configuration",
+      "actually installed configuration recorded",
+      "tested operating conditions and evidence",
+      "acceptance criteria met",
+      "reviewed outcome"
+    ],
+    "quote_only_or_shipped_only_is_success": false,
+    "conditional_success_is_not_universal_success": true,
+    "failures_and_changes_retained": true,
+    "do_not_copy_failed_configuration_as_success": true,
+    "repeat_measurements_and_project_revisions_grouped_for_evaluation": true,
+    "evaluation": {
+      "compare_against": "current approved rules and recommender",
+      "metrics": [
+        "engineer_final_model_top_k_recall",
+        "hard_constraint_violation_rate",
+        "engineer_correction_rate",
+        "clarification_round_count",
+        "field_outcome_on_verified_cases"
+      ],
+      "minimum_sample_count": null,
+      "minimum_release_thresholds": null,
+      "metric_note_ko": "공정별 사례 수와 평가기간을 함께 기록한다. 표본 수와 배포 기준은 개발팀이 정하며 근거 없는 정확도 %를 표시하지 않는다."
+    },
+    "confidence_display": [
+      "유사 검증 사례 있음",
+      "정보 추가 확인 필요",
+      "새로운 조건으로 내부 검토"
+    ],
+    "numeric_probability_requires_calibration": true,
+    "hard_constraints_not_learned_away": [
+      "product_ratings",
+      "1A_pin_policy",
+      "3_slot_limit",
+      "pressure_policy",
+      "unresolved_speed_boundaries",
+      "validated_communication_and_cable_limits"
+    ],
+    "catalog_changes_require_engineering_approval": true,
+    "avoid_feedback_loop": "AI 추천값만을 정답 라벨로 재학습하지 않는다. 사람의 수정과 실제 적용 결과를 독립적으로 남긴다."
+  },
+  "flow_acceptance_cases": [
+    {
+      "id": "JF01",
+      "given": {
+        "tool.power": false,
+        "tool.sensors": true
+      },
+      "expect_shown": [
+        "F03",
+        "F04"
+      ],
+      "expect_hidden": [
+        "F02"
+      ]
+    },
+    {
+      "id": "JF02",
+      "given": {
+        "tool.air": false
+      },
+      "expect_hidden": [
+        "F05",
+        "F06"
+      ]
+    },
+    {
+      "id": "JF03",
+      "given": {
+        "tool.power": null,
+        "tool.air": null,
+        "tool.sensors": null
+      },
+      "expect_shown": [
+        "F12"
+      ],
+      "unknown_is_not_none_required": true
+    },
+    {
+      "id": "JF04",
+      "given": {
+        "robot.master_cable_sufficient": false,
+        "robot.system_cable_sufficient": true
+      },
+      "expect_shown": [
+        "F07"
+      ],
+      "ask_only": "master route length"
+    },
+    {
+      "id": "JF05",
+      "given": {
+        "tool.tilts": true
+      },
+      "expect_shown": [
+        "F01",
+        "F08"
+      ],
+      "engineer_questions_hidden": true
+    },
+    {
+      "id": "JF06",
+      "given": {
+        "tool1.air": true,
+        "tool2.air": false
+      },
+      "expected": "F05/F06 for tool1 only"
+    },
+    {
+      "id": "JF07",
+      "given": {
+        "intake_unknown_mass": true
+      },
+      "expected": "Allow intake completion, request evidence, block final selection"
+    },
+    {
+      "id": "JF08",
+      "given": {
+        "tool_count": 3,
+        "tool_record_quantities": [
+          1,
+          2
+        ]
+      },
+      "expected": "quantity consistent"
+    },
+    {
+      "id": "JF09",
+      "given": {
+        "tool_count": 3,
+        "tool_record_quantities": [
+          1,
+          1
+        ]
+      },
+      "expected": "ask to resolve count mismatch"
+    },
+    {
+      "id": "JF10",
+      "given": {
+        "project.status": "quoted",
+        "model_id": "symbolic_only"
+      },
+      "expected": "not a verified success label"
+    },
+    {
+      "id": "JF11",
+      "given": {
+        "ai_model": "A",
+        "engineer_model": "B",
+        "field_result": "verified_failure"
+      },
+      "expected": "retain all three facts and failure evidence"
+    },
+    {
+      "id": "JF12",
+      "given": {
+        "observed_hoses": 2,
+        "approved_paths_per_module": null
+      },
+      "expected": "no automatic pneumatic module count"
+    },
+    {
+      "id": "JF13",
+      "given": {
+        "past_similar_success": true,
+        "current_pin_current_A": 1.4
+      },
+      "expected": "engineering review; do not bypass R12"
+    },
+    {
+      "id": "JF14",
+      "given": {
+        "tool_assembly_mass_kg": 3,
+        "included_adapter_kg": 0.5,
+        "workpiece_mass_kg": 2
+      },
+      "expected": "subtotal 5kg before separately unincluded components; do not count included adapter twice"
+    }
+  ]
+}
