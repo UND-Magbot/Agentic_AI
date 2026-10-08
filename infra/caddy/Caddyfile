@@ -1,0 +1,11 @@
+# 운영 서버 HTTPS 진입점 — 인증서는 Caddy 가 자동 발급·갱신(Let's Encrypt, 실패 시 ZeroSSL).
+{$PUBLIC_DOMAIN} {
+	encode zstd gzip
+
+	# 회의 녹음·영수증 업로드 — frontend(proxyClientMaxBodySize 75mb)·backend 한도보다 약간 크게.
+	request_body {
+		max_size 80MB
+	}
+
+	reverse_proxy frontend:3000
+}
