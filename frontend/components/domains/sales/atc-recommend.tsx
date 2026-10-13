@@ -5,7 +5,7 @@
 // 모르는 값은 null — '모름'은 '없음'이 아니다. 모름이어도 다음으로 넘어갈 수 있다(최종 선정만 막힌다).
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, type FocusEvent, type ReactNode } from "react";
 import type {
   AtcBasis, AtcFollowup, AtcField, AtcIntake, AtcMeeting, AtcOutput, AtcQuestion, AtcSpec, Recommendation,
 } from "@/lib/shared/product-recommend";
@@ -18,13 +18,125 @@ const OPTION_KO: Record<string, string> = {
   transfer: "이송", assembly: "조립", machining: "가공", inspection: "검사",
 };
 const ENV_TAGS = ["철가루", "물·기름", "고온", "기타"];
+/** 칸 안 예시(힌트, 사용자 2026-10-12 — 숫자 칸 제외 전부). 질문지 JSON 은 그대로 두고 화면에서만 보여 준다. 키 = 대상 기준 경로. */
+const FIELD_HINT: Record<string, string> = {
+  // 고객 정보
+  "project.customer_name": "예: (주)가나테크",
+  "project.customer_contact": "예: 김철수 과장 / 생산기술팀",
+  "project.writer": "예: Alex",
+  "project.meeting_date": "예: 2026-10-12",
+  // 1 로봇
+  "robots[].manufacturer": "예: 두산로보틱스, Universal Robots, FANUC",
+  "robots[].model": "예: M1013, UR10e",
+  "tools[].model": "예: OnRobot RG2, Schunk EGP 40",
+  // 2 작업
+  "project.process.description": "작업 종류를 고르면 맞는 예시가 나옵니다 — 예: 제품을 컨베이어(A)에서 적재대(B)로 옮김",
+  // 4 툴
+  "tools[].name": "예: 전동 그리퍼, 공압 그리퍼, 진공 그리퍼",
+  // 5 제품
+  "tools[].intake.workpiece_name": "예: 엔진 브라켓, 화장품 용기",
+  // 6 속도
+  "robots[].speed.unit": "예: % (티치펜던트 속도), mm/s",
+  "robots[].speed.screen_ref": "예: 속도 설정 화면 사진 받음 / 요청함",
+  // 추가 질문
+  "tools[].drawing_refs": "예: 툴 도면 받음 / 사진 요청함",
+  "tools[].electrical.power_document_ref": "예: 그리퍼 사양서 받음 / 라벨 사진 요청함",
+  "tools[].electrical.power_circuits": "예: 24V 0.5A(구동), 24V 0.1A(센서)",
+  "tools[].electrical.sensor_list": "예: 열림 감지 센서 1개, 닫힘 감지 센서 1개",
+  "tools[].electrical.control_method_raw": "예: DIO, RS-485(Modbus RTU), EtherCAT",
+  "tools[].electrical.wiring_document_ref": "예: 배선도 받음 / 요청함",
+  "tools[].pneumatic.medium": "예: 압축공기 / 진공",
+  "tools[].pneumatic.circuit_ref": "예: 배관 사진 받음 / 공압 회로도 요청함",
+  "tools[].orientation": "예: 옆으로 90° 눕혀 사용, 작업 영상 받음",
+  "project.process.contact_operation": "예: 핀을 구멍에 끼워 넣기, 버 제거",
+  "project.environment.details": "예: 철가루가 툴에 붙음, 절삭유가 직접 튐",
+  "project.environment.photo_refs": "예: 현장 사진 3장 받음 / 요청함",
+  "robots[].nameplate_ref": "예: 로봇 명판 사진 받음 / 요청함",
+  "tools[].utility_document_refs": "예: 툴 제품 사진·카탈로그 받음 / 요청함",
+};
 
-export function emptyIntake(): AtcIntake {
+/** 빈 질문지. writer = 작성자(영업 담당) 기본값 — 로그인 계정의 영문 이름(예: Alex), 질문지에서 고칠 수 있음(사용자 2026-10-12). */
+export function emptyIntake(writer = ""): AtcIntake {
   return {
-    project: { process: {}, environment: { tags: [] } },
+    project: { process: {}, environment: { tags: [] }, ...(writer ? { writer } : {}) },
     robots: [{ id: "R1", speed: {}, cables: {} }],
     tools: [{ id: "T1", robot_ids: ["R1"], intake: { dimensions_mm: {} }, mass_components: {} }],
   };
+}
+
+/** 질문 보여 주는 순서(사용자 2026-10-12, 안 B — 영업 대화 순서): 작업 → 로봇 → 속도 → 툴 수 → 툴 크기·무게 → 대상물 →
+ *  기울임 → 전기·공압·센서 → 케이블 → 환경. 질문지 JSON 의 번호(J01~J10)·규칙은 그대로, 순서만. backend atc_selection.QUESTION_ORDER 와 같게. */
+export const QUESTION_ORDER = ["J02", "J01", "J06", "J03", "J04", "J05", "J07", "J08", "J09", "J10"];
+export function orderedBank<T extends { id: string }>(bank: T[]): T[] {
+  const at = (id: string) => { const i = QUESTION_ORDER.indexOf(id); return i < 0 ? QUESTION_ORDER.length : i; };
+  return [...bank].sort((a, b) => at(a.id) - at(b.id));
+}
+
+/** 화면 질문 제목(질문지 JSON 은 그대로, 사용자 2026-10-12 워딩 정리) — 없으면 질문지 문구. */
+const TITLE_KO: Record<string, string> = {
+  J05: "대상물의 최대 무게는 얼마인가요?",
+};
+export const questionTitle = (q: { id: string; question_ko: string }) => TITLE_KO[q.id] ?? q.question_ko;
+/** 화면 칸 이름(같은 이유) — 키 = 질문지 칸 경로. */
+const LABEL_KO: Record<string, string> = {
+  "tools[].intake.workpiece_name": "대상물",
+  "tools[].workpiece_count": "한 번에 집는 개수",
+  "tools[].mass_components.max_simultaneous_workpieces_kg": "대상물 최대 무게(합계)",
+  "robots[].speed.screen_ref": "속도 설정 화면 사진",
+  // 9번 케이블 — '컨트롤러'가 툴체인저 컨트롤박스이고 4m·1m 는 기본 케이블 길이라는 뜻이 드러나게(사용자 2026-10-12)
+  "robots[].cables.master_4m_sufficient": "툴체인저 → 툴체인저 컨트롤박스 (기본 4m)",
+  "robots[].cables.system_1m_sufficient": "툴체인저 컨트롤박스 → 로봇 제어반(로봇 컨트롤러·컨트롤박스) 또는 PLC (기본 1m)",
+  "robots[].cables.master_to_controller_required_m": "툴체인저 → 툴체인저 컨트롤박스 — 기본 4m에서 연장할 길이",
+  "robots[].cables.controller_to_system_required_m": "툴체인저 컨트롤박스 → 로봇 제어반(로봇 컨트롤러·컨트롤박스) 또는 PLC — 기본 1m에서 연장할 길이",
+};
+/** 칸 안 예시가 긴 글 칸은 한 줄 전체 너비로 — 예시가 잘리지 않게(사용자 2026-10-12, 작업 설명 등). */
+const wideText = (f: AtcField) => f.type !== "number" && f.type !== "integer"
+  && (f.path === "project.process.description" || (FIELD_HINT[f.path] ?? "").length >= 24);
+
+/** F07 — 담당자는 연장할 길이만 적고, 저장은 필요한 전체 길이(기본 + 연장)로(선정 규칙 R17·C15 가 전체 길이로 판단).
+ *  기본 길이 = 영업부 확정 기준 v0.8 C15(마스터당 4m·1m). */
+const CABLE_BASE_M: Record<string, number> = {
+  "robots[].cables.master_to_controller_required_m": 4,
+  "robots[].cables.controller_to_system_required_m": 1,
+};
+
+/** 칸 아래 한 줄 안내(화면) — 키 = 질문지 칸 경로. */
+const FIELD_NOTE: Record<string, string> = {
+  "robots[].cables.master_4m_sufficient": "기본 4m 케이블로 닿으면 ‘충분’ — 로봇이 움직일 때 필요한 여유 길이까지 포함해서",
+  "robots[].cables.system_1m_sufficient": "기본 1m 케이블로 닿으면 ‘충분’",
+  "robots[].cables.master_to_controller_required_m": "기본 4m 에 더 필요한 길이만 적어 주세요(예: 2 → 총 6m)",
+  "robots[].cables.controller_to_system_required_m": "기본 1m 에 더 필요한 길이만 적어 주세요(예: 2 → 총 3m)",
+};
+
+/** 2번 작업 설명 — 고른 작업 종류에 맞는 예시(사용자 2026-10-12: 종류와 설명이 엇갈리지 않게 힌트로 안내). */
+const PROCESS_HINT: Record<string, string> = {
+  transfer: "예: 제품을 컨베이어(A)에서 적재대(B)로 옮김 / 부품을 집어 설비에 넣고 뺌",
+  assembly: "예: 부품을 하우징에 끼워 넣고 나사로 체결",
+  machining: "예: 구조물 모서리 버 제거·절삭, 표면 연마",
+  inspection: "예: 카메라로 제품 외관을 검사하고 불량을 분류",
+  other: "예: 용접·도장·포장처럼 위에 없는 작업을 구체적으로",
+};
+
+/** 공개 사양 검색으로 채울 수 있는 칸(질문지 경로) — tool_spec_search.clean 이 채우는 칸과 같게. */
+export const SPEC_FILL_PATHS = new Set([
+  "tools[].intake.tool_assembly_mass_kg", "tools[].intake.dimensions_mm.x", "tools[].intake.dimensions_mm.y",
+  "tools[].intake.dimensions_mm.z", "tools[].intake.needs_power", "tools[].intake.needs_air",
+  "tools[].electrical.current_A", "tools[].electrical.peak_A", "tools[].pneumatic.pressure_bar",
+]);
+/** 이 칸이 지금 검색 중이라 막혀 있는지(scope·대상 순서·질문지 경로) — 검색 중인 툴의 SPEC_FILL_PATHS 만 막는다(사용자 2026-10-12). */
+export const SpecLockContext = createContext<(scope: AtcQuestion["scope"], index: number, path: string) => boolean>(() => false);
+
+/** 툴 작동 방식·모델명 칸에서 커서를 옮기면 — 시중 제품이면 공개 사양 검색 여부를 묻는다(사용자 2026-10-12). */
+export const SpecAskContext = createContext<(() => void) | null>(null);
+
+/** 검색 중이라 막은 칸 — 결과가 오면 팝업으로 확인한 뒤 채우거나 직접 적는다. */
+function SearchingField() {
+  return (
+    <div className="flex h-9 items-center gap-2 rounded-lg border border-dashed border-accent/50 bg-accent/[0.05] px-3 text-[12px] text-accent" role="status">
+      <span className="h-3 w-3 animate-spin rounded-full border-2 border-accent/30 border-t-accent motion-reduce:animate-none" aria-hidden />
+      AI 검색 중… 공개 사양으로 채울 수 있는 칸이라 결과가 올 때까지 잠시 막아 둡니다
+    </div>
+  );
 }
 
 // ── 경로 읽기·쓰기 ─────────────────────────────────────────────────────────────
@@ -47,8 +159,29 @@ function entities(intake: AtcIntake, scope: AtcQuestion["scope"]): Record<string
   return scope === "robot" ? intake.robots : scope === "tool" ? intake.tools : [intake.project];
 }
 
+/** 툴 카드 이름 — '툴 1 · 전동 그리퍼 (OnRobot RG2)'(번호 + 작동 방식 + 모델명, 사용자 2026-10-12). backend atc_selection.tool_label 과 같게. */
+export function toolLabel(t: Record<string, unknown>, i: number): string {
+  const name = String(t.name ?? "").trim();
+  const model = String(t.model ?? "").trim();
+  const tail = name + (model && name ? ` (${model})` : model);
+  return `툴 ${i + 1}${tail ? ` · ${tail}` : ""}`;
+}
+
+/** 4번(툴 수)에 적은 수만큼 툴 카드를 만든다(모자라면 추가, 이미 적은 툴은 지우지 않음) — 사용자 2026-10-12. */
+export function ensureTools(intake: AtcIntake): AtcIntake {
+  const want = intake.project.tool_count;
+  if (typeof want !== "number" || want <= intake.tools.length || want > 30) return intake;
+  const used = new Set(intake.tools.map((t) => String(t.id)));
+  const tools = [...intake.tools];
+  for (let k = 1; tools.length < want; k++) {
+    if (used.has(`T${k}`)) continue;
+    tools.push({ id: `T${k}`, robot_ids: intake.robots.length === 1 ? [intake.robots[0].id] : [], intake: { dimensions_mm: {} }, mass_components: {} });
+  }
+  return { ...intake, tools };
+}
+
 export function entityLabel(intake: AtcIntake, scope: AtcQuestion["scope"], i: number): string {
-  if (scope === "tool") return (intake.tools[i]?.name as string) || `툴 ${i + 1}`;
+  if (scope === "tool") return toolLabel(intake.tools[i] ?? {}, i);
   if (scope === "robot") {
     const r = intake.robots[i] ?? {};
     return [r.manufacturer, r.model].filter(Boolean).join(" ") || `로봇 ${i + 1}`;
@@ -60,6 +193,24 @@ export function updateEntity(intake: AtcIntake, scope: AtcQuestion["scope"], i: 
   if (scope === "project") return { ...intake, project: setPath(intake.project, path, value) };
   const key = scope === "robot" ? "robots" : "tools";
   return { ...intake, [key]: intake[key].map((e, j) => (j === i ? setPath(e, path, value) : e)) };
+}
+
+// 툴 작동 방식으로 8번(전기·공압)을 미리 '있음'으로(사용자 2026-10-12 — 전동 그리퍼면 전기, 공압·진공 그리퍼면 공압).
+// 담당자가 이미 고른 값·'모름'은 건드리지 않고, 미리 고른 칸에는 __auto 표시(화면 안내, 담당자가 고르면 지워짐).
+const AUTO_UTILITY: [string, RegExp][] = [
+  ["intake.needs_power", /전동|전기|서보|모터|electric|servo/i],
+  ["intake.needs_air", /공압|진공|에어|pneumatic|vacuum/i],
+];
+export function autoUtilities(intake: AtcIntake): AtcIntake {
+  let next = intake;
+  intake.tools.forEach((t, i) => {
+    const how = String((t as Record<string, unknown>).name ?? "");
+    for (const [path, re] of AUTO_UTILITY) {
+      if (!re.test(how) || getPath(t, path) != null || getPath(t, `${path}__unknown`) === true) continue;
+      next = updateEntity(updateEntity(next, "tool", i, path, true), "tool", i, `${path}__auto`, true);
+    }
+  });
+  return next;
 }
 
 /** 질문의 칸을 모두 '모름'으로(대화에서 [모름]) — 다시 묻지 않고 자료 요청으로 넘어간다. */
@@ -123,9 +274,12 @@ const chip = (on: boolean) =>
   cn("shrink-0 whitespace-nowrap rounded-full border px-2.5 py-1 text-[12px] transition-colors",
     on ? "border-accent bg-accent text-white" : "border-border text-foreground-muted hover:text-foreground");
 
-function FieldInput({ field, entity, onChange, robots, busy }: {
+function FieldInput({ field, entity, onChange, robots, busy, onBlur, specKey }: {
   field: AtcField; entity: Record<string, unknown>; onChange: (path: string, v: unknown) => void;
   robots: Record<string, unknown>[]; busy: boolean;
+  onBlur?: (e: FocusEvent<HTMLInputElement>) => void;
+  /** 툴 작동 방식·모델명 칸 표시 — 두 칸 사이를 오갈 때는 검색을 묻지 않는다 */
+  specKey?: string;
 }) {
   const path = local(field.path);
   const v = getPath(entity, path);
@@ -197,6 +351,21 @@ function FieldInput({ field, entity, onChange, robots, busy }: {
       </div>
     );
   }
+  const base = CABLE_BASE_M[field.path];
+  if (base !== undefined) {
+    const total = typeof v === "number" ? v : null;
+    const ext = total == null ? null : Math.round((total - base) * 100) / 100;
+    return (
+      <div className="flex flex-wrap items-center gap-2 text-[12.5px]">
+        <span className="text-foreground-muted">기본 {base}m +</span>
+        <NumberInput aria-label={`${field.label_ko}(연장 m)`} value={ext} disabled={busy}
+                     onValue={(n) => set(n == null ? null : Math.round((base + n) * 100) / 100)} className={cn(inputCls, "w-24")} />
+        <span className="text-foreground-muted">m 연장</span>
+        {total != null && <b className="text-foreground">= 총 {total}m</b>}
+        {unknownBtn}
+      </div>
+    );
+  }
   const numeric = field.type === "integer" || field.type === "number";
   const text = Array.isArray(v) ? (v as string[]).join(", ") : v == null ? "" : String(v);
   if (numeric) {
@@ -212,9 +381,10 @@ function FieldInput({ field, entity, onChange, robots, busy }: {
   return (
     <div className="flex items-center gap-2">
       <input
-        type="text" value={text} disabled={busy}
+        type="text" value={text} disabled={busy} onBlur={onBlur} data-spec-field={specKey}
         aria-label={field.label_ko}
-        placeholder={field.type === "attachment" ? "받은 자료 메모(예: 사진 받음 / 요청함)" : ""}
+        placeholder={(field.path === "project.process.description" && PROCESS_HINT[String(getPath(entity, "process.category"))])
+          || FIELD_HINT[field.path] || (field.type === "attachment" ? "받은 자료 메모(예: 사진 받음 / 요청함)" : "")}
         onChange={(e) => {
           const s = e.target.value;
           if (s.trim() === "") return set(null);
@@ -262,10 +432,22 @@ export function FieldsBlock({ q, intake, setIntake, entityIndex, busy }: {
   entityIndex: number; busy: boolean;
 }) {
   const entity = entities(intake, q.scope)[entityIndex] ?? {};
+  const isLocked = useContext(SpecLockContext);
+  const askSpec = useContext(SpecAskContext);
+  // 툴 작동 방식·모델명을 둘 다 적은 뒤 그 밖의 칸으로 커서를 옮기면 시중 제품인지 확인하고 검색 여부를 묻는다(사용자 2026-10-12)
+  const specKey = q.scope === "tool" ? `tool-${entityIndex}` : undefined;
+  const onSpecBlur = (e: FocusEvent<HTMLInputElement>) => {
+    if ((e.relatedTarget as HTMLElement | null)?.dataset?.specField === specKey) return;     // 작동 방식 ↔ 모델명 사이
+    const filled = (k: string) => String(getPath(entity, k) ?? "").trim() !== "";
+    if (filled("name") && filled("model")) askSpec?.();
+  };
+  const locked = (path: string) => isLocked(q.scope, entityIndex, path);
   const set = (path: string, v: unknown) => setIntake((i) => updateEntity(i, q.scope, entityIndex, path, v));
   // 제품 개수를 바꾸면 '개당 무게 × 개수 = 총무게'를 다시 계산
   const onChange = (path: string, v: unknown) => {
     set(path, v);
+    if (AUTO_UTILITY.some(([p]) => p === path)) set(`${path}__auto`, false);          // 담당자가 직접 고름
+    if (q.scope === "tool" && path === "name") setIntake((i) => autoUtilities(i));     // 작동 방식 → 전기·공압 미리 선택
     if (path === COUNT_KEY) {
       const each = getPath(entity, EACH_KEY);
       if (getPath(entity, MIXED_KEY) === true) {
@@ -297,19 +479,30 @@ export function FieldsBlock({ q, intake, setIntake, entityIndex, busy }: {
           return idx === dimsAt ? (
             <div key="dims" className="flex flex-col gap-1 text-[12.5px] sm:col-span-2">
               <span className="font-medium text-foreground">크기 (가로 × 세로 × 높이)</span>
-              <DimsInput entity={entity} onChange={onChange} busy={busy} />
+              {locked(f.path) ? <SearchingField /> : <DimsInput entity={entity} onChange={onChange} busy={busy} />}
             </div>
           ) : null;
         }
         // 선택 버튼 묶음은 <label> 로 감싸지 않는다 — 감싸면 첫 버튼 이름에 항목 이름이 붙어 낭독·선택이 꼬인다
         const group = f.type === "enum" || f.type === "boolean" || f.type === "array" || f.type === "object";
         const Wrap = group ? "div" : "label";
-        const label = lp === "intake.tool_assembly_mass_kg" ? "툴 1개당 무게(제품 제외)"
-          : lp === TOTAL_KEY ? "한 번에 드는 제품 총무게" : f.label_ko;
+        // 화면 라벨(질문지 JSON 은 그대로) — 툴 이름 칸에는 실제로 작동 방식(전동·공압 그리퍼 등)을 적는다(사용자 2026-10-12)
+        const label = q.scope === "tool" && lp === "name" ? "툴 작동 방식"
+          : lp === "intake.tool_assembly_mass_kg" ? "무게"
+          : LABEL_KO[f.path] ?? f.label_ko;
         return (
-          <Wrap key={f.path} className={cn("flex flex-col gap-1 text-[12.5px]", (group || f.type === "attachment") && "sm:col-span-2")}>
+          <Wrap key={f.path} className={cn("flex flex-col gap-1 text-[12.5px]", (group || f.type === "attachment" || wideText(f)) && "sm:col-span-2")}>
             <span className="font-medium text-foreground">{label}</span>
-            <FieldInput field={{ ...f, label_ko: label }} entity={entity} onChange={onChange} robots={intake.robots} busy={busy} />
+            {locked(f.path) ? <SearchingField />
+              : <FieldInput field={{ ...f, label_ko: label }} entity={entity} onChange={onChange} robots={intake.robots} busy={busy}
+                            {...(q.scope === "tool" && (lp === "name" || lp === "model") ? { onBlur: onSpecBlur, specKey } : {})} />}
+            {getPath(entity, `${lp}__auto`) === true && getPath(entity, lp) === true && (
+              <span className="text-[11.5px] text-accent">툴 작동 방식({String(entity.name ?? "")})을 보고 미리 골랐습니다 — 다르면 바꿔 주세요</span>
+            )}
+            {FIELD_NOTE[f.path] && <span className="text-[11.5px] text-foreground-subtle">{FIELD_NOTE[f.path]}</span>}
+            {lp === "intake.tool_assembly_mass_kg" && (
+              <span className="text-[11.5px] text-foreground-subtle">툴 1개 기준 · 그리퍼와 브라켓 등 툴에 달린 것 전부, 집는 대상물 무게는 빼고</span>
+            )}
           </Wrap>
         );
       })}
@@ -325,7 +518,7 @@ export function FieldsBlock({ q, intake, setIntake, entityIndex, busy }: {
         <label className="flex items-center gap-2 text-[12.5px] text-foreground-muted sm:col-span-2">
           <input type="checkbox" checked={mixed} disabled={busy}
                  onChange={(e) => { set(MIXED_KEY, e.target.checked); if (e.target.checked) setList(Array(count).fill(null)); }} />
-          제품마다 무게가 다름 — 하나씩 적으면 합계를 총무게로 씁니다
+          대상물마다 무게가 다름 — 하나씩 적으면 합계를 최대 무게로 씁니다
         </label>
       )}
       {q.id === "J05" && entity.workpiece_not_applicable !== true && mixed && typeof count === "number" && count > 1 && (
@@ -333,7 +526,7 @@ export function FieldsBlock({ q, intake, setIntake, entityIndex, busy }: {
           {Array.from({ length: count }, (_, i) => (
             <span key={i} className="flex items-center gap-1.5">
               {i > 0 && <span className="text-foreground-subtle">+</span>}
-              <NumberInput aria-label={`제품 ${i + 1} 무게`} placeholder={`제품 ${i + 1}`} value={list[i] ?? null} disabled={busy}
+              <NumberInput aria-label={`대상물 ${i + 1} 무게`} placeholder={`대상물 ${i + 1}`} value={list[i] ?? null} disabled={busy}
                            className={cn(inputCls, "w-20")}
                            onValue={(n) => setList(Array.from({ length: count }, (_, j) => (j === i ? n : list[j] ?? null)))} />
             </span>
@@ -347,8 +540,8 @@ export function FieldsBlock({ q, intake, setIntake, entityIndex, busy }: {
       )}
       {q.id === "J05" && entity.workpiece_not_applicable !== true && !mixed && (
         <div className="flex flex-wrap items-center gap-1.5 rounded-md bg-foreground/[0.04] px-2.5 py-1.5 text-[12.5px] sm:col-span-2">
-          <span className="text-foreground-muted">제품 1개당</span>
-          <NumberInput aria-label="제품 1개당 무게" value={each ?? null} disabled={busy} className={cn(inputCls, "w-24")}
+          <span className="text-foreground-muted">대상물 1개당</span>
+          <NumberInput aria-label="대상물 1개당 무게" value={each ?? null} disabled={busy} className={cn(inputCls, "w-24")}
                        onValue={(n) => { set(EACH_KEY, n); if (n != null && typeof count === "number") set(TOTAL_KEY, round3(n * count)); }} />
           <span className="text-foreground-muted">kg × {typeof count === "number" ? `${count}개` : "개수"}</span>
           <span className="text-foreground-muted">= 총</span>
@@ -360,7 +553,7 @@ export function FieldsBlock({ q, intake, setIntake, entityIndex, busy }: {
         <label className="flex items-center gap-2 text-[12.5px] text-foreground-muted sm:col-span-2">
           <input type="checkbox" checked={entity.workpiece_not_applicable === true} disabled={busy}
                  onChange={(e) => onChange("workpiece_not_applicable", e.target.checked)} />
-          이 툴은 제품을 들지 않음(해당 없음)
+          이 툴은 대상물을 들지 않음(해당 없음)
         </label>
       )}
     </div>
@@ -408,14 +601,21 @@ export const CUSTOMER_Q: AtcQuestion = {
 
 // ── 질문지 진행 ───────────────────────────────────────────────────────────────
 
-export function AtcWizard({ intake, setIntake, step, setStep, busy, onSubmit }: {
+/** 시중 제품으로 보이는 툴 — 공개 사양 검색을 제안할 대상(index = 툴 순서). */
+export type SpecCandidate = { index: number; name: string; product: string };
+
+export function AtcWizard({ intake, setIntake, step, setStep, busy, onSubmit, specGate }: {
   intake: AtcIntake; setIntake: (f: (i: AtcIntake) => AtcIntake) => void;
   step: number; setStep: (n: number) => void; busy: boolean; onSubmit: () => void;
+  /** 4번(툴) 화면에서 [다음 →] 때 — 시중 제품 툴이 있으면 검색 여부 팝업을 띄우고, 고르면(또는 해당 없으면) 끝난다 */
+  specGate?: () => Promise<void>;
 }) {
   const [spec, setSpec] = useState<AtcSpec | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [followups, setFollowups] = useState<AtcFollowup[] | null>(null);
   const [checking, setChecking] = useState(false);
+  // 4번에서 입력한 툴이 시중 제품으로 보이면 다음 질문으로 넘어가기 전에 공개 사양 검색 여부를 묻는다(영업부 요청 2026-10-12)
+  const [checkingSpec, setCheckingSpec] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -450,15 +650,32 @@ export function AtcWizard({ intake, setIntake, step, setStep, busy, onSubmit }: 
     }
   }
   function goto(n: number) {
+    if (bankId(step) === "J03") setIntake((i) => ensureTools(i));       // 툴 수를 적고 떠나면 그 수만큼 툴 카드
+    if (bankId(n) === "J08") setIntake((i) => autoUtilities(i));
     setStep(Math.max(0, n));
     if (spec && n >= spec.question_bank.length + 1) void loadFollowups();
+  }
+
+  async function next() {
+    if (bankId(step) === "J04" && specGate) {
+      setCheckingSpec(true);
+      try {
+        await specGate();
+      } finally {
+        setCheckingSpec(false);
+      }
+    }
+    goto(step + 1);
+  }
+  function bankId(n: number) {
+    return n === 0 ? CUSTOMER_Q.id : (spec ? orderedBank(spec.question_bank)[n - 1]?.id : undefined);
   }
 
   if (error) return <p className="rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 text-[12.5px] text-red-600">{error}</p>;
   if (!spec) return <p className="text-[12.5px] text-foreground-subtle">질문지를 불러오는 중…</p>;
 
   // 단계: 0 고객 정보 → 1..n 기본 질문 → 앞 답에 해당하는 추가 질문(같은 질문은 툴별로 한 섹션) → (없으면) 마무리 한 칸
-  const bank = [CUSTOMER_Q, ...spec.question_bank];
+  const bank = [CUSTOMER_Q, ...orderedBank(spec.question_bank)];
   const nBasic = bank.length;
   const fus = followups ?? [];
   const groups = groupById(fus);
@@ -474,7 +691,7 @@ export function AtcWizard({ intake, setIntake, step, setStep, busy, onSubmit }: 
   const removeEntity = (scope: "robot" | "tool", idx: number) => setIntake((i) => scope === "robot"
     ? { ...i, robots: i.robots.filter((_, j) => j !== idx) }
     : { ...i, tools: i.tools.filter((_, j) => j !== idx) });
-  const chips = [{ key: "C00", label: "고객" }, ...spec.question_bank.map((x, i) => ({ key: x.id, label: String(i + 1) })),
+  const chips = [{ key: "C00", label: "고객" }, ...orderedBank(spec.question_bank).map((x, i) => ({ key: x.id, label: String(i + 1) })),
                  ...(followups === null || groups.length === 0 ? [{ key: "추가", label: "추가" }]
                    : groups.map((g, i) => ({ key: g[0].id, label: `추가 ${i + 1}` })))];
 
@@ -505,7 +722,7 @@ export function AtcWizard({ intake, setIntake, step, setStep, busy, onSubmit }: 
         <div className="flex flex-col gap-3">
           <div>
             <div className="text-[11.5px] font-medium text-accent">{step === 0 ? "고객 정보" : `${step} / ${nBasic - 1}`}</div>
-            <h3 className="text-[17px] font-semibold text-foreground">{q.question_ko}</h3>
+            <h3 className="text-[17px] font-semibold text-foreground">{questionTitle(q)}</h3>
             <details className="mt-1 text-[12px] text-foreground-subtle">
               <summary className="cursor-pointer select-none">도움말</summary>
               <p className="mt-1">{q.help_text_ko}</p>
@@ -532,8 +749,9 @@ export function AtcWizard({ intake, setIntake, step, setStep, busy, onSubmit }: 
             </button>
           )}
           {q.id === "J04" && (
-            <p className="text-[12px] text-foreground-subtle">같은 툴·같은 조건이면 한 줄에 수량으로 적어도 됩니다. 툴 무게는 드는 제품을 뺀 무게입니다.</p>
+            <p className="text-[12px] text-foreground-subtle">같은 툴·같은 조건이면 한 줄에 수량으로 적어도 됩니다. 무게는 집는 대상물을 뺀 무게입니다.</p>
           )}
+
         </div>
       ) : checking ? (
         <p className="text-[12.5px] text-foreground-subtle">앞 답에 따라 추가로 물어볼 질문을 확인하는 중…</p>
@@ -563,8 +781,8 @@ export function AtcWizard({ intake, setIntake, step, setStep, busy, onSubmit }: 
             <Icon name="search" className="h-4 w-4" /> AI와 같이 제품 검색 진행
           </button>
         ) : (
-          <button type="button" className={primaryBtn} disabled={busy || checking} onClick={() => goto(step + 1)}>
-            다음 →
+          <button type="button" className={primaryBtn} disabled={busy || checking || checkingSpec} onClick={() => void next()}>
+            {checkingSpec ? "확인 중…" : "다음 →"}
           </button>
         )}
       </div>
@@ -669,7 +887,7 @@ export function AtcIntakeSummary({ intake, meeting, busy, onEdit, onReset, colla
       const d = (it.dimensions_mm ?? {}) as Record<string, unknown>;
       const wp = t.workpiece_not_applicable ? "해당 없음" : `${(t.mass_components as Record<string, unknown>)?.max_simultaneous_workpieces_kg ?? "?"}kg`;
       return [(t.name as string) || `툴 ${i + 1}`,
-        `×${t.installed_quantity ?? "?"} · ${d.x ?? "?"}×${d.y ?? "?"}×${d.z ?? "?"}mm · 툴 ${it.tool_assembly_mass_kg ?? "?"}kg · 제품 ${wp} · 기울임 ${yn(it.tilts_or_flips)} · 전기 ${yn(it.needs_power)} · 공압 ${yn(it.needs_air)} · 센서 ${yn(it.has_sensors_or_signals)}`];
+        `×${t.installed_quantity ?? "?"} · ${d.x ?? "?"}×${d.y ?? "?"}×${d.z ?? "?"}mm · 툴 ${it.tool_assembly_mass_kg ?? "?"}kg · 대상물 ${wp} · 기울임 ${yn(it.tilts_or_flips)} · 전기 ${yn(it.needs_power)} · 공압 ${yn(it.needs_air)} · 센서 ${yn(it.has_sensors_or_signals)}`];
     }),
     ["환경", p.environment?.has_special_conditions === false ? "해당 없음" : (p.environment?.tags as string[] | undefined)?.join(", ") || "모름"],
   ];

@@ -52,6 +52,11 @@ _REMARK = {
            "Cable 0.3m": "1 EA per pogo pin module (PPM/PPF)", "IB": "Bracket between robot flange and tool changer master",
            "MASTER T.C": "Control box & 4m cable included"},
 }
+# 품목(Commodity) 기본값 — 최근 TCV1 회사 견적서 표기. 규격(Specifications)은 _DESC·모델 문구.
+ATC_COMMODITY = "Magbot ATC"
+ATC_ACC_COMMODITY = "Magbot ATC Accessory"
+SERVICE_COMMODITY = "Service"
+_ACC_KEYS = ("PPM", "PPF", "PMM", "PMF", "Cable 0.3m", "IB")
 _DESC = {"PPM": "PPM\n-Pogo Pin Male", "PPF": "PPF\n-Pogo Pin Female", "PMM": "PMM\n-PneuMatic Male",
          "PMF": "PMF\n-PneuMatic Female", "Cable 0.3m": "Cable 0.3m(meter)\n- Pogo Pin Cable", "IB": "IB\n- Interface Bracket"}
 # 자동 비고 — 포고핀을 공급하면 배선 범위 안내(v0.8 C17 quote_scope_text_ko)
@@ -72,6 +77,22 @@ def _key(it: dict[str, Any]) -> str:
     if it.get("code") in ("PPM", "PPF", "PMM", "PMF"):
         return it["code"]
     return it.get("price_item") or it.get("name") or ""
+
+
+def default_commodity(ln: dict[str, Any]) -> str:
+    """견적 줄 → 품목 칸 기본값. 툴체인저 본체·액세서리·설치/물류만 정하고, 직접 넣은 항목은 비워 둔다(담당자가 적음)."""
+    if ln.get("kind") in ("work", "freight"):
+        return SERVICE_COMMODITY
+    if ln.get("key") in ("MASTER T.C", "T.P"):
+        return ATC_COMMODITY
+    if ln.get("key") in _ACC_KEYS:
+        return ATC_ACC_COMMODITY
+    return ""
+
+
+def commodity_of(ln: dict[str, Any]) -> str:
+    """담당자가 고친 품목(빈 값 포함)이 있으면 그것, 없으면 기본값."""
+    return ln["commodity"] if isinstance(ln.get("commodity"), str) else default_commodity(ln)
 
 
 def quote_header(form: dict[str, Any], *, lang: str, quote_no: str, day: date, pogo: bool) -> dict[str, Any]:
@@ -154,8 +175,31 @@ def _spaced(name: str) -> str:
     return " ".join(name) if name and all("가" <= ch <= "힣" for ch in name) and len(name) <= 4 else name
 
 
-def build_xlsx(header: dict[str, Any], lines: list[dict[str, Any]]) -> bytes:
-    """견적서 한 장(A4 세로, A~G열) → xlsx 바이트."""
+PHOTO_H_PX = 56          # Remark 칸 품목 사진 높이(작게, 사용자 2026-10-12)
+PHOTO_MAX_W_PX = 96
+REMARK_W_PX = round(COL_WIDTHS["G"] * 7 + 5)
+
+
+def _photo_at(ws, data: bytes, *, row: int, has_text: bool) -> None:
+    """Remark(G) 칸에 품목 사진 — 글이 있으면 오른쪽, 없으면 가운데. 행 높이는 부르는 쪽이 맞춘다."""
+    from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
+    from openpyxl.drawing.xdr import XDRPositiveSize2D
+    from openpyxl.utils.units import pixels_to_EMU
+
+    img = XLImage(io.BytesIO(data))
+    h = PHOTO_H_PX
+    w = min(PHOTO_MAX_W_PX, max(1, round(img.width * h / img.height)))
+    if w == PHOTO_MAX_W_PX:                            # 가로로 긴 사진 — 폭에 맞추고 높이를 줄인다
+        h = max(1, round(img.height * w / img.width))
+    img.width, img.height = w, h
+    x = REMARK_W_PX - w - 6 if has_text else (REMARK_W_PX - w) // 2
+    img.anchor = OneCellAnchor(_from=AnchorMarker(col=6, colOff=pixels_to_EMU(x), row=row - 1, rowOff=pixels_to_EMU(4)),
+                               ext=XDRPositiveSize2D(pixels_to_EMU(w), pixels_to_EMU(h)))
+    ws.add_image(img)
+
+
+def build_xlsx(header: dict[str, Any], lines: list[dict[str, Any]], photos: dict[str, bytes] | None = None) -> bytes:
+    """견적서 한 장(A4 세로, A~G열) → xlsx 바이트. photos = {사진 키: 바이트} — 줄의 photo 가 있으면 Remark 칸에 작게."""
     en = header["lang"] == "en"
     lab, iss, terms, ct = header["labels"], header["issuer"], header["terms"], header["contact"]
     money = USD if header.get("currency") == "USD" else WON
@@ -212,19 +256,26 @@ def build_xlsx(header: dict[str, Any], lines: list[dict[str, Any]]) -> bytes:
     _cell(ws, "A15", lab["goods"], h="left", border=False, wrap=False)
     if not en:
         _cell(ws, "G15", terms["vat"], border=False)
-    _cell(ws, "A16", lab["item"], size=9, merge="C16")
+    _cell(ws, "A16", lab["commodity"], size=9)
+    _cell(ws, "B16", lab["spec"], size=9, merge="C16")
     for col, key in (("D", "qty"), ("E", "price"), ("F", "amount"), ("G", "remark")):
         _cell(ws, f"{col}16", lab[key], size=9)
 
     # 품목
     r = 17
     for ln in lines:
-        ws.row_dimensions[r].height = 31
-        _cell(ws, f"A{r}", ln["desc"], size=9, merge=f"C{r}")
+        pic = (photos or {}).get(str(ln.get("photo") or ""))
+        ws.row_dimensions[r].height = max(31, 13 * (str(ln["desc"]).count("\n") + 1) + 5, 48 if pic else 0)
+        _cell(ws, f"A{r}", ln.get("commodity") or "", size=9)
+        _cell(ws, f"B{r}", ln["desc"], size=9, merge=f"C{r}")
         _cell(ws, f"D{r}", ln["qty"], size=9, fmt=f'0" {ln["unit"]}"' if ln.get("unit") else EA)
         _cell(ws, f"E{r}", ln["unit_price"], size=9, fmt=money)
         _cell(ws, f"F{r}", f"=D{r}*E{r}", size=9, fmt=money)
-        _cell(ws, f"G{r}", ln["remark"], size=9)
+        _cell(ws, f"G{r}", ln["remark"], size=9, h="left" if pic else "center")
+        if pic:
+            if ln["remark"]:                               # 사진 자리만큼 글 오른쪽을 비운다
+                ws[f"G{r}"].alignment = Alignment(horizontal="left", vertical="center", wrap_text=True, indent=0)
+            _photo_at(ws, pic, row=r, has_text=bool(ln["remark"]))
         r += 1
     last = r - 1
     ws.row_dimensions[r].height = 24

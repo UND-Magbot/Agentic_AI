@@ -9,7 +9,6 @@
  * POST /api/sales-deals/{id}/{action}        → won · invoices · payments · paid-full · shipments · remove · review · drop
  * POST /api/sales-deals/{id}/po              → 발주서 파일 첨부(multipart — 본문·경계 그대로 넘김)
  * POST /api/sales-deals/{id}/po/{n}/compare  → 발주서 ↔ 견적 품목 AI 대조(결과는 발주서 기록에 저장)
- * POST /api/sales-deals/{id}/history/rollback → 히스토리 되돌리기(관리자) {keep_id}
  * GET  /api/sales-deals/{id}/po/{index}      → 발주서 파일 보기·내려받기(바이트·헤더 그대로)
  * 수주 뒤 진행(거래명세서 → 결제 조건 → 회차별 입금 확인 → 출하):
  * GET  /api/sales-deals/{id}/statement/draft · /statement/file?fmt=pdf|xlsx · /ship-photos/{pid}
@@ -27,7 +26,7 @@ const TOKEN_COOKIE = "und_cortex_token";
 const BASE = "/v1/sales-deals";
 const ACTIONS = new Set(["won", "invoices", "payments", "paid-full", "shipments", "shipment-edit", "remove", "review", "statement", "terms", "confirm-term", "unconfirm-term", "drop", "meeting", "reset-to-quote"]);
 // 파일을 올리는 동작 — 본문·경계를 그대로 넘긴다
-const UPLOADS = new Set(["po", "ship-photos"]);
+const UPLOADS = new Set(["po", "ship-photos", "quote-upload"]);
 
 /** 파일 응답 — 바이트와 형식·이름 헤더를 그대로 넘긴다. */
 async function passFile(url: string, tok: string) {
@@ -119,9 +118,9 @@ export async function POST(req: NextRequest, { params }: Params) {
   const isBatch = path.length === 1 && (path[0] === "delete" || path[0] === "initials");
   const isUpload = path.length === 2 && /^\d+$/.test(path[0]) && UPLOADS.has(path[1]);
   const isPoCompare = path.length === 4 && /^\d+$/.test(path[0]) && path[1] === "po" && /^\d+$/.test(path[2]) && path[3] === "compare";
-  // 히스토리 되돌리기(관리자 — 사용자 2026-10-08)
-  const isHistory = path.length === 3 && /^\d+$/.test(path[0]) && path[1] === "history" && path[2] === "rollback";
-  const ok = path.length === 0 || isUpload || isOrder || isBatch || isPoCompare || isHistory || (path.length === 2 && /^\d+$/.test(path[0]) && ACTIONS.has(path[1]));
+  // 밖에서 고친 견적서 — 확인한 품목으로 발행(JSON, 사용자 2026-10-12)
+  const isQuoteConfirm = path.length === 3 && /^\d+$/.test(path[0]) && path[1] === "quote-upload" && path[2] === "confirm";
+  const ok = path.length === 0 || isUpload || isOrder || isBatch || isPoCompare || isQuoteConfirm || (path.length === 2 && /^\d+$/.test(path[0]) && ACTIONS.has(path[1]));
   if (!ok) return notFound();
   const tok = await token();
   if (!tok) return NextResponse.json({ detail: "인증이 필요합니다." }, { status: 401 });

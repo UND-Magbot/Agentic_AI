@@ -16,6 +16,8 @@
  * GET  /api/product-recommend/quotes/price-list            → 회사 단가표(수기 견적의 [단가표에서 추가])
  * GET  /api/product-recommend/quotes · /quotes/{id}        → 내 견적서 목록 · 한 건
  * POST /api/product-recommend/quotes/{id}/chat|edit|issue  → 대화로 고치기 · 직접 수정 저장 · 발행
+ * POST /api/product-recommend/quotes/{id}/upload         → 밖에서 고친 견적서(엑셀·PDF) 올리기 → AI 가 읽은 품목
+ * POST /api/product-recommend/quotes/{id}/upload/confirm → 확인한 품목으로 발행(새 발행번호)
  * GET  /api/product-recommend/quotes/{id}/file?fmt=pdf|xlsx[&revision=n] → 견적서 내려받기(바이트 그대로)
  * GET  /api/product-recommend/quotes/{id}/preview         → 지금 상태 그대로의 견적서 PDF 미리보기
  * GET  /api/product-recommend/proposals/{id}              → 영업 건의 [미팅 정보](최종 제안 확정 기록)
@@ -65,6 +67,9 @@ export async function GET(req: NextRequest, { params }: Params) {
     const fmt = sp.get("fmt") === "pdf" ? "pdf" : "xlsx";
     const rev = sp.get("revision");
     return forwardFile(`/quotes/${path[1]}/file?fmt=${fmt}${rev && /^\d+$/.test(rev) ? `&revision=${rev}` : ""}`);
+  }
+  if (path.length === 4 && path[0] === "quotes" && /^\d+$/.test(path[1]) && path[2] === "photo" && /^[0-9a-f]{32}\.jpg$/.test(path[3])) {
+    return forwardFile(`/quotes/${path[1]}/photo/${path[3]}`);
   }
   if (path.length === 3 && path[0] === "quotes" && /^\d+$/.test(path[1]) && path[2] === "preview") {
     return forwardFile(`/quotes/${path[1]}/preview`);
@@ -119,6 +124,13 @@ async function forwardMultipart(req: NextRequest, path: string) {
 export async function POST(req: NextRequest, { params }: Params) {
   const { path = [] } = await params;
   if (path.length === 2 && path[0] === "atc" && path[1] === "extract") return forwardMultipart(req, "/atc/extract");
+  if (path.length === 3 && path[0] === "quotes" && /^\d+$/.test(path[1]) && path[2] === "upload") {
+    return forwardMultipart(req, `/quotes/${path[1]}/upload`);
+  }
+  // 품목 사진(사용자 2026-10-12) — quotes/{id}/lines/{줄}/photo (multipart) · .../photo/remove
+  if (path.length === 5 && path[0] === "quotes" && /^\d+$/.test(path[1]) && path[2] === "lines" && /^[A-Za-z0-9]{1,12}$/.test(path[3]) && path[4] === "photo") {
+    return forwardMultipart(req, `/quotes/${path[1]}/lines/${path[3]}/photo`);
+  }
   const body = await req.text();
   if (path.length === 0) return forward("POST", "", body);
   if (path.length === 2 && path[0] === "atc" && path[1] === "agent") return forwardStream("/atc/agent", body);
@@ -135,6 +147,13 @@ export async function POST(req: NextRequest, { params }: Params) {
   if (path.length === 2 && path[0] === "quotes" && path[1] === "manual") return forward("POST", "/quotes/manual", body);
   if (path.length === 3 && path[0] === "quotes" && /^\d+$/.test(path[1]) && ["chat", "edit", "issue"].includes(path[2])) {
     return forward("POST", `/quotes/${path[1]}/${path[2]}`, body);
+  }
+  if (path.length === 6 && path[0] === "quotes" && /^\d+$/.test(path[1]) && path[2] === "lines" && /^[A-Za-z0-9]{1,12}$/.test(path[3])
+      && path[4] === "photo" && path[5] === "remove") {
+    return forward("POST", `/quotes/${path[1]}/lines/${path[3]}/photo/remove`, body);
+  }
+  if (path.length === 4 && path[0] === "quotes" && /^\d+$/.test(path[1]) && path[2] === "upload" && path[3] === "confirm") {
+    return forward("POST", `/quotes/${path[1]}/upload/confirm`, body);
   }
   if (path.length === 3 && path[0] === "corrections" && /^\d+$/.test(path[1]) && path[2] === "review") {
     return forward("POST", `/corrections/${path[1]}/review`, body);

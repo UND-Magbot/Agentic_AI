@@ -7,7 +7,8 @@ import { createContext, useContext, useEffect, useState } from "react";
 import { DealMeetingDialog, hasMeeting } from "@/components/domains/sales/deal-meeting";
 import { DownloadDialog, PreviewDialog, savedContact } from "@/components/domains/sales/quote-workspace";
 import { Icon } from "@/components/shared/ui/icon";
-import { ACTION_LABEL, Field, INPUT, Muted, StageChip, dealRequest, eventDetail, hasVersion, quoteVer, shortDate, stamp, todayIso, won } from "@/components/domains/sales/deal-format";
+import { QuoteUploadDialog } from "@/components/domains/sales/quote-upload-dialog";
+import { ACTION_LABEL, Field, INPUT, Muted, StageChip, dealRequest, eventDetail, quoteVer, shortDate, stamp, todayIso, won } from "@/components/domains/sales/deal-format";
 import type { DealEvent, DealRow, DealShipment, PoCompare } from "@/lib/shared/sales-deals";
 import { cn } from "@/lib/shared/utils";
 
@@ -29,7 +30,7 @@ export function DealDetail({ row, admin = false, onClose, onChanged, onMeeting, 
   onMeeting?: (proposalId: number) => void;
   /** [수주 진행 →] — 수주 확인 뒤 AI 와 대화하는 수주 진행 탭으로. */
   onOrder?: (dealId: number) => void;
-  /** [견적서 고치기 →] — 견적서 탭 작업 화면으로(덮어쓰기·수정본 발행). */
+  /** [견적서 고치기 →] — 견적서 탭 작업 화면으로(고쳐서 재발행 — 새 발행번호). */
   onQuote?: (quoteId: number) => void;
 }) {
   const [deal, setDeal] = useState<DealRow>(row);
@@ -124,8 +125,8 @@ export function DealDetail({ row, admin = false, onClose, onChanged, onMeeting, 
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="font-mono text-[12px] text-foreground-subtle">
-                {deal.display_no ?? deal.deal_no ?? "번호 미부여"}{deal.legacy_no && ` · 옛 번호 ${deal.legacy_no}`}
-                {hasVersion(deal) && <span className="ml-1.5">(견적서 번호 {deal.deal_no} · 뒤 번호는 사내용 히스토리 번호 — 바뀔 때마다 +1, 날짜가 바뀌면 그 날짜로)</span>}
+                {deal.display_no ?? deal.deal_no ?? "번호 미부여"}{deal.statement_no && ` · ${deal.statement_no}`}
+                {deal.legacy_no && ` · 옛 번호 ${deal.legacy_no}`}
               </div>
               <h2 className="mt-0.5 truncate text-[18px] font-bold">{deal.customer ?? "고객사 미기재"}</h2>
               <p className="mt-0.5 text-[13px] text-foreground-muted">{deal.title}</p>
@@ -198,13 +199,15 @@ export function DealDetail({ row, admin = false, onClose, onChanged, onMeeting, 
             <Grid rows={[
               ["영업 담당", deal.owner],
               ["고객 담당자", deal.contact],
-              ["견적일", deal.quote?.date ? `${deal.quote.date}${hasVersion(deal) && deal.quote.revision ? ` (V${deal.quote.revision})` : ""}` : null],
+              ["견적일", deal.quote?.date ? `${deal.quote.date}${deal.quote.no && deal.quote.revision ? ` (V${deal.quote.revision})` : ""}` : null],
               ["발송일", deal.quote?.sent_date],
             ]} />
           </Section>
 
           {deal.quote && <QuoteTable deal={deal} />}
-          {!!deal.quotes?.length && <QuoteDocs deal={deal} onQuote={onQuote} />}
+          {(!!deal.quotes?.length || (!!deal.quote && !deal.imported && deal.kind !== "shipment_only")) && (
+            <QuoteDocs deal={deal} onQuote={onQuote} onUploaded={(d) => { setDeal(d); onChanged(); }} />
+          )}
           {deal.kind === "recommend" && !deal.quotes?.length && !deal.dropped && deal.recommendation_id && onQuote && (
             <StartQuote recommendationId={deal.recommendation_id} onQuote={onQuote} />
           )}
@@ -763,11 +766,22 @@ function ShipmentInfo({ s, dealId, onPhoto }: { s: DealShipment; dealId: number;
 
 // ── 견적서 발행본(사용자 2026-10-07: 발행한 견적은 영업 건에서 관리, 견적서 탭은 작성 중인 것만) ──
 
-function QuoteDocs({ deal, onQuote }: { deal: DealRow; onQuote?: (quoteId: number) => void }) {
+function QuoteDocs({ deal, onQuote, onUploaded }: {
+  deal: DealRow; onQuote?: (quoteId: number) => void; onUploaded: (d: DealRow) => void;
+}) {
   const [saving, setSaving] = useState<{ quote: number; revision: number; fileName: string; title: string } | null>(null);
+  const [uploading, setUploading] = useState(false);
   return (
     <Section title="견적서">
-      {deal.quotes!.map((q) => (
+      {/* 밖에서 고친 견적서 첨부(사용자 2026-10-12) — 고객에게 보낸 파일 그대로, 발행하면 새 번호 */}
+      <div className="mb-2 flex flex-wrap items-center gap-2 text-[12px] text-foreground-subtle">
+        <span>엑셀에서 고쳐 보냈거나 따로 만든 견적서가 있나요?</span>
+        <button type="button" onClick={() => setUploading(true)}
+                className="inline-flex items-center gap-1 rounded-lg border border-accent/50 px-2.5 py-1 font-semibold text-accent hover:bg-accent/5">
+          <Icon name="paperclip" className="h-3.5 w-3.5" /> 견적서 파일 첨부
+        </button>
+      </div>
+      {(deal.quotes ?? []).map((q) => (
         <div key={q.id} className="mb-2 rounded-xl border border-border p-3">
           <div className="mb-1.5 flex flex-wrap items-center gap-2">
             <b>{q.quote_no ?? "작성 중(발행 전)"}</b>
@@ -784,12 +798,14 @@ function QuoteDocs({ deal, onQuote }: { deal: DealRow; onQuote?: (quoteId: numbe
             <ul className="flex flex-col gap-1 text-[12.5px]">
               {[...q.issues].reverse().map((h) => (
                 <li key={h.revision} className="flex flex-wrap items-center gap-2">
-                  <span className="font-medium">v{h.revision + 1}{h.revision ? "" : " (최초 발행)"}</span>
+                  <span className="font-mono font-medium">{h.quote_no ?? `v${h.revision + 1}`}</span>
+                  {!h.revision && <span className="text-foreground-subtle">(최초 발행)</span>}
+                  {h.uploaded && <span className="rounded bg-amber-500/12 px-1.5 text-[11px] font-semibold text-amber-700 dark:text-amber-300">외부 수정본</span>}
                   <span className="text-foreground-subtle">{h.issued_at.slice(0, 16).replace("T", " ")}</span>
                   <span>{h.currency === "USD" ? `$${h.total.toLocaleString("en-US")}` : `${won(h.total)}원`}</span>
                   <button type="button" className="ml-auto inline-flex items-center gap-1 font-semibold text-accent hover:underline"
                           onClick={() => setSaving({ quote: q.id, revision: h.revision, fileName: h.file_name,
-                                                     title: `${q.quote_no ?? "견적서"} v${h.revision + 1} 다시 다운로드` })}>
+                                                     title: `${h.quote_no ?? q.quote_no ?? "견적서"} 다시 다운로드` })}>
                     <Icon name="download" className="h-3.5 w-3.5" /> 다시 다운로드
                   </button>
                 </li>
@@ -801,6 +817,11 @@ function QuoteDocs({ deal, onQuote }: { deal: DealRow; onQuote?: (quoteId: numbe
       {saving && (
         <DownloadDialog urlFor={(fmt) => `/api/sales-deals/${deal.id}/quote-file?quote=${saving.quote}&revision=${saving.revision}&fmt=${fmt}`}
                         fileName={saving.fileName} title={saving.title} onClose={() => setSaving(null)} />
+      )}
+      {uploading && (
+        <QuoteUploadDialog title="견적서 파일 첨부" uploadUrl={`/api/sales-deals/${deal.id}/quote-upload`}
+                           confirmUrl={`/api/sales-deals/${deal.id}/quote-upload/confirm`}
+                           onDone={(d) => { setUploading(false); onUploaded(d as DealRow); }} onClose={() => setUploading(false)} />
       )}
     </Section>
   );
@@ -968,7 +989,6 @@ function EventList({ events }: { events: DealEvent[] }) {
       {events.map((e, i) => (
         <li key={i} className="flex gap-2">
           <span className="w-[120px] shrink-0 tabular-nums text-foreground-subtle">{stamp(e.created_at)}</span>
-          {e.ver_no && <span className="shrink-0 font-mono text-[11.5px] text-foreground-muted">{e.ver_no}</span>}
           <span className="font-medium">{ACTION_LABEL[e.action] ?? e.action}</span>
           <span className="text-foreground-muted">{eventDetail(e)}</span>
           <span className="ml-auto shrink-0 text-foreground-subtle">{e.user_name ?? "시스템"}</span>

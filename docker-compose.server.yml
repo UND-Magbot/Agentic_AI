@@ -4,6 +4,7 @@
 # - 외부 공개는 Caddy(80/443, https://${PUBLIC_DOMAIN})만. 공유기에서 80·443 → 이 서버로 포워딩.
 # - 공개 도메인은 DuckDNS(duckdns 서비스가 IP 갱신). .env: PUBLIC_DOMAIN·DUCKDNS_SUBDOMAIN·DUCKDNS_TOKEN
 # - DB·Ollama 는 호스트(192.168.0.150)의 것을 그대로 쓴다(.env 의 DATABASE_URL / OLLAMA_BASE_URL).
+#   운영 DB = agent_ai(사용 중 — 개발·테스트로 건드리지 않는다). 개발 PC 는 같은 호스트의 agent_ai_dev 를 쓴다.
 # - Redis·MinIO·backend·embed 포트는 외부에 열지 않는다(컨테이너 네트워크 안에서만 사용).
 # - Codex 는 같은 서버 docker-codeserver 의 codex-bridge 를 그 compose 네트워크로 직접 호출한다
 #   (.env: CODEX_BRIDGE_URL=http://codex-bridge:10120).

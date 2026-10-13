@@ -20,6 +20,7 @@ from ..company_knowledge.atc_agent import _Splitter, json_objects
 from ..company_knowledge.product_recommend import ANSWER_FORMAT
 from ..company_knowledge.quote_session import said_numbers
 from . import flow
+from . import doc_numbers as dn
 from . import statement_xlsx as sx
 
 CHAT_MAX = 60
@@ -37,7 +38,7 @@ SYSTEM = """너는 유엔디로보틱스 영업 담당을 돕는 AI 다. 수주�
    {"op": "item", "index": 0, "qty": 2, "unit_price": 250000, "name": "...", "spec": "...", "note": "..."}  명세서 품목 고치기(말한 칸만)
    {"op": "add_item", "name": "...", "spec": "...", "qty": 1, "unit_price": 50000}
    {"op": "remove_item", "index": 2}
-   {"op": "statement", "no": "...", "date": "YYYY-MM-DD"}  발행번호·발행일
+   {"op": "statement", "initials": "LU", "date": "YYYY-MM-DD"}  발행자 이니셜(영문)·발행일 — 발행번호는 발급 때 자동(TS-이니셜+발행일-순번)
    {"op": "statement", "bundle": true, "bundle_qty": 1, "bundle_name": "..."}  명세서를 '세트로/1SET/묶어서' 발급한다고 할 때만
       (품목을 세트 한 줄로 묶음, 이름은 말했을 때만). 품목별로 되돌리라고 하면 "bundle": false
    {"op": "issue"}  사용자가 명세서를 발급해 달라고 할 때(발급 버튼을 보여 준다)
@@ -131,7 +132,8 @@ def _situation(deal: dict, state: dict) -> str:
              f"결제 조건 {fl.get('pay_case_label') or '미정'} · 받을 금액(공급가액) {fl.get('total') or 0:,.0f}원 · "
              f"확인한 입금 {fl.get('paid') or 0:,.0f}원",
              "[진행] " + " → ".join(f"{s['label']}{'(완료)' if s['done'] else '(지금)' if s['ready'] else ''}" for s in fl.get("steps") or []),
-             f"[명세서] {'발급함' if deal.get('statement') else '초안(발급 전)'} · 발행번호 {d.get('no') or '-'} · 발행일 {d.get('date') or '-'}",
+             f"[명세서] {'발급함 ' + str((deal.get('statement') or {}).get('no') or '') if deal.get('statement') else '초안(발급 전)'}"
+             f" · 발행자 이니셜 {d.get('initials') or '-'} · 발행일 {d.get('date') or '-'}",
              "[공급받는자] " + json.dumps(d.get("buyer") or {}, ensure_ascii=False),
              "[명세서 품목]"]
     lines += [f"- {i}: {it.get('name')} / {it.get('spec') or ''} / 수량 {it.get('qty')}{' ' + sx.unit_of(it) if sx.unit_of(it) else ''}"
@@ -223,9 +225,9 @@ def apply_ops(deal: dict, state: dict, ops: Any, message: str) -> tuple[dict, li
             elif op.get("bundle") is False and d.get("parts"):
                 d["items"] = items = d.pop("parts")
                 steps.append((True, f"명세서를 품목별로 되돌림 → {len(items)}줄"))
-            if op.get("no") and (v := _in_msg(op["no"], message)):
-                d["no"] = v
-                steps.append((True, f"발행번호 → {v}"))
+            if op.get("initials") and (v := _in_msg(op["initials"], message)) and dn.clean_initials(v):
+                d["initials"] = dn.clean_initials(v)
+                steps.append((True, f"발행자 이니셜 → {d['initials']}"))
             if op.get("date") and re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(op["date"])):
                 y, mo, dd = (int(x) for x in str(op["date"]).split("-"))
                 if {float(mo), float(dd)} <= nums:

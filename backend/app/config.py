@@ -17,6 +17,7 @@ def _build_database_url() -> str:
         pw = os.environ.get("POSTGRES_PASSWORD", "und")
         host = os.environ.get("POSTGRES_HOST", "localhost")
         port = os.environ.get("POSTGRES_PORT", "5432")
+        # DB 이름: 운영 = agent_ai(사용 중, 개발에서 절대 접속·수정 금지), 개발 PC = agent_ai_dev — 둘 다 .env 로 정한다.
         db = os.environ.get("POSTGRES_DB", "agent_ai")
         url = f"postgresql+asyncpg://{user}:{pw}@{host}:{port}/{db}"
     # SQLAlchemy 비동기 사용을 위해 드라이버를 asyncpg 로 표준화.

@@ -76,6 +76,29 @@ check(vals["E2"] == "S26-0182" and vals["A4"].startswith(pp.QUOTE_ISSUER["compan
 check(vals["F17"] == "=D17*E17" and vals["E17"] == 2_300_000 and vals["D17"] == 1 and total_cell == f"G{17 + len(lines)}"
       and vals[total_cell] == f"=SUM(F17:F{16 + len(lines)})" and wb.calculation.fullCalcOnLoad,
       "금액 = 수량×단가 수식, 합계 = SUM 수식(열 때 다시 계산)", str((vals.get("F17"), total_cell)))
+check(vals["A16"] == "Commodity" and vals["B16"] == "Specifications" and "B16:C16" in {str(m) for m in ws.merged_cells.ranges}
+      and vals["A17"] == "Magbot ATC" and vals["B17"] == "TCV1\n- MASTER T.C (Payload 10Kg)"
+      and vals["A19"] == "Magbot ATC Accessory" and "B17:C17" in {str(m) for m in ws.merged_cells.ranges},
+      "품목(Commodity A열)·규격(Specifications B:C열) 칸을 나눔 — 최근 TCV1 견적서 양식", str((vals.get("A16"), vals.get("A17"))))
+mine = qs.draft_state({"applicable": True, "items": items}, model=model, payload_kg=10)
+mine, _ = qs.apply_ops(mine, qs.edit_ops(mine, {"lines": [
+    {"id": "L1", "name": mine["lines"][0]["name"], "commodity": "Magbot Tool Changer", "qty": 1, "unit_price": 2_300_000, "remark": ""},
+    *[{k: ln.get(k) for k in ("id", "name", "qty", "unit_price", "remark")} for ln in mine["lines"][1:]],
+    {"id": None, "name": "MG10", "commodity": "Magbot Gripper", "qty": 1, "unit_price": 1_000_000, "remark": ""}]}), None)
+ml = qs.render_lines(mine, "ko", None)
+check(ml[0]["commodity"] == "Magbot Tool Changer" and ml[1]["commodity"] == "Magbot ATC"
+      and next(x for x in ml if x["desc"] == "MG10")["commodity"] == "Magbot Gripper",
+      "품목 칸은 화면에서 고칠 수 있음(안 고친 줄은 기본값, 새 항목은 적은 값)", str([x["commodity"] for x in ml]))
+# 품목 사진(사용자 2026-10-12) — Remark 칸에 작게, 행 높이 늘림
+from PIL import Image as _Img  # noqa: E402
+_buf = io.BytesIO()
+_Img.new("RGB", (400, 300), "red").save(_buf, "JPEG")
+pl = [dict(lines[0], photo="k1"), *lines[1:]]
+wsp = openpyxl.load_workbook(io.BytesIO(qx.build_xlsx(h, pl, {"k1": _buf.getvalue()}))).active
+check(len(wsp._images) == 5 and wsp.row_dimensions[17].height >= 48 and any(getattr(i.anchor, '_from', None) is not None and i.anchor._from.col == 6 and i.anchor._from.row == 16 for i in wsp._images),
+      "품목 사진 → 견적서 Remark(G) 칸에 그림 하나 더, 그 줄 높이 늘림", str((len(wsp._images), wsp.row_dimensions[17].height)))
+wsn = openpyxl.load_workbook(io.BytesIO(qx.build_xlsx(h, pl, {}))).active
+check(len(wsn._images) == 4, "사진을 못 읽으면(없으면) 그림 없이 견적서는 그대로")
 check(len(ws._images) == 4 and ws.print_area and int(ws.page_setup.paperSize) == int(ws.PAPERSIZE_A4),
       "제목(양식의 WordArt 그림)·로고·서명·직인 그림 4개, A4 인쇄 영역", str(len(ws._images)))
 check(not any(c.font and c.font.name == "Book Antiqua" for row in ws.iter_rows() for c in row),

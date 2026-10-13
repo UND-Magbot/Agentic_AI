@@ -75,7 +75,9 @@ export interface DealQuoteDoc {
   revision: number;
   writer: string | null;
   updated_at: string | null;
-  issues: { revision: number; issued_at: string; total: number; currency: "KRW" | "USD"; file_name: string }[];
+  /** quote_no = 그 판의 발행번호, uploaded = 밖에서 고친 파일을 올려 발행한 판 */
+  issues: { revision: number; quote_no?: string | null; uploaded?: boolean; issued_at: string; total: number;
+            currency: "KRW" | "USD"; file_name: string }[];
 }
 
 /** 결제 조건을 정했다는 표시 — 'terms'(예전 after·split·prepay 도 같은 뜻) */
@@ -103,7 +105,10 @@ export interface DealStatementItem {
   unit?: string;
 }
 export interface DealStatement {
+  /** 발행번호 TS-LU20261012-01 — 발급할 때 서버가 매긴다(발급 전 초안은 '') */
   no: string;
+  /** 발행자 이니셜 — 기본 = 로그인 계정(내 정보), 폼에서 고칠 수 있음 */
+  initials?: string;
   date: string;
   buyer: { reg_no: string; name: string; ceo: string; address: string };
   items: DealStatementItem[];
@@ -137,24 +142,21 @@ export interface DealEvent {
   detail: Record<string, unknown>;
   created_at: string;
   user_name: string | null;
-  /** 히스토리 번호(AL20261008-02) — 번호가 붙은 이력만 */
-  ver_no?: string | null;
 }
 
-/** 프로젝트(건) 안의 히스토리 한 줄 — 바뀔 때마다 번호 하나(사용자 2026-10-08). 최신 먼저. */
+/** 프로젝트(건) 안의 히스토리 한 줄 — 시간순 순번 1, 2, 3 …(사용자 2026-10-12). 최신 먼저. 되돌리기 없음. */
 export interface DealHistory extends DealEvent {
   id: number;
-  ver_no: string;
+  /** 시간순 순번(처음 일 = 1) */
+  seq: number;
+  /** 견적서·거래명세서 발행 줄의 발행번호(QT-LU20261012-01 · TS-…) */
+  doc_no: string | null;
   /** 그때 단계·견적서 판·공급가액 */
   stage: DealStage | null;
   quote_rev: number | null;
   amount: number | null;
-  /** 견적서가 새 판으로 바뀐 뒤의 옛 판 줄 — '버전 업데이트됨' */
+  /** 같은 문서가 다시 발행된 뒤의 예전 발행 줄 — '버전 업데이트됨' */
   superseded: boolean;
-  /** 되돌리기로 지울 수 있는 줄(견적서 발행·재발행 줄은 안 됨) */
-  removable: boolean;
-  /** 이 줄 때 내용으로 돌아갈 수 있음(그때 내용이 저장되어 있음) */
-  restorable: boolean;
 }
 
 /** 발주서 ↔ 견적 품목 AI 대조(사용자 2026-10-08) — 품목은 사내 AI 가 읽고 수량·단가 비교는 서버 코드가. */
@@ -178,14 +180,15 @@ export interface DealRow {
   id: number;
   /** 건 번호 — 견적서 첫 발행 때 부여(사용자 2026-10-08). [최종 제안 확정]만 한 건은 null('번호 미부여'). */
   deal_no: string | null;
-  /** 화면 표시 번호 — 새 건은 히스토리 마지막 번호(AL20261008-01 → -02 …, 날짜가 바뀌면 AL20261010-05), 예전 번호(S26-…)는 그대로.
-   *  문서(견적서·명세서)에는 deal_no. */
+  /** 화면 표시 번호 — 최근 견적서 발행번호(QT-LU20261012-01, 사용자 2026-10-12). 새 체계 전 건은 예전 번호 그대로. */
   display_no: string | null;
+  /** 최근 거래명세서 발행번호(TS-…) — 발급했을 때만 */
+  statement_no: string | null;
   /** 미팅 정보 직접 입력(AI 제품 추천 기록이 없는 건) — updated_at 이 있으면 입력됨 */
   meeting?: DealMeeting | null;
-  /** 히스토리 번호 차례(-NN) — 견적서 판은 quote.revision */
+  /** (예전) 히스토리 번호 차례 — 더 쓰지 않음. 견적서 판은 quote.revision */
   version: number;
-  /** 히스토리(번호가 붙은 변경, 최신 먼저) — 리스트에서 건 아래로 펼쳐 본다 */
+  /** 히스토리(시간순 순번, 최신 먼저) — 리스트에서 건 아래로 펼쳐 본다 */
   history?: DealHistory[];
   /** 추천 기록 번호(한 건 상세에서만) — 견적서 발행 전 건에서 [견적서 작성 →] */
   recommendation_id?: number | null;
@@ -203,6 +206,8 @@ export interface DealRow {
   base_date: string | null;
   quote: {
     revision: number;
+    /** 최근 견적서 발행번호(QT-…) */
+    no?: string;
     date: string | null;
     sent_date: string | null;
     amount: number | null;

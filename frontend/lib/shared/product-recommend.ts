@@ -284,7 +284,13 @@ export type ProductProposal = {
 
 /** 견적서 작성(quote_session) — 대화·직접 수정으로 채우는 견적 초안·발행본. 금액은 원화(해외는 발행 때 환율로 달러). */
 export type QuoteLine = {
-  id: string; kind: "product" | "option" | "freight" | "work" | "extra"; key: string; name: string;
+  id: string; kind: "product" | "option" | "freight" | "work" | "extra"; key: string;
+  /** 규격(Specifications) — 모델·세부 사양 */
+  name: string;
+  /** 품목(Commodity) — 예: Magbot ATC · Magbot ATC Accessory(견적서 A열) */
+  commodity?: string;
+  /** 품목 사진(저장소 키) — 견적서 Remark 칸에 작게 들어간다(사용자 2026-10-12) */
+  photo?: string;
   qty: number | null; unit_price: number | null; remark?: string; unit?: string; price_status?: string | null;
   /** 액세서리 조건부 수량(v1.2) — 담당자가 확인(confirmed)해야 발행 가능. basis = 계산 근거 */
   conditional?: boolean; confirmed?: boolean; basis?: string;
@@ -308,7 +314,7 @@ export type QuoteSession = {
            options: Omit<QuoteLine, "id">[]; work: QuoteWork; delivery?: QuoteDelivery };
   subtotal: number; question: { id: string; text: string; choices?: string[] } | null; problems: string[];
   chat: { role: "user" | "assistant"; text: string }[];
-  history: { revision: number; issued_at: string; total: number; currency: "KRW" | "USD"; file_name: string }[];
+  history: { revision: number; quote_no?: string | null; uploaded?: boolean; issued_at: string; total: number; currency: "KRW" | "USD"; file_name: string }[];
   created_at: string; updated_at: string;
 };
 export type QuoteListItem = {

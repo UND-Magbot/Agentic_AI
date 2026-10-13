@@ -31,9 +31,6 @@ export function Muted({ children }: { children: React.ReactNode }) {
   return <span className="text-foreground-subtle">{children}</span>;
 }
 
-/** 히스토리 번호가 붙는 건(새 번호 체계)인지 — 엑셀에서 옮긴 건·예전 번호(S26-…)는 번호 뒤 -NN 없음 */
-export const hasVersion = (r: DealRow) => !!r.display_no && r.display_no !== r.deal_no;
-
 /** 견적 단계면 견적서 판(견적 V1·V2) — 사용자 2026-10-08 */
 export const quoteVer = (stage: DealStage | null, rev: number | null | undefined) => (stage === "견적" && rev ? rev : null);
 
@@ -60,7 +57,7 @@ export const ACTION_LABEL: Record<string, string> = {
   remove_payment: "입금 기록 삭제", remove_shipment: "출하 기록 삭제", review_done: "확인 완료", review_reopen: "확인 되돌리기",
   po_upload: "발주서 첨부", remove_po_file: "발주서 삭제", po_compare: "발주서 품목 대조", shipment_edit: "출하 기록 수정",
   reset_to_quote: "견적 상태로 되돌림(테스트)",
-  statement: "거래명세서 발급", pay_case: "결제 방식 선택", pay_terms: "결제 조건 저장", drop: "드랍", undrop: "드랍 되살리기", recommend: "제품 추천 확정", quote: "견적서 발행", quote_revision: "견적서 수정",
+  statement: "거래명세서 발급", pay_case: "결제 방식 선택", pay_terms: "결제 조건 저장", drop: "드랍", undrop: "드랍 되살리기", recommend: "제품 추천 확정", quote: "견적서 발행", quote_revision: "견적서 재발행", quote_upload: "견적서 첨부(외부 수정본)",
   meeting: "미팅 정보 입력",
 };
 const PAY_CASE_KO: Record<string, string> = { after: "납품 후 입금", split: "선금 50% → 납품 → 잔금", prepay: "전액 입금 → 납품" };
@@ -75,7 +72,7 @@ export function eventDetail(e: DealEvent): string {
   if (e.action === "paid_full") return d.to ? "→ 완납" : "→ 완납 해제";
   if (e.action === "import" && d.legacy_no) return `옛 번호 ${d.legacy_no}`;
   if (e.action === "po_upload" || e.action === "remove_po_file") return String(d.filename ?? "");
-  if (e.action === "statement") return `${d.no ?? ""} · 합계 ${won(d.total as number)}원${d.again ? " · 다시 발급" : ""}`;
+  if (e.action === "statement") return `합계 ${won(d.total as number)}원${d.again ? " · 다시 발급" : ""}`;
   if (e.action === "pay_case") return `→ ${PAY_CASE_KO[String(d.to)] ?? d.to}`;
   if (e.action === "pay_terms") return Array.isArray(d.terms) ? d.terms.join(" · ") : "";
   if (e.action === "drop") return d.reason ? String(d.reason) : "";

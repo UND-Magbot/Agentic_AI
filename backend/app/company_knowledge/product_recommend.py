@@ -51,6 +51,10 @@ class RecommendError(Exception):
     """화면에 그대로 보여도 되는 한국어 문구."""
 
 
+class DuplicateDocNo(RecommendError):
+    """이미 발행한 발행번호로 다시 발행하려 함 — 화면은 팝업으로 알린다(409)."""
+
+
 def _clean(s: Any, limit: int) -> str:
     return re.sub(r"\s+", " ", str(s or "")).strip()[:limit]
 
@@ -604,7 +608,7 @@ async def atc_evaluate(intake: dict[str, Any]) -> dict[str, Any]:
         catalog = await atc_catalog(db)
     out = atc.evaluate(intake, catalog)
     # 실제 제품처럼 보이는 툴 — 화면이 외부 공개 사양 검색을 제안한다(사용자 2026-10-02)
-    out["real_products"] = [{"index": i, "name": t.get("name") or f"툴 {i + 1}", "product": p}
+    out["real_products"] = [{"index": i, "name": atc.tool_label(t, i), "product": p}
                             for i, t in enumerate(intake.get("tools") or []) if (p := ts.looks_real(t))]
     return out
 
@@ -879,6 +883,9 @@ def _quote_view(r: dict[str, Any]) -> dict[str, Any]:
     from . import quote_session as qs
 
     st = r["state"] or {}
+    if st.get("lines"):
+        from . import quote_xlsx as qx
+        st = {**st, "lines": [{**ln, "commodity": qx.commodity_of(ln)} for ln in st["lines"]]}
     return {"id": r["id"], "recommendation_id": r["recommendation_id"], "deal_id": r.get("deal_id"), "manual": bool(st.get("manual")),
             "status": r["status"], "quote_no": r["quote_no"],
             "revision": r["revision"], "file_name": r["file_name"], "customer": r["customer"],
@@ -886,6 +893,7 @@ def _quote_view(r: dict[str, Any]) -> dict[str, Any]:
             "subtotal": qs.subtotal(st) if st else 0, "question": qs.next_question(st) if st else None,
             "problems": qs.problems(st) if st else [], "chat": (st.get("chat") or [])[-QUOTE_CHAT_MAX:],
             "history": [{**{k: h.get(k) for k in ("revision", "issued_at", "total", "currency")},
+                         "quote_no": h.get("quote_no") or (h.get("header") or {}).get("quote_no"), "uploaded": bool(h.get("upload")),
                          "file_name": pp.clean_quote_file_name(str(h.get("file_name") or ""))}
                         for h in r["history"] or []],
             "created_at": r["created_at"].isoformat(), "updated_at": r["updated_at"].isoformat()}
@@ -901,6 +909,15 @@ async def _quote_row(db, qid: int, user_id: int | None) -> dict[str, Any]:
 async def _save_state(db, qid: int, st: dict[str, Any]) -> None:
     await db.execute(text("UPDATE product_quotes SET state = CAST(:s AS jsonb), customer = :c, updated_at = NOW() WHERE id = :i"),
                      {"s": json.dumps(st, ensure_ascii=False), "c": (st.get("form") or {}).get("customer") or None, "i": qid})
+
+
+async def _account_contact(user_id: int | None) -> dict[str, str]:
+    """로그인 계정의 기본 정보 → 견적서 담당자 칸(이니셜·이름·직함·휴대폰·이메일). 빈 값은 빼서 다른 값을 지우지 않는다."""
+    from ..database import SessionLocal
+    from ..user_profile import contact_form, get_profile
+
+    async with SessionLocal() as db:
+        return contact_form(await get_profile(db, user_id))
 
 
 async def quote_draft(rid: int, *, user_id: int | None, form: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -930,7 +947,7 @@ async def quote_draft(rid: int, *, user_id: int | None, form: dict[str, Any] | N
     if not first:
         raise RecommendError("후보 모델이 없어 견적서를 만들 수 없습니다.")
     # 고객사는 미팅 파일 또는 Q&A 에서 적은 고객사명으로 미리 채운다(사용자 2026-10-08)
-    pre = {"customer": _rec_customer(rec)} | {k: v for k, v in (form or {}).items() if v}
+    pre = {"customer": _rec_customer(rec)} | {k: v for k, v in (form or {}).items() if v} | await _account_contact(user_id)
     m = first["models"][0]
     st = qs.draft_state(await _fresh_accessories(rec), model=m["name"], payload_kg=m.get("payload_kg"), form=pre)
     q = qs.next_question(st)
@@ -960,7 +977,8 @@ async def quote_manual(*, user_id: int | None, form: dict[str, Any] | None = Non
     from ..database import SessionLocal
     from . import quote_session as qs
 
-    st = qs.draft_state({}, model="", payload_kg=None, form={k: v for k, v in (form or {}).items() if v}, manual=True)
+    form = {k: v for k, v in (form or {}).items() if v} | await _account_contact(user_id)
+    st = qs.draft_state({}, model="", payload_kg=None, form=form, manual=True)
     q = qs.next_question(st)
     st["chat"] = [{"role": "assistant", "text": "수기 견적서를 시작했습니다. 품목은 왼쪽 [+ 항목]·[단가표에서 추가]로 넣거나 저에게 말로 알려 주세요."
                    + (f"\n\n{q['text']}" if q else "")}]
@@ -1087,13 +1105,15 @@ def _issue_parts(r: dict[str, Any], day) -> dict[str, Any]:
         lines = qs.render_lines(st, lang, f.get("fx_rate"))
     except (qx.QuoteError, ValueError, TypeError) as e:
         raise RecommendError(str(e)) from e
-    first = (r["history"] or [{}])[0]
-    head0 = first.get("header") or {}
     return {"st": st, "form": f, "lang": lang, "lines": lines, "pogo": any(ln["key"] in ("PPM", "PPF") for ln in lines),
             "customer": _FILE_BAD.sub(" ", str(f["customer"]).strip()).strip(),
-            "subject": _FILE_BAD.sub(" ", str(f.get("subject") or "").strip()).strip() or ("견적" if st.get("manual") else "magbot툴체인저"),
-            # 파일명의 날짜·이니셜은 처음 발행 기준(수정본도 같은 이름)
-            "d0": date_from_iso(head0.get("date")) or day, "ini": head0.get("initials") or f["initials"]}
+            # 파일명 내용 — 견적서 머리 칸은 없앴다(사용자 2026-10-12). 예전에 적어 둔 값이 있으면 그것, 수기 견적은 첫 품목 이름,
+            # AI 추천(툴체인저) 견적은 'magbot툴체인저'
+            "subject": _FILE_BAD.sub(" ", str(f.get("subject") or "").strip()).strip()
+                       or (_FILE_BAD.sub(" ", str(lines[0]["desc"]).split("\n")[0]).strip()[:30] if st.get("manual") and lines else "")
+                       or ("견적" if st.get("manual") else "magbot툴체인저"),
+            # 발행자 = 폼의 담당자 이니셜(기본은 로그인 계정, 고칠 수 있음) — 재발행하면 그때 낸 사람(사용자 2026-10-12)
+            "ini": str(f.get("initials") or "").strip().upper()}
 
 
 def date_from_iso(v: Any):
@@ -1117,77 +1137,264 @@ def _header(parts: dict[str, Any], no: str, rev: int, day) -> dict[str, Any]:
     return header
 
 
-async def quote_issue(qid: int, *, user_id: int | None, overwrite: bool = False) -> dict[str, Any]:
-    """[견적서 발행] — 미정 값이 없어야(C13). 견적번호 = 제품 영업 건 관리의 건 번호(S26-0182 …, 사용자 2026-10-06).
-    - 처음 발행: 이 추천의 영업 건('제품 추천 확정')이 견적 단계가 되고 그 건 번호가 견적번호(건이 없으면 새 건).
-    - 다시 발행: 같은 번호에 판 +1(사내 v2·v3 …, 견적서에는 번호만). overwrite=True 면 판 번호를 올리지 않고 지금 판을 덮어쓴다.
-    영업 건의 견적(품목·금액·판)도 함께 바꾼다 — 한 트랜잭션(번호가 겹치면 UNIQUE 로 걸려 다시 시도).
+async def quote_issue(qid: int, *, user_id: int | None) -> dict[str, Any]:
+    """[견적서 발행] — 미정 값이 없어야(C13). 발행할 때마다 새 발행번호 QT-{이니셜}{발행일}-NN(사용자 2026-10-12):
+    NN 은 그 발행자의 그날 견적서 발행 순서(고객사 무관, doc_numbers). 다른 사람이 고쳐 다시 내면 그 사람 번호.
+    덮어쓰기는 없앴다 — 고치면 재발행(새 번호). 처음 발행이면 이 추천의 영업 건('제품 추천 확정')이 견적 단계가 되고
+    (건이 없으면 새 건), 다시 발행이면 판 +1(사내 v2·v3). 영업 건의 견적(품목·금액·판·번호)도 한 트랜잭션으로 바꾼다.
     발행한 머리·품목은 history 에 남아 같은 파일을 다시 받을 수 있다."""
-    from datetime import date, datetime, timezone
-
-    from sqlalchemy.exc import IntegrityError
+    from datetime import datetime, timezone
 
     from ..database import SessionLocal
+    from ..sales_deals import doc_numbers as dn
     from ..sales_deals import service as deals
     from . import product_prices as pp
     from . import quote_xlsx as qx
 
     async with SessionLocal() as db:
         r = await _quote_row(db, qid, user_id)
-    day = date.today()
+    day = deals.kst_today()
     parts = _issue_parts(r, day)
     f, lang, lines = parts["form"], parts["lang"], parts["lines"]
-    over = bool(overwrite and r["quote_no"])
-    rev = r["revision"] if over else (r["revision"] + 1 if r["quote_no"] else 0)
+    rev = r["revision"] + 1 if r["quote_no"] else 0
     deal = {"quote_date": day, "customer": str(f["customer"]).strip(), "contact": str(f.get("to") or "").strip() or None,
             "owner": str(f.get("contact_name") or "").strip() or None, "vat_included": False, "initials": parts["ini"],
             "currency": qx.CURRENCY[lang], "title": "", "note": "",
             "items": [{"name": ln["desc"], "unit_price": ln["unit_price"], "qty": ln["qty"]} for ln in lines]}
     async with SessionLocal() as db:
-        for _ in range(3):
-            pid = (await db.execute(text("SELECT id FROM product_proposals WHERE recommendation_id = :r"),
-                                    {"r": r["recommendation_id"]})).scalar() if r["recommendation_id"] else None
-            try:   # 수기 견적은 첫 발행에서 만든 건(deal_id)을 계속 쓴다
-                deal_id, deal_no = await deals.quote_deal(db, user_id, pid, deal, rev + 1, deal_id=r.get("deal_id"))
-            except IntegrityError:
-                await db.rollback()
-                continue
-            except deals.DealError as e:              # 건 번호 이니셜 등 — 이유를 그대로
-                await db.rollback()
-                raise RecommendError(str(e)) from e
-            no = r["quote_no"] or deal_no               # 예전 번호(UND-…)로 이미 발행한 견적은 그 번호 유지
-            if pid and deal["customer"]:
-                await db.execute(text(
-                    "UPDATE product_proposals SET customer = :c, title = :c || ' · ' || model WHERE id = :p AND customer = ''"),
-                    {"c": deal["customer"], "p": pid})
-            header = _header(parts, no, rev, day)
-            fname = pp.quote_file_name(parts["customer"], parts["subject"], parts["ini"], parts["d0"], no) + ".xlsx"
-            snap = {"revision": rev, "issued_at": datetime.now(timezone.utc).isoformat(), "total": qx.total(lines),
-                    "currency": qx.CURRENCY[lang], "file_name": fname, "header": header, "lines": lines}
-            # 덮어쓰기면 마지막 판을 바꾸고, 아니면 판을 쌓는다
-            hist = "(history - (jsonb_array_length(history) - 1))" if over and r["history"] else "history"
-            try:
-                await db.execute(text(
-                    "UPDATE product_quotes SET status = 'issued', quote_no = :no, revision = :rev, lang = :lang, customer = :c, deal_id = :did, "
-                    "file_name = :f, header = CAST(:h AS jsonb), lines = CAST(:l AS jsonb), total = :t, "
-                    f"history = {hist} || CAST(:snap AS jsonb), updated_at = NOW() WHERE id = :i"),
-                    {"no": no, "rev": rev, "lang": lang, "c": header["customer"], "did": deal_id, "f": fname,
-                     "h": json.dumps(header, ensure_ascii=False), "l": json.dumps(lines, ensure_ascii=False),
-                     "t": qx.total(lines), "snap": json.dumps([snap], ensure_ascii=False), "i": qid})
-                await db.commit()
-                break
-            except IntegrityError:
-                await db.rollback()
-        else:
-            raise RecommendError("견적번호를 정하지 못했습니다. 잠시 뒤 다시 시도해 주세요.")
+        pid = (await db.execute(text("SELECT id FROM product_proposals WHERE recommendation_id = :r"),
+                                {"r": r["recommendation_id"]})).scalar() if r["recommendation_id"] else None
+        try:   # 번호를 잡고 → 영업 건 반영 → 견적 기록. 어디서든 실패하면 모두 되돌려 번호도 안 나간 것
+            no = await dn.allocate(db, dn.QUOTE, parts["ini"], day, deal_id=r.get("deal_id"), quote_id=qid, user_id=user_id)
+            deal_id, _ = await deals.quote_deal(db, user_id, pid, {**deal, "doc_no": no}, rev + 1, deal_id=r.get("deal_id"))
+            await dn.link_deal(db, no, deal_id)
+        except (deals.DealError, ValueError) as e:
+            await db.rollback()
+            raise RecommendError(str(e)) from e
+        if pid and deal["customer"]:
+            await db.execute(text(
+                "UPDATE product_proposals SET customer = :c, title = :c || ' · ' || model WHERE id = :p AND customer = ''"),
+                {"c": deal["customer"], "p": pid})
+        header = _header(parts, no, rev, day)
+        fname = pp.quote_file_name(parts["customer"], parts["subject"], parts["ini"], day, no) + ".xlsx"
+        snap = {"revision": rev, "quote_no": no, "issued_at": datetime.now(timezone.utc).isoformat(), "total": qx.total(lines),
+                "currency": qx.CURRENCY[lang], "file_name": fname, "header": header, "lines": lines}
+        await db.execute(text(
+            "UPDATE product_quotes SET status = 'issued', quote_no = :no, revision = :rev, lang = :lang, customer = :c, deal_id = :did, "
+            "file_name = :f, header = CAST(:h AS jsonb), lines = CAST(:l AS jsonb), total = :t, "
+            "history = history || CAST(:snap AS jsonb), updated_at = NOW() WHERE id = :i"),
+            {"no": no, "rev": rev, "lang": lang, "c": header["customer"], "did": deal_id, "f": fname,
+             "h": json.dumps(header, ensure_ascii=False), "l": json.dumps(lines, ensure_ascii=False),
+             "t": qx.total(lines), "snap": json.dumps([snap], ensure_ascii=False), "i": qid})
+        await db.commit()
         st = parts["st"]
         money = f"${qx.total(lines):,.2f}" if lang == "en" else f"{qx.total(lines):,.0f}원"
         st["chat"] = [*(st.get("chat") or []), {"role": "assistant", "text": (
-            f"견적서를 덮어썼습니다 — {header['quote_no']} (v{rev + 1}), 합계 {money}." if over
-            else f"견적서를 발행했습니다 — {header['quote_no']} (v{rev + 1}), 합계 {money}. 제품 영업 건 관리에도 반영했습니다.")}][-QUOTE_CHAT_MAX:]
+            f"견적서를 발행했습니다 — {no}, 합계 {money}. 제품 영업 건 관리에도 반영했습니다.")}][-QUOTE_CHAT_MAX:]
         await _save_state(db, qid, st)
         await db.commit()
         return _quote_view(await _quote_row(db, qid, user_id))
+
+
+PHOTO_TYPES = {"image/jpeg", "image/png", "image/webp"}
+PHOTO_MAX_BYTES = 10 * 1024 * 1024
+PHOTO_MAX_PX = 480                      # 견적서에는 작게 들어가므로 줄여 저장
+
+
+def line_photos(lines: list[dict[str, Any]]) -> dict[str, bytes]:
+    """견적서 줄의 사진 키 → 바이트(저장소). 못 읽은 사진은 빼고 견적서는 그대로 만든다."""
+    from ..storage import get_object_stream
+
+    out: dict[str, bytes] = {}
+    for ln in lines:
+        key = str(ln.get("photo") or "")
+        if not key or key in out:
+            continue
+        try:
+            obj = get_object_stream(key)
+            try:
+                out[key] = obj.read()
+            finally:
+                obj.close()
+                obj.release_conn()
+        except Exception:  # noqa: BLE001 — 사진이 없어져도 견적서는 만든다
+            continue
+    return out
+
+
+def _shrink_photo(data: bytes) -> bytes:
+    """사진 → 긴 변 480px JPEG(투명 배경은 흰색). 이미지가 아니면 ValueError."""
+    import io
+
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        im = Image.open(io.BytesIO(data))
+        im.load()
+    except (UnidentifiedImageError, OSError) as e:
+        raise ValueError("사진 파일을 읽지 못했습니다(JPG·PNG·WEBP).") from e
+    if im.mode in ("RGBA", "LA", "P"):
+        bg = Image.new("RGB", im.size, "white")
+        im = im.convert("RGBA")
+        bg.paste(im, mask=im.split()[-1])
+        im = bg
+    else:
+        im = im.convert("RGB")
+    im.thumbnail((PHOTO_MAX_PX, PHOTO_MAX_PX))
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", quality=85)
+    return buf.getvalue()
+
+
+async def quote_line_photo(qid: int, line_id: str, *, user_id: int | None, data: bytes | None) -> dict[str, Any]:
+    """견적서 품목 줄 사진 — data 가 있으면 줄여 저장하고 그 줄에 붙이고, None 이면 뗀다(사용자 2026-10-12: Remark 칸 사진).
+    물류비·설치 인건비 줄에는 붙이지 않는다."""
+    import io
+    import uuid
+
+    from ..database import SessionLocal
+    from ..storage import put_object
+
+    async with SessionLocal() as db:
+        r = await _quote_row(db, qid, user_id)
+        st = r["state"] or {}
+        ln = next((x for x in st.get("lines") or [] if x.get("id") == line_id), None)
+        if ln is None:
+            raise RecommendError("품목 줄을 찾을 수 없습니다. 먼저 변경을 저장해 주세요.")
+        if ln.get("kind") in ("work", "freight"):
+            raise RecommendError("물류비·설치 인건비 줄에는 사진을 넣지 않습니다.")
+        if data is None:
+            ln.pop("photo", None)
+        else:
+            try:
+                small = _shrink_photo(data)
+            except ValueError as e:
+                raise RecommendError(str(e)) from e
+            key = f"product-quotes/{qid}/photos/{uuid.uuid4().hex}.jpg"
+            put_object(key=key, data=io.BytesIO(small), length=len(small), mime="image/jpeg")
+            ln["photo"] = key
+        await _save_state(db, qid, st)
+        await db.commit()
+        return _quote_view(await _quote_row(db, qid, user_id))
+
+
+async def quote_photo_file(qid: int, name: str, *, user_id: int | None) -> bytes:
+    """견적서 품목 사진 보기 — 이 견적의 사진만(이름 = 저장소 파일 이름)."""
+    from ..database import SessionLocal
+
+    if not re.fullmatch(r"[0-9a-f]{32}\.jpg", name or ""):
+        raise RecommendError("사진을 찾을 수 없습니다.")
+    async with SessionLocal() as db:
+        await _quote_row(db, qid, user_id)
+    got = line_photos([{"photo": f"product-quotes/{qid}/photos/{name}"}])
+    if not got:
+        raise RecommendError("사진을 찾을 수 없습니다.")
+    return next(iter(got.values()))
+
+
+async def quote_issue_upload(*, qid: int | None, deal_id: int | None, user_id: int | None, owner_check: bool,
+                             upload: dict[str, Any], items: list[dict[str, Any]], initials: str,
+                             doc_no: str = "") -> dict[str, Any]:
+    """밖에서 고친 견적서 파일로 발행(사용자 2026-10-12) — 견적서 발행 한 번으로 본다: 새 발행번호(QT-이니셜+발행일-NN)·판 +1·
+    영업 건 견적(담당자가 확인한 품목·금액) 갱신, 발행 이력에 올린 파일을 남긴다(다시 받으면 그 파일 그대로).
+    발행번호는 견적서에 적힌 번호(doc_no)를 따른다 — 담당자가 고치면서 정한 번호. 비어 있을 때만 이니셜로 새 번호.
+    qid = 견적서 탭에서(작성 중인 견적), deal_id = 영업 건 상세에서(그 건의 최근 견적 기록, 없으면 새로 만든다).
+    upload = {key, filename, mime, size} — 이 견적·건 폴더에 올린 파일만."""
+    from datetime import datetime, timezone
+
+    from ..database import SessionLocal
+    from ..sales_deals import doc_numbers as dn
+    from ..sales_deals import quote_upload as qu
+    from ..sales_deals import service as deals
+    from . import quote_session as qs
+    from . import quote_xlsx as qx
+
+    given = dn.clean_doc_no(doc_no) if str(doc_no or "").strip() else None
+    if str(doc_no or "").strip() and not given:
+        raise RecommendError("발행번호는 영문·숫자·-(하이픈)으로 40자까지 적어 주세요(예: QT-LU20261012-03).")
+    m = dn.DOC_NO_RE.match(given or "")
+    ini = (m.group(2) if m else None) or dn.clean_initials(initials)
+    if not given and not ini:
+        raise RecommendError("견적서에 발행번호가 없으면 발행자 이니셜을 영문 2~4자로 적어 주세요(예: LU) — 새 번호 QT-LU20261012-01 을 매깁니다.")
+    try:
+        lines = qu.clean_items(items)
+    except ValueError as e:
+        raise RecommendError(str(e)) from e
+    ext = qu.ext_of(str(upload.get("filename") or ""))
+    key = str(upload.get("key") or "")
+    async with SessionLocal() as db:
+        if qid is not None:
+            r = await _quote_row(db, qid, user_id if owner_check else None)
+            folder = f"product-quotes/{qid}/"
+        else:
+            d = await deals.get_deal(db, deal_id, deals.kst_today())
+            folder = f"sales-deals/{deal_id}/quote/"
+            ids = [q["id"] for q in d.get("quotes") or []]
+            if ids:
+                r = await _quote_row(db, max(ids), None)
+            else:                                           # 견적 기록이 없는 건(직접 등록 등) — 수기 견적 기록을 하나 만든다
+                st = qs.draft_state({}, model="", payload_kg=None, manual=True, form={
+                    "customer": d.get("customer") or "", "to": d.get("contact") or "", "contact_name": d.get("owner") or "",
+                    "initials": ini, "subject": d.get("title") or ""})
+                new = (await db.execute(text(
+                    "INSERT INTO product_quotes (recommendation_id, user_id, status, customer, state, deal_id) "
+                    "VALUES (NULL, :u, 'draft', :c, CAST(:s AS jsonb), :d) RETURNING id"),
+                    {"u": user_id, "c": d.get("customer"), "s": json.dumps(st, ensure_ascii=False), "d": deal_id})).scalar_one()
+                r = await _quote_row(db, new, None)
+        if ext not in qu.TYPES or not key.startswith(folder):
+            raise RecommendError("올린 견적서 파일을 찾을 수 없습니다. 다시 올려 주세요.")
+        st = r["state"] or {}
+        f = st.get("form") or {}
+        customer = str(f.get("customer") or "").strip() or (r.get("customer") or "")
+        if not customer:
+            raise RecommendError("고객사가 없습니다 — 견적서에 고객사를 먼저 적어 주세요.")
+        lang = f.get("lang") or "ko"
+        day = deals.kst_today()
+        rev = r["revision"] + 1 if r["quote_no"] else 0
+        pid = (await db.execute(text("SELECT id FROM product_proposals WHERE recommendation_id = :r"),
+                                {"r": r["recommendation_id"]})).scalar() if r["recommendation_id"] else None
+        total = round(sum(x["qty"] * x["unit_price"] for x in lines), 2)
+        subject = _FILE_BAD.sub(" ", str(f.get("subject") or "").strip()).strip() or "견적"
+        try:
+            link = r.get("deal_id") or deal_id
+            if given:                                   # 견적서에 적힌 번호 — 이미 발행한 번호면(어느 건이든) 거절, 우리 형식이면 기록
+                hit = await dn.issued_where(db, given)
+                if hit:
+                    where = " · ".join(x for x in (hit["deal_no"], hit["customer"]) if x)
+                    raise DuplicateDocNo(f"이미 존재하는 발행번호입니다: {given}" + (f" ({where} 영업 건에서 발행)" if where else "")
+                                         + ". 견적서의 발행번호를 새 번호로 고쳐 주세요.")
+                no = given
+                await dn.register(db, no, deal_id=link, quote_id=r["id"], user_id=user_id)
+            else:
+                no = await dn.allocate(db, dn.QUOTE, ini, day, deal_id=link, quote_id=r["id"], user_id=user_id)
+            fname = f"(주)유엔디로보틱스_견적서_{_FILE_BAD.sub(' ', customer).strip()}_{subject}_{no}{ext}"
+            did, _ = await deals.quote_deal(db, user_id, pid, {
+                "quote_date": day, "customer": customer, "contact": str(f.get("to") or "").strip() or None,
+                "owner": str(f.get("contact_name") or "").strip() or None, "vat_included": False, "initials": ini,
+                "currency": qx.CURRENCY[lang], "title": "", "note": "", "items": lines, "doc_no": no,
+                "file": str(upload.get("filename") or "")[:200]}, rev + 1, deal_id=r.get("deal_id") or deal_id, action="quote_upload")
+            await dn.link_deal(db, no, did)
+        except DuplicateDocNo:
+            await db.rollback()
+            raise
+        except (deals.DealError, ValueError, RecommendError) as e:
+            await db.rollback()
+            raise RecommendError(str(e)) from e
+        snap = {"revision": rev, "quote_no": no, "issued_at": datetime.now(timezone.utc).isoformat(), "total": total,
+                "currency": qx.CURRENCY[lang], "file_name": fname, "lines": lines,
+                "upload": {"key": key, "mime": qu.TYPES[ext], "filename": str(upload.get("filename") or "")[:200],
+                           "size": int(upload.get("size") or 0), "by": user_id}}
+        st["chat"] = [*(st.get("chat") or []), {"role": "assistant", "text": (
+            f"밖에서 고친 견적서 파일로 발행했습니다 — {no}, 합계 {total:,.0f}원. 영업 건 관리에도 반영했습니다. "
+            "이 화면에서 다시 발행하면 이 화면의 내용으로 새 번호가 나갑니다.")}][-QUOTE_CHAT_MAX:]
+        await db.execute(text(
+            "UPDATE product_quotes SET status = 'issued', quote_no = :no, revision = :rev, customer = :c, deal_id = :did, "
+            "file_name = :f, total = :t, state = CAST(:s AS jsonb), history = history || CAST(:snap AS jsonb), updated_at = NOW() "
+            "WHERE id = :i"),
+            {"no": no, "rev": rev, "c": customer, "did": did, "f": fname, "t": total, "s": json.dumps(st, ensure_ascii=False),
+             "snap": json.dumps([snap], ensure_ascii=False), "i": r["id"]})
+        await db.commit()
+        return {"quote": _quote_view(await _quote_row(db, r["id"], None)), "deal_id": did, "quote_no": no}
 
 
 async def quote_file(qid: int, *, user_id: int | None, revision: int | None = None, fmt: str = "xlsx") -> tuple[str, bytes]:
@@ -1202,10 +1409,24 @@ async def quote_file(qid: int, *, user_id: int | None, revision: int | None = No
     snap = next((h for h in reversed(hist) if revision is None or h.get("revision") == revision), None)
     if snap is None:
         raise RecommendError("아직 발행한 견적서가 없습니다.")
+    if snap.get("upload"):                       # 밖에서 고쳐 올린 견적서(사용자 2026-10-12)
+        from ..storage import get_object_stream
+
+        up = snap["upload"]
+        obj = get_object_stream(up["key"])
+        try:
+            data = obj.read()
+        finally:
+            obj.close()
+            obj.release_conn()
+        name = str(snap.get("file_name") or "견적서")
+        if fmt == "pdf" and name.lower().endswith(".xlsx"):
+            return name[:-5] + ".pdf", await _to_pdf(data)
+        return name, data
     # 예전에 '번호 (Rev.n)'·'_Revn'·이니셜 날짜 중복 이름으로 저장한 발행본도 다시 받을 때는 지금 규칙으로(사용자 2026-10-08)
     header = {**snap["header"], "quote_no": re.sub(r"\s*\(Rev\.\d+\)$", "", str(snap["header"].get("quote_no") or ""))}
     name = pp.clean_quote_file_name(snap["file_name"])
-    data = qx.build_xlsx(header, snap["lines"])
+    data = qx.build_xlsx(header, snap["lines"], line_photos(snap["lines"]))
     if fmt == "pdf":
         return name.removesuffix(".xlsx") + ".pdf", await _to_pdf(data)
     return name, data
@@ -1223,7 +1444,7 @@ async def quote_preview(qid: int, *, user_id: int | None) -> bytes:
     day = date.today()
     parts = _issue_parts(r, day)
     header = _header(parts, r["quote_no"] or "(발행 시 부여)", r["revision"] if r["quote_no"] else 0, day)
-    return await _to_pdf(qx.build_xlsx(header, parts["lines"]))
+    return await _to_pdf(qx.build_xlsx(header, parts["lines"], line_photos(parts["lines"])))
 
 
 async def _to_pdf(xlsx: bytes) -> bytes:

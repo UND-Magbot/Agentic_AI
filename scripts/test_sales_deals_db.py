@@ -34,7 +34,7 @@ def check(ok: bool, label: str, detail: str = "") -> None:
 
 async def run() -> None:
     async with SessionLocal() as db:
-        await db.execute(text("DELETE FROM sales_deal_rollbacks WHERE deal_id IN (SELECT id FROM sales_deals WHERE customer = :c)"),
+        await db.execute(text("DELETE FROM doc_numbers WHERE deal_id IN (SELECT id FROM sales_deals WHERE customer = :c)"),
                          {"c": TEST_CUSTOMER})
         await db.execute(text("DELETE FROM sales_deals WHERE customer = :c"), {"c": TEST_CUSTOMER})
         await db.commit()
@@ -62,8 +62,9 @@ async def run() -> None:
         check(d["quote"]["amount"] == 5_000_000 and d["title"] == "TCV1 본체 외 1", "견적액·건명 자동 계산",
               f"{d['quote']['amount']} {d['title']}")
         check([t["pct"] for t in d["pay_terms"]] == [50, 50] and d["pay_terms"][1]["ship_gate"], "결제 회차 50/50 + 출고 조건")
-        check(d["stage"] == "견적" and d["deal_no"].startswith(f"AL{TODAY:%Y%m%d}") and d["display_no"].endswith("-01"),
-              "처음 단계는 견적 · 건 번호 = 담당 이니셜+날짜(AL…), 표시는 -01", f"{d['stage']} {d['display_no']}")
+        check(d["stage"] == "견적" and d["deal_no"].startswith(f"AL{TODAY:%Y%m%d}") and d["display_no"] == d["deal_no"]
+              and d["statement_no"] is None,
+              "직접 등록한 건: 견적 단계 · 건 번호 = 담당 이니셜+날짜(AL…, 견적서 발행번호 없음)", f"{d['stage']} {d['display_no']}")
 
         # ── 수주 YES / (예전 실주 기록은 드랍으로 보임) / 되돌리기 ──
         await svc.set_won(db, new_id, uid, True, None)
@@ -111,9 +112,8 @@ async def run() -> None:
             "vat_included": False, "currency": "KRW", "items": [{"name": "MG10", "unit_price": 1_000_000, "qty": 1}],
             "pay_terms_text": None, "note": None})
         d2 = await svc.get_deal(db, t2, TODAY)
-        check(d2["deal_no"] == d["deal_no"] == f"VT{TODAY:%Y%m%d}" and d2["display_no"] == f"{d['deal_no']}-01",
-              "같은 날 다른 프로젝트도 VT+날짜-01(B 안 붙음)", f"{d['deal_no']} / {d2['display_no']}")
-        v0 = d["version"]
+        check(d2["deal_no"] == d["deal_no"] == f"VT{TODAY:%Y%m%d}", "같은 날 다른 프로젝트도 VT+날짜(B 안 붙음)",
+              f"{d['deal_no']} / {d2['display_no']}")
         await svc.set_won(db, t_id, uid, True, TODAY)
         try:
             await svc.set_terms(db, t_id, uid, [{"label": "선금", "pct": 30}, {"label": "잔금", "pct": 70}])
@@ -121,12 +121,24 @@ async def run() -> None:
         except svc.DealError:
             await db.rollback()
             check(True, "명세서 전 결제 조건 거절")
-        await svc.set_statement(db, t_id, uid, {"date": TODAY, "buyer": {"reg_no": "314-86-54321", "name": "테스트", "ceo": "홍길동",
-                                                                         "address": "대구"},
+        BUYER = {"reg_no": "314-86-54321", "name": "테스트", "ceo": "홍길동", "address": "대구"}
+        try:
+            await svc.set_statement(db, t_id, uid, {"date": TODAY, "buyer": BUYER, "items": [{"name": "TCV3", "qty": 1, "unit_price": 1}]})
+            check(False, "발행자 이니셜 없이 발급 거절")
+        except svc.DealError:
+            await db.rollback()
+            check(True, "발행자 이니셜 없이 발급 거절")
+        last = (await db.execute(text("SELECT MAX(seq) FROM doc_numbers WHERE doc_type = 'TS' AND issuer = 'VT' AND issue_day = :d"),
+                                 {"d": TODAY})).scalar() or 0
+        await svc.set_statement(db, t_id, uid, {"date": TODAY, "initials": "vt", "buyer": BUYER,
                                                 "items": [{"name": "TCV3 툴체인저(ATC)", "spec": "", "qty": 1, "unit": "SET",
                                                            "unit_price": 3_000_000}],
                                                 "parts": [{"name": "TCV3", "spec": "본체", "qty": 1, "unit_price": 3_000_000}]})
-        st = (await svc.get_deal(db, t_id, TODAY))["statement"]
+        dd = await svc.get_deal(db, t_id, TODAY)
+        st = dd["statement"]
+        ts1 = f"TS-VT{TODAY:%Y%m%d}-{last + 1:02d}"
+        check(st["no"] == ts1 and st["initials"] == "VT" and dd["statement_no"] == ts1,
+              "거래명세서 발행번호 TS-이니셜+발행일-그날 순번(사용자 2026-10-12)", f"{st['no']} / {ts1}")
         check(st["items"][0]["unit"] == "SET" and st["parts"][0]["name"] == "TCV3" and st["totals"]["supply"] == 3_000_000,
               "세트로 묶어 발급: 단위 SET + 구성 품목 보관", str(st["items"]))
         past = (TODAY - dt.timedelta(days=3)).isoformat()
@@ -138,37 +150,24 @@ async def run() -> None:
         check([t["amount"] for t in d["flow"]["terms"]] == [900_000, 2_100_000] and d["flow"]["total"] == 3_000_000,
               "회차 금액 = 공급가액 × %", str([t["amount"] for t in d["flow"]["terms"]]))
         check(d["flow"]["overdue"] and any(a["code"] == "OVERDUE" for a in d["alerts"]), "예정 입금일 지난 선금 → 알림")
-        # 히스토리 번호(사용자 2026-10-08 오후) — 바뀔 때마다 +1: 등록 -01 → 수주 -02 → 명세서 -03 → 결제 조건 -04
-        hist = [h["ver_no"] for h in d["history"]]
-        check(v0 == 1 and d["display_no"] == f"{d['deal_no']}-04" and hist == [f"{d['deal_no']}-{n:02d}" for n in (4, 3, 2, 1)]
-              and d["history"][0]["action"] == "pay_terms" and d["history"][2]["stage"] == "수주",
-              "바뀔 때마다 히스토리 번호 +1(최신 먼저, 그때 단계)", f"{v0} → {d['display_no']} {hist}")
-        later = TODAY + dt.timedelta(days=2)
-        check(svc._ver_prefix(d["deal_no"], later) == f"VT{later:%Y%m%d}",
-              "날짜가 바뀌면 그 날짜로(VT+바뀐 날)")
-        v_before, no_before = d["version"], d["display_no"]
+        # 히스토리(사용자 2026-10-12) — 시간순 순번 1, 2, 3 …, 최신 먼저. 등록 1 → 수주 2 → 명세서 3 → 결제 조건 4
+        got = [(h["seq"], h["action"]) for h in d["history"]]
+        check(got == [(4, "pay_terms"), (3, "statement"), (2, "won"), (1, "create")] and d["history"][2]["stage"] == "수주"
+              and d["history"][1]["doc_no"] == ts1 and d["history"][0]["doc_no"] is None,
+              "히스토리 = 시간순 순번(최신 먼저), 발행 줄에만 발행번호", str(got))
+        check(not hasattr(svc, "rollback_history"), "되돌리기 기능 없음(문제는 고쳐서 재발행)")
         await svc.confirm_term(db, t_id, uid, 0, TODAY)
         d = await svc.get_deal(db, t_id, TODAY)
-        check(d["version"] == v_before + 1 and d["display_no"] == f"{d['deal_no']}-05", "입금 확인도 번호 +1(-04 → -05)",
-              f"{no_before} → {d['display_no']}")
-        # 히스토리 되돌리기(사용자 2026-10-08) — 맨 위(-05 입금 확인)를 지우고 -04 때로: 입금 취소·번호 -04, 다시 하면 -05 다시 씀
-        try:
-            await svc.rollback_history(db, t_id, d["history"][0]["id"], uid)
-            check(False, "맨 위 줄을 돌아갈 곳으로 고르면 거절")
-        except svc.DealError:
-            await db.rollback()
-            check(True, "맨 위 줄을 돌아갈 곳으로 고르면 거절")
-        back_to = await svc.rollback_history(db, t_id, d["history"][1]["id"], uid)
+        check(d["history"][0]["seq"] == 5 and d["history"][0]["action"] == "payment" and d["display_no"] == d["deal_no"],
+              "입금 확인 → 순번 5, 번호는 그대로(문서 발행 때만 번호)", str(d["history"][0]["seq"]))
+        # 명세서 다시 발급 → 새 번호(같은 발행자 그날 다음 순서), 예전 발급 줄은 '버전 업데이트됨'. 다른 발행자는 그 사람 01부터
+        await svc.set_statement(db, t_id, uid, {"date": TODAY, "initials": "VT", "buyer": BUYER,
+                                                "items": [{"name": "TCV3", "spec": "본체", "qty": 1, "unit_price": 3_000_000}]})
         d = await svc.get_deal(db, t_id, TODAY)
-        check(back_to == d["display_no"] == f"{d['deal_no']}-04" and d["payments"] == []
-              and d["flow"]["overdue"] and len(d["history"]) == 4 and d["history"][0]["action"] == "pay_terms",
-              "되돌리기: 입금 확인 전(-04) 내용·번호로", f"{back_to} {d['display_no']} {d['payments']}")
-        await svc.confirm_term(db, t_id, uid, 0, TODAY)
-        d = await svc.get_deal(db, t_id, TODAY)
-        check(d["display_no"] == f"{d['deal_no']}-05" and len(d["payments"]) == 1, "되돌린 뒤 다음 변경은 -05부터 다시", d["display_no"])
-        saved = (await db.execute(text("SELECT to_ver_no, jsonb_array_length(removed) FROM sales_deal_rollbacks WHERE deal_id = :d"),
-                                  {"d": t_id})).all()
-        check([tuple(x) for x in saved] == [(f"{d['deal_no']}-04", 1)], "지운 이력·되돌리기 전 내용 보관", str(saved))
+        ts2 = f"TS-VT{TODAY:%Y%m%d}-{last + 2:02d}"
+        sts = [(h["doc_no"], h["superseded"]) for h in d["history"] if h["action"] == "statement"]
+        check(d["statement_no"] == ts2 and sts == [(ts2, False), (ts1, True)],
+              "다시 발급 → 다음 번호, 예전 발급 줄은 버전 업데이트됨", str(sts))
         ship_step = next(x for x in d["flow"]["steps"] if x["key"] == "ship")
         check(ship_step["ready"] and not d["flow"]["overdue"] and d["payments"][0]["amount"] == 900_000,
               "선금 확인 → 지남 알림 사라짐(출하는 원래 언제든 가능)")
@@ -180,7 +179,7 @@ async def run() -> None:
             check(True, "확인한 회차 % 변경 거절")
         await svc.add_shipment(db, t_id, uid, {"date": TODAY, "carrier": "경동택배", "tracking": "1", "items": "TCV3 1", "purpose": "판매"})
         d = await svc.get_deal(db, t_id, TODAY)
-        check(d["display_no"] == f"{d['deal_no']}-06", "출하 → -06", d["display_no"])
+        check(d["history"][0]["action"] == "shipment" and d["history"][0]["seq"] == 7, "출하 → 순번 7", str(d["history"][0]["seq"]))
         await svc.confirm_term(db, t_id, uid, 1, TODAY)
         d = await svc.get_deal(db, t_id, TODAY)
         check(d["stage"] == "완료 (출하·완납)" and d["paid_full"], "잔금 확인 → 완료", d["stage"])
@@ -203,7 +202,7 @@ async def run() -> None:
         except svc.DealError as e:
             check(e.status == 409, "이관 중복 거부(보관함으로 옮긴 이관 건도 셈)")
 
-        await db.execute(text("DELETE FROM sales_deal_rollbacks WHERE deal_id IN (SELECT id FROM sales_deals WHERE customer = :c)"),
+        await db.execute(text("DELETE FROM doc_numbers WHERE deal_id IN (SELECT id FROM sales_deals WHERE customer = :c)"),
                          {"c": TEST_CUSTOMER})
         await db.execute(text("DELETE FROM sales_deals WHERE customer = :c"), {"c": TEST_CUSTOMER})
         await db.commit()

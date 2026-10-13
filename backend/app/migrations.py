@@ -4,6 +4,10 @@ Alembic 같은 마이그레이션 도구를 정식 도입하기 전까지의 임
 backend 부팅 시 한 번씩 실행되며, 이미 적용된 변경은 자동으로 no-op.
 
 추가 컬럼 변경/리네임이 필요할 때 여기에 멱등 SQL 블록을 누적한다.
+
+주의(사용자 2026-10-12): 여기 넣은 SQL 은 운영 배포 때 운영 DB(agent_ai, 사용 중)에 그대로 실행된다.
+개발 DB agent_ai_dev 는 agent_ai 의 전체 복사본. 구조 변경(테이블·컬럼·제약·인덱스·데이터 이관)을 추가하기 전에
+무엇을 왜 바꾸는지 사용자에게 먼저 확인받는다.
 """
 from __future__ import annotations
 
@@ -919,7 +923,7 @@ _SALES_DEALS_STMTS = [
         );
         """
     ),
-    # 히스토리 되돌리기(사용자 2026-10-08) — 최신 줄부터 고른 줄까지 지우고 그 아래 줄 때 내용으로. 지운 이력·되돌리기 전 내용은 여기 보관.
+    # (폐지 2026-10-12) 히스토리 되돌리기 보관함 — 기능은 없앴고 테이블만 남김(지우는 것도 구조 변경이라 그대로).
     text(
         """
         CREATE TABLE IF NOT EXISTS sales_deal_rollbacks (
@@ -930,6 +934,30 @@ _SALES_DEALS_STMTS = [
             before_state JSONB       NOT NULL,
             user_id      BIGINT      REFERENCES users(id) ON DELETE SET NULL,
             created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        """
+    ),
+    # 계정 기본 정보(사용자 2026-10-12 승인) — 견적서 등 입력 폼을 이 값으로 미리 채운다(폼에서 고칠 수 있음). 프로필 [내 정보]에서 본인이 입력.
+    text("ALTER TABLE users ADD COLUMN IF NOT EXISTS initials VARCHAR(4)"),
+    text("ALTER TABLE users ADD COLUMN IF NOT EXISTS name_ko VARCHAR(40)"),
+    text("ALTER TABLE users ADD COLUMN IF NOT EXISTS title VARCHAR(40)"),
+    text("ALTER TABLE users ADD COLUMN IF NOT EXISTS mobile VARCHAR(40)"),
+    # 발행번호(사용자 2026-10-12 승인) — 견적서 QT-LU20261012-01 · 거래명세서 TS-…. 일련번호 = 발행자(이니셜)의 그날 문서 종류별 발행 순서.
+    # 한 번 나간 번호는 다시 쓰지 않는다(건을 지워도 남김 — 그래서 sales_deals 에 FK 를 걸지 않음).
+    text(
+        """
+        CREATE TABLE IF NOT EXISTS doc_numbers (
+            id         BIGSERIAL PRIMARY KEY,
+            doc_type   VARCHAR(4)  NOT NULL,
+            issuer     VARCHAR(4)  NOT NULL,
+            issue_day  DATE        NOT NULL,
+            seq        INT         NOT NULL,
+            doc_no     VARCHAR(40) NOT NULL UNIQUE,
+            deal_id    BIGINT,
+            quote_id   BIGINT,
+            user_id    BIGINT      REFERENCES users(id) ON DELETE SET NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (doc_type, issuer, issue_day, seq)
         );
         """
     ),

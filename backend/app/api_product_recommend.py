@@ -33,6 +33,7 @@ from .api_auth import get_current_user
 from .company_knowledge import product_recommend as pr
 from .company_knowledge.plain_text import scrub
 from .models import User
+from .sales_deals.quote_upload import UploadConfirmIn as QuoteUploadConfirm
 from .proposal_project.experience import is_knowledge_approver
 
 
@@ -262,7 +263,8 @@ class QuoteChatIn(BaseModel):
 
 class QuoteLineIn(BaseModel):
     id: str | None = Field(default=None, max_length=10)          # 없으면 새 항목
-    name: str = Field(default="", max_length=60)
+    name: str = Field(default="", max_length=300)                # 규격(Specifications) — 모델·세부 사양(여러 줄 가능)
+    commodity: str | None = Field(default=None, max_length=60)   # 품목(Commodity) — 예: Magbot ATC. 없으면 그대로 둠
     qty: int | None = Field(default=None, ge=0, le=100000)
     unit_price: float | None = Field(default=None, ge=0, lt=1e10)
     remark: str = Field(default="", max_length=100)
@@ -352,20 +354,78 @@ async def quote_edit(qid: int, body: QuoteEditIn, current_user: User = Depends(g
 
 
 class QuoteIssueIn(BaseModel):
-    overwrite: bool = False          # True = 판 번호를 올리지 않고 지금 판을 덮어쓰기(발행 뒤 놓친 것 고치기)
+    """(본문 없음) 덮어쓰기는 없앴다(사용자 2026-10-12) — 예전 화면이 보내는 overwrite 는 무시."""
 
 
 @router.post("/quotes/{qid}/issue")
 async def quote_issue(qid: int, body: QuoteIssueIn | None = None, current_user: User = Depends(get_current_user)):
-    """[견적서 발행] — 첫 발행 = 영업 건 번호(S26-…)가 견적번호, 다시 발행 = 같은 번호 Rev+1(덮어쓰기면 지금 판).
-    미정 값이 있으면 400(이유)."""
+    """[견적서 발행] — 발행·재발행마다 새 발행번호 QT-{이니셜}{발행일}-NN. 미정 값이 있으면 400(이유)."""
     try:
-        return await pr.quote_issue(qid, user_id=current_user.id, overwrite=bool(body and body.overwrite))
+        return await pr.quote_issue(qid, user_id=current_user.id)
     except pr.RecommendError as e:
         raise _bad(e) from e
 
 
 _MEDIA = {"xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "pdf": "application/pdf"}
+
+
+@router.post("/quotes/{qid}/upload")
+async def quote_upload(qid: int, file: UploadFile = File(...), current_user: User = Depends(get_current_user)):
+    """밖에서 고친 견적서 파일 올리기(사용자 2026-10-12) — 저장하고 AI 가 품목·금액을 읽어 돌려준다(아직 발행 전)."""
+    from .sales_deals import quote_upload as qu
+
+    try:
+        await pr.quote_get(qid, user_id=current_user.id)          # 내 견적서인지
+        return await qu.store_and_read(file, f"product-quotes/{qid}/")
+    except pr.RecommendError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    except qu.UploadError as e:
+        raise HTTPException(e.status, detail=str(e)) from e
+
+
+@router.post("/quotes/{qid}/upload/confirm")
+async def quote_upload_confirm(qid: int, body: QuoteUploadConfirm, current_user: User = Depends(get_current_user)):
+    """확인한 품목으로 발행 — 새 발행번호·판 +1·영업 건 견적 갱신. 미정·오류는 400(이유)."""
+    try:
+        res = await pr.quote_issue_upload(qid=qid, deal_id=None, user_id=current_user.id, owner_check=True,
+                                          upload=body.upload.model_dump(), items=[x.model_dump() for x in body.items],
+                                          initials=body.initials, doc_no=body.doc_no)
+    except pr.DuplicateDocNo as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(e)) from e
+    except pr.RecommendError as e:
+        raise _bad(e) from e
+    return res["quote"]
+
+
+@router.post("/quotes/{qid}/lines/{line_id}/photo")
+async def quote_line_photo(qid: int, line_id: str, file: UploadFile = File(...), current_user: User = Depends(get_current_user)):
+    """품목 줄 사진 올리기(사용자 2026-10-12) — 견적서 Remark 칸에 작게 들어간다. JPG·PNG·WEBP, 10MB 까지."""
+    if (file.content_type or "") not in pr.PHOTO_TYPES:
+        raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="사진은 JPG·PNG·WEBP 만 올릴 수 있습니다.")
+    data = await file.read()
+    if not data or len(data) > pr.PHOTO_MAX_BYTES:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="사진은 10MB 까지 올릴 수 있습니다.")
+    try:
+        return await pr.quote_line_photo(qid, line_id[:12], user_id=current_user.id, data=data)
+    except pr.RecommendError as e:
+        raise _bad(e) from e
+
+
+@router.post("/quotes/{qid}/lines/{line_id}/photo/remove")
+async def quote_line_photo_remove(qid: int, line_id: str, current_user: User = Depends(get_current_user)):
+    try:
+        return await pr.quote_line_photo(qid, line_id[:12], user_id=current_user.id, data=None)
+    except pr.RecommendError as e:
+        raise _bad(e) from e
+
+
+@router.get("/quotes/{qid}/photo/{name}")
+async def quote_photo(qid: int, name: str, current_user: User = Depends(get_current_user)):
+    try:
+        data = await pr.quote_photo_file(qid, name, user_id=current_user.id)
+    except pr.RecommendError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    return Response(content=data, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
 
 
 @router.get("/quotes/{qid}/file")
@@ -378,6 +438,7 @@ async def quote_download(qid: int, fmt: Literal["xlsx", "pdf"] = "xlsx", revisio
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e)) from e
     except pr.RecommendError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    fmt = "pdf" if name.lower().endswith(".pdf") else "xlsx"      # 올린 PDF 는 엑셀로 달라도 PDF
     return Response(content=data, media_type=_MEDIA[fmt],
                     headers={"Content-Disposition": f"attachment; filename=\"quote.{fmt}\"; filename*=UTF-8''{quote(name)}"})
 

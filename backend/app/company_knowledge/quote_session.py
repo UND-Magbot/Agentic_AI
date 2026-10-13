@@ -92,6 +92,7 @@ def draft_state(accessories: dict[str, Any], *, model: str, payload_kg: float | 
             continue
         k = qx._key(it)
         row = {"kind": "option" if it.get("optional") else "product", "key": k, "name": it["name"],
+               "commodity": qx.default_commodity({"key": k}),
                "qty": it.get("qty"), "unit_price": it.get("unit_price"), "remark": qx._REMARK["ko"].get(k, ""),
                "price_status": it.get("price_status")}
         if it.get("conditional"):
@@ -113,6 +114,16 @@ def draft_state(accessories: dict[str, Any], *, model: str, payload_kg: float | 
     return {"model": model, "payload_kg": payload_kg, "applicable": bool(accessories.get("applicable")) or manual, "form": f,
             "lines": lines, "options": options, "work": {"needed": None, "people": None, "days": None, "rate": None},
             "delivery": {"case": None, "freight": None}, "asked": [], "next_id": len(lines) + 1, "manual": manual}
+
+
+SPEC_MAX = 300          # 규격 칸 글자 수(여러 줄 — 예: 'TCV1\n- Master T.C\n- Control Box…', 사용자 2026-10-12)
+SPEC_LINES = 8
+
+
+def clean_spec(v: Any) -> str:
+    """규격(품목명) — 줄바꿈은 살리고(줄마다 공백 정리·빈 줄 제거) 8줄·300자까지."""
+    rows = [re.sub(r"[ \t]+", " ", x).strip() for x in str(v or "").splitlines()]
+    return "\n".join([x for x in rows if x][:SPEC_LINES])[:SPEC_MAX]
 
 
 def _new_id(state: dict[str, Any]) -> str:
@@ -157,8 +168,6 @@ def next_question(state: dict[str, Any]) -> dict[str, Any] | None:
     if state.get("manual") and not any(ln["kind"] in ("product", "extra", "option") for ln in state["lines"]):
         return {"id": "items", "text": "견적에 넣을 품목을 알려 주세요 — 품명·수량·단가. 예: MG10 그리퍼 2개 150만원. "
                                        "왼쪽 [+ 항목]이나 [단가표에서 추가]로 직접 넣어도 됩니다."}
-    if state.get("manual") and not str(f.get("subject") or "").strip():
-        return {"id": "subject", "text": "견적서 파일명·건명에 넣을 제품명을 알려 주세요. 예: MG 그리퍼"}
     if not spec:
         return {"id": "delivery", "text": DELIVERY_QUESTION,
                 "choices": [f"{k}. {v['label']}" for k, v in DELIVERY.items()]}
@@ -308,7 +317,7 @@ def apply_ops(state: dict[str, Any], ops: Any, message: str | None) -> tuple[dic
             _sync_work(st)
             by_id = {ln["id"]: ln for ln in st["lines"]}
         elif kind == "add":
-            name = re.sub(r"\s+", " ", str(op.get("name") or "")).strip()[:60]
+            name = clean_spec(op.get("name"))
             price, qty = num(op.get("unit_price")), num(op.get("qty") or 1) if op.get("qty") not in (None, 1) else 1
             if not name or price is None or price <= 0 or not qty or qty < 1:
                 continue
@@ -322,6 +331,7 @@ def apply_ops(state: dict[str, Any], ops: Any, message: str | None) -> tuple[dic
                 by_id = {x["id"]: x for x in st["lines"]}
                 continue
             ln = {"id": _new_id(st), "kind": "extra", "key": "extra", "name": name, "qty": int(qty), "unit_price": price,
+                  "commodity": re.sub(r"\s+", " ", str(op.get("commodity") or "")).strip()[:60],
                   "remark": re.sub(r"\s+", " ", str(op.get("remark") or "")).strip()[:100], "price_status": "set"}
             st["lines"].append(ln)
             by_id[ln["id"]] = ln
@@ -351,10 +361,10 @@ def apply_ops(state: dict[str, Any], ops: Any, message: str | None) -> tuple[dic
             if op.get("confirmed") is True and ln.get("conditional") and not ln.get("confirmed") and ln.get("qty"):
                 ln["confirmed"] = True
                 done.append(f"{ln['name']} 수량 {ln['qty']} 확인")
-            for k in ("name", "remark"):
-                if isinstance(op.get(k), str) and (ln["kind"] == "extra" or k == "remark"):
-                    ln[k] = re.sub(r"\s+", " ", op[k]).strip()[:100 if k == "remark" else 60]
-                    done.append(f"{ln['name']} {'비고' if k == 'remark' else '이름'} 수정")
+            for k in ("name", "remark", "commodity"):
+                if isinstance(op.get(k), str) and (ln["kind"] == "extra" or k != "name"):
+                    ln[k] = clean_spec(op[k]) if k == "name" else re.sub(r"\s+", " ", op[k]).strip()[:100 if k == "remark" else 60]
+                    done.append(f"{ln['name']} {dict(remark='비고', commodity='품목').get(k, '규격')} 수정")
         elif kind == "remove" and op.get("line") in by_id:
             ln = by_id.pop(op["line"])
             st["lines"] = [x for x in st["lines"] if x["id"] != ln["id"]]
@@ -413,12 +423,14 @@ def edit_ops(state: dict[str, Any], payload: dict[str, Any]) -> list[dict[str, A
                 seen.add(x["id"])
                 ln = cur[x["id"]]
                 ch = {k: x[k] for k in ("qty", "unit_price", "name", "remark") if k in x and x[k] != ln.get(k)}
+                if isinstance(x.get("commodity"), str) and x["commodity"] != qx.commodity_of(ln):
+                    ch["commodity"] = x["commodity"]
                 if x.get("confirmed") is True and ln.get("conditional") and not ln.get("confirmed"):
                     ch["confirmed"] = True
                 if ch:
                     ops.append({"op": "update", "line": x["id"], **ch})
             elif not x.get("id"):
-                ops.append({"op": "add", **{k: x.get(k) for k in ("name", "qty", "unit_price", "remark")}})
+                ops.append({"op": "add", **{k: x.get(k) for k in ("name", "qty", "unit_price", "remark", "commodity")}})
         ops += [{"op": "remove", "line": i} for i in cur if i not in seen]
     for name in payload.get("include_options") or []:
         ops.append({"op": "option", "name": name, "include": True})
@@ -488,7 +500,7 @@ def quick_ops(state: dict[str, Any], message: str) -> list[dict[str, Any]] | Non
 QUOTE_SYSTEM = """너는 유엔디로보틱스 견적 담당이다. [견적 상태]와 [지금 묻는 질문]을 보고 사용자의 마지막 [말]을 견적 변경(ops)으로 옮긴다.
 JSON 으로만 답한다. [말]에 분명히 있는 내용만 옮기고 지어내지 않는다. 숫자는 [말]에 적힌 그대로(원 단위; '50만원'은 500000).
 ops 종류:
-- {"op":"set","field":<customer|to|cc|subject|initials|contact_name|contact_title|contact_mobile|contact_email|delivery|place|payment|comments|note|lang|fx_rate|bank|account_no|account_holder>,"value":...}
+- {"op":"set","field":<customer|to|cc|initials|contact_name|contact_title|contact_mobile|contact_email|delivery|place|payment|comments|note|lang|fx_rate|bank|account_no|account_holder>,"value":...}
   (lang 은 "ko" 또는 "en". contact_* 는 견적을 '보내는' 우리 회사(유엔디로보틱스) 담당자다 — '담당자는 …'처럼 분명할 때만.
    견적을 '받는' 고객사 쪽 사람('○○ 대표님께', '○○님 앞으로')은 to, 회사 이름은 customer.
    '홍길동 이사'처럼 이름과 직함이 같이 오면 contact_name 과 contact_title 로 나눈다.
@@ -498,8 +510,9 @@ ops 종류:
 - {"op":"delivery","case":1|2|3|4|5,"freight":물류비}  — 납품 방식: 1 택배 발송(품목 그대로), 2 화물 직납(물류비 추가),
   3 우리 인원이 설치하며 납품(설치 인건비 추가), 4 화물로 보내고 우리 인원이 설치(물류비+인건비), 5 별도 협의(품목 그대로). freight 는 물류비 금액(말에 있을 때만).
 - {"op":"work","people":명,"days":일,"rate":1인1일단가}  — 설치 인건비(인원·일수·단가). 설치를 빼라고 하면 {"op":"work","needed":false}
-- {"op":"add","name":"물류비","qty":1,"unit_price":100000,"remark":""}  — 새 항목(수기 견적의 제품 품목도 이것으로 — 품명·수량·단가가 [말]에 있을 때만)
-- {"op":"update","line":"L3","qty":3}  — 품목 수량·단가·이름·비고 바꾸기(line 은 [견적 상태]의 줄 id)
+- {"op":"add","name":"MG10 그리퍼","commodity":"Magbot Gripper","qty":1,"unit_price":100000,"remark":""}  — 새 항목(수기 견적의 제품 품목도 이것으로 — 품명·수량·단가가 [말]에 있을 때만).
+  견적서 표는 품목(commodity, 예: Magbot ATC)과 규격(name, 모델·세부 사양) 칸이 따로다 — commodity 는 말에 있을 때만, 없으면 "".
+- {"op":"update","line":"L3","qty":3}  — 품목 수량·단가·규격(name)·품목(commodity)·비고 바꾸기(line 은 [견적 상태]의 줄 id)
 - {"op":"update","line":"L3","confirmed":true}  — 조건부 수량을 담당자가 '맞다'고 확인할 때만
 - {"op":"remove","line":"L5"}  — 품목 빼기
 - {"op":"option","name":"IB","include":true|false}  — [넣을 수 있는 옵션]을 넣거나 빼기
@@ -511,7 +524,7 @@ answer 는 줄바꿈(\\n)·목록·**강조**를 쓸 수 있다 — 한 문단 1
 
 def describe(state: dict[str, Any]) -> str:
     f = state["form"]
-    rows = "\n".join(f"- {ln['id']} [{ln['kind']}] {ln['name']} · 수량 {ln.get('qty')} · 단가 {ln.get('unit_price')}원"
+    rows = "\n".join(f"- {ln['id']} [{ln['kind']}] 품목 {qx.commodity_of(ln) or '(비움)'} · 규격 {ln['name']} · 수량 {ln.get('qty')} · 단가 {ln.get('unit_price')}원"
                      + (f" · 비고 {ln['remark']}" if ln.get("remark") else "") for ln in state["lines"])
     opts = ", ".join(f"{o['name']}({o.get('unit_price')}원)" for o in state["options"]) or "(없음)"
     head = ", ".join(f"{FORM_FIELDS[k][0]}={f.get(k)}" for k in FORM_FIELDS if f.get(k) not in (None, ""))
@@ -557,7 +570,8 @@ def render_lines(state: dict[str, Any], lang: str, fx_rate: float | None) -> lis
             remark = ln.get("remark") or ""
         krw = float(ln["unit_price"])
         unit = round(krw / fx_rate, 2) if lang == "en" else krw
-        out.append({"key": k, "desc": desc, "qty": int(ln["qty"]), "unit_price": unit, "unit_price_krw": krw,
+        out.append({"key": k, "commodity": qx.commodity_of(ln), "desc": desc, "qty": int(ln["qty"]),
+                    **({"photo": ln["photo"]} if ln.get("photo") else {}), "unit_price": unit, "unit_price_krw": krw,
                     "amount": round(int(ln["qty"]) * unit, 2), "remark": remark, "option": ln["kind"] == "option",
                     **({"unit": "man-day" if lang == "en" else "인·일"} if ln["kind"] == "work" else {})})
     return out

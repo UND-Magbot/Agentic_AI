@@ -23,6 +23,10 @@ async function upload<T>(path: string, file: File): Promise<T> {
 }
 
 const SET_UNIT = "SET";
+/** 거래명세서 공급받는자 칸 안 예시(사용자 2026-10-12) — 영업 건 상세 발급 창·수주 진행 화면이 같이 쓴다. */
+export const BUYER_HINT = {
+  reg_no: "예: 123-45-67890", name: "예: (주)가나테크", ceo: "예: 홍길동", address: "예: 경기도 포천시 ○○로 12, 2동",
+} as const;
 
 /** 세트 이름 기본값 — 건명 첫 모델(예: 'TCC1 외 6' → 'TCC1 툴체인저(ATC)'). backend order_agent.default_set_name 과 같게. */
 function defaultSetName(deal: DealRow): string {
@@ -60,20 +64,25 @@ export function StatementDialog({ deal, busy, act, onClose }: { deal: DealRow; b
       {!st ? <Muted>불러오는 중…</Muted> : (
         <div className="flex flex-col gap-3 text-[12.5px]">
           <div className="grid gap-2 md:grid-cols-4">
-            <Field label="발행번호"><input value={st.no} onChange={(e) => setSt({ ...st, no: e.target.value })} className={INPUT} /></Field>
+            <Field label="발행자 이니셜 *"><input value={st.initials ?? ""} maxLength={4} placeholder="예: LU"
+                                         onChange={(e) => setSt({ ...st, initials: e.target.value.toUpperCase() })} className={INPUT} /></Field>
             <Field label="발행일자"><input type="date" value={st.date} onChange={(e) => setSt({ ...st, date: e.target.value })} className={INPUT} /></Field>
           </div>
+          <p className="text-[11.5px] text-foreground-subtle">
+            발행번호는 발급할 때 자동으로 붙습니다 — TS-{(st.initials || "LU").toUpperCase()}{st.date.replaceAll("-", "")}-01 (그 발행자의 그날 몇 번째 명세서인지).
+            {deal.statement_no && ` 지금 발급본: ${deal.statement_no}`}
+          </p>
           <p className="font-semibold">공급받는자 <span className="font-normal text-foreground-subtle">· 한 번 적으면 같은 고객사는 다음부터 채워 둡니다</span></p>
           <div className="grid gap-2 md:grid-cols-3">
-            <Field label="등록번호 *"><input value={st.buyer.reg_no} onChange={(e) => setBuyer("reg_no", e.target.value)} className={INPUT} placeholder="000-00-00000" /></Field>
-            <Field label="상호 *"><input value={st.buyer.name} onChange={(e) => setBuyer("name", e.target.value)} className={INPUT} /></Field>
-            <Field label="성명(대표)"><input value={st.buyer.ceo} onChange={(e) => setBuyer("ceo", e.target.value)} className={INPUT} /></Field>
+            <Field label="등록번호 *"><input value={st.buyer.reg_no} onChange={(e) => setBuyer("reg_no", e.target.value)} className={INPUT} placeholder={BUYER_HINT.reg_no} /></Field>
+            <Field label="상호 *"><input value={st.buyer.name} onChange={(e) => setBuyer("name", e.target.value)} className={INPUT} placeholder={BUYER_HINT.name} /></Field>
+            <Field label="성명(대표)"><input value={st.buyer.ceo} onChange={(e) => setBuyer("ceo", e.target.value)} className={INPUT} placeholder={BUYER_HINT.ceo} /></Field>
           </div>
-          <Field label="주소 *"><input value={st.buyer.address} onChange={(e) => setBuyer("address", e.target.value)} className={INPUT} /></Field>
+          <Field label="주소 *"><input value={st.buyer.address} onChange={(e) => setBuyer("address", e.target.value)} className={INPUT} placeholder={BUYER_HINT.address} /></Field>
           <StatementItems deal={deal} st={st} onChange={setSt} withNote />
           <div className="flex justify-end gap-2">
             <SmallBtn onClick={() => onClose(false)}>취소</SmallBtn>
-            <PrimarySmall onClick={() => void save()} disabled={busy}>{deal.statement ? "다시 발급(덮어쓰기)" : "발급"}</PrimarySmall>
+            <PrimarySmall onClick={() => void save()} disabled={busy}>{deal.statement ? "다시 발급 (새 번호)" : "발급"}</PrimarySmall>
           </div>
         </div>
       )}
@@ -129,8 +138,8 @@ export function StatementItems({ deal, st, onChange, withNote = false }: {
         <tbody>
           {st.items.map((it, i) => (
             <tr key={i} className="border-b border-border/60">
-              <td className="py-1 pr-1.5"><input value={it.name} onChange={(e) => setItem(i, { name: e.target.value })} aria-label="품명" className={cn(INPUT, "h-8")} /></td>
-              <td className="py-1 pr-1.5"><input value={it.spec} onChange={(e) => setItem(i, { spec: e.target.value })} aria-label="규격" className={cn(INPUT, "h-8")} /></td>
+              <td className="py-1 pr-1.5"><input value={it.name} onChange={(e) => setItem(i, { name: e.target.value })} aria-label="품명" placeholder="예: TCV1 MASTER T.C" className={cn(INPUT, "h-8")} /></td>
+              <td className="py-1 pr-1.5"><input value={it.spec} onChange={(e) => setItem(i, { spec: e.target.value })} aria-label="규격" placeholder="예: Payload 10Kg" className={cn(INPUT, "h-8")} /></td>
               <td className={cn("py-1 pr-1.5", isSet ? "w-24" : "w-16")}>
                 <span className="flex items-center gap-1">
                   <input value={it.qty ?? ""} inputMode="numeric" aria-label="수량" className={cn(INPUT, "h-8 text-right")}
@@ -144,7 +153,7 @@ export function StatementItems({ deal, st, onChange, withNote = false }: {
               </td>
               <td className="w-28 py-1 pr-1.5"><input value={it.unit_price ?? ""} inputMode="numeric" aria-label="단가" onChange={(e) => setItem(i, { unit_price: toNum(e.target.value) })} className={cn(INPUT, "h-8 text-right")} /></td>
               <td className="w-28 py-1 pr-1.5 text-right tabular-nums">{won(lineAmount(it))}</td>
-              {withNote && <td className="w-28 py-1 pr-1.5"><input value={it.note} onChange={(e) => setItem(i, { note: e.target.value })} aria-label="비고" className={cn(INPUT, "h-8")} /></td>}
+              {withNote && <td className="w-28 py-1 pr-1.5"><input value={it.note} onChange={(e) => setItem(i, { note: e.target.value })} aria-label="비고" placeholder="예: 납품 후 설치" className={cn(INPUT, "h-8")} /></td>}
               <td className="py-1">
                 {!isSet && <button type="button" className="text-foreground-subtle hover:text-red-600" aria-label="줄 빼기"
                                    onClick={() => onChange({ ...st, items: st.items.filter((_, j) => j !== i) })}>✕</button>}
@@ -301,8 +310,8 @@ export function ShipForm({ deal, busy, act, initial, onSaved, onCancel, onChange
       {mode === "set" ? (
         <div className="rounded-lg border border-border p-2">
           <div className="flex flex-wrap items-center gap-2">
-            <input value={setName} onChange={(e) => setSetName(e.target.value)} aria-label="세트 이름" className={cn(INPUT, "h-8 min-w-0 flex-1")} />
-            <input value={setQty} onChange={(e) => setSetQty(e.target.value)} aria-label="세트 수량" className={cn(INPUT, "h-8 w-24 text-right")} />
+            <input value={setName} onChange={(e) => setSetName(e.target.value)} aria-label="세트 이름" placeholder="예: TCV1 툴체인저(ATC)" className={cn(INPUT, "h-8 min-w-0 flex-1")} />
+            <input value={setQty} onChange={(e) => setSetQty(e.target.value)} aria-label="세트 수량" placeholder="예: 1" className={cn(INPUT, "h-8 w-24 text-right")} />
             {photoBtn("set")}
           </div>
           {photoStrip(setPhotos, (p) => setSetPhotos((xs) => xs.filter((q) => q !== p)), `${setName} 출하 사진`)}
@@ -317,7 +326,7 @@ export function ShipForm({ deal, busy, act, initial, onSaved, onCancel, onChange
               <li key={i} className="rounded-lg border border-border p-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <input value={l.name} onChange={(e) => setLines((xs) => xs.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))}
-                         className={cn(INPUT, "h-8 min-w-0 flex-1")} />
+                         aria-label="제품" placeholder="예: TCV1 MASTER T.C" className={cn(INPUT, "h-8 min-w-0 flex-1")} />
                   <input value={l.qty ?? ""} inputMode="numeric" aria-label="수량"
                          onChange={(e) => setLines((xs) => xs.map((x, j) => (j === i ? { ...x, qty: Number(e.target.value) || 0 } : x)))}
                          className={cn(INPUT, "h-8 w-20 text-right")} />
@@ -338,9 +347,12 @@ export function ShipForm({ deal, busy, act, initial, onSaved, onCancel, onChange
             {CARRIERS.map((c) => <option key={c}>{c}</option>)}
           </select>
         </Field>
-        <Field label="운송장 번호 (여러 개는 쉼표로)"><input value={f.tracking} onChange={(e) => setF({ ...f, tracking: e.target.value })} className={INPUT} /></Field>
-        <Field label="받는 사람·연락처"><input value={f.receiver} onChange={(e) => setF({ ...f, receiver: e.target.value })} className={INPUT} /></Field>
-        <Field label="주소" wide><input value={f.address} onChange={(e) => setF({ ...f, address: e.target.value })} className={INPUT} /></Field>
+        <Field label="운송장 번호 (여러 개는 쉼표로)"><input value={f.tracking} onChange={(e) => setF({ ...f, tracking: e.target.value })} className={INPUT}
+                                                    placeholder="예: 1234-5678-9012, 2345-6789-0123" /></Field>
+        <Field label="받는 사람·연락처"><input value={f.receiver} onChange={(e) => setF({ ...f, receiver: e.target.value })} className={INPUT}
+                                         placeholder="예: 김철수 과장 010-1234-5678" /></Field>
+        <Field label="주소" wide><input value={f.address} onChange={(e) => setF({ ...f, address: e.target.value })} className={INPUT}
+                                  placeholder="예: 경기도 포천시 ○○로 12, 2동 자재 입고장" /></Field>
       </div>
       {err && <p className="text-red-600">{err}</p>}
       {noPhoto > 0 && (

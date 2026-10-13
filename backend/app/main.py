@@ -13,6 +13,7 @@ from . import codex_delegate
 from .api_attachments import router as attachments_router
 from .api_auth import router as auth_router
 from .api_bug_reports import router as bug_reports_router
+from .api_my_profile import router as my_profile_router
 from .api_chat import router as chat_router
 from .api_projects import router as projects_router
 from .api_proposal_projects import router as proposal_projects_router
@@ -98,6 +99,7 @@ app.include_router(proposal_projects_router)
 app.include_router(product_recommend_router)
 app.include_router(sales_deals_router)
 app.include_router(bug_reports_router)
+app.include_router(my_profile_router)
 
 
 async def require_internal_token(

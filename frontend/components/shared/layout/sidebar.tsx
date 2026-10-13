@@ -10,6 +10,7 @@ import { Icon } from "@/components/shared/ui/icon";
 import { SearchModal } from "@/components/shared/layout/search-modal";
 import { ChangePasswordModal } from "@/components/shared/auth/change-password-modal";
 import { BugReportModal } from "@/components/shared/layout/bug-report-modal";
+import { MyProfileModal } from "@/components/shared/layout/my-profile-modal";
 import { RecentItemMenu } from "@/components/shared/layout/recent-item-menu";
 import { RenameConversationModal } from "@/components/shared/layout/rename-conversation-modal";
 import { AddToProjectModal } from "@/components/shared/layout/add-to-project-modal";
@@ -141,6 +142,7 @@ export function Sidebar({ domains, recentByDomain, allowedDomains, user }: Props
   const [menuOpen, setMenuOpen] = useState(false);
   const [pwOpen, setPwOpen] = useState(false);
   const [bugOpen, setBugOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
 
   // outside click / ESC 로 메뉴 닫기.
@@ -452,7 +454,7 @@ export function Sidebar({ domains, recentByDomain, allowedDomains, user }: Props
         )}
       </div>
 
-      {/* 사용자 영역 — 행 전체가 트리거. 클릭 시 위로 펼쳐지는 메뉴(비밀번호 재설정 / 버그 등록 / 로그아웃). */}
+      {/* 사용자 영역 — 행 전체가 트리거. 클릭 시 위로 펼쳐지는 메뉴(내 정보 / 비밀번호 재설정 / 버그 등록 / 로그아웃). */}
       <div
         ref={userMenuRef}
         className={cn(
@@ -515,6 +517,14 @@ export function Sidebar({ domains, recentByDomain, allowedDomains, user }: Props
             )}
           >
             <MenuButton
+              icon="user"
+              label="내 정보"
+              onClick={() => {
+                setMenuOpen(false);
+                setProfileOpen(true);
+              }}
+            />
+            <MenuButton
               icon="refresh"
               label="비밀번호 재설정"
               onClick={() => {
@@ -548,6 +558,8 @@ export function Sidebar({ domains, recentByDomain, allowedDomains, user }: Props
       <ChangePasswordModal open={pwOpen} onClose={() => setPwOpen(false)} />
       {/* 버그 등록 — 누구나(사용자 2026-10-08) */}
       {bugOpen && <BugReportModal onClose={() => setBugOpen(false)} />}
+      {/* 내 정보 — 견적서·명세서 담당자 칸 기본값(사용자 2026-10-12) */}
+      {profileOpen && <MyProfileModal onClose={() => setProfileOpen(false)} />}
 
       {/* 검색 모달 — 사이드바 외부에 portal 없이 fixed 로 렌더 */}
       <SearchModal
@@ -647,7 +659,7 @@ function MenuButton({
   disabled,
   variant = "default",
 }: {
-  icon: "refresh" | "logout" | "bug";
+  icon: "user" | "refresh" | "logout" | "bug";
   label: string;
   onClick: () => void;
   disabled?: boolean;

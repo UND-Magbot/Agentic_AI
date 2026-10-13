@@ -1,4 +1,5 @@
 import { ProductRecommend, type RecommendTab } from "@/components/domains/sales/product-recommend";
+import { displayName, getCurrentUser } from "@/lib/shared/auth";
 import { getProductCorrections } from "@/lib/shared/proposal-projects";
 
 const TABS: RecommendTab[] = ["recommend", "quote", "order", "deals", "memory"];
@@ -7,10 +8,11 @@ const TABS: RecommendTab[] = ["recommend", "quote", "order", "deals", "memory"];
 // ?tab=quote&new=manual — 첫 화면 '견적서 수기 작성' 카드 → 빈 견적서를 만들어 바로 연다
 export default async function ProductRecommendPage({ searchParams }: { searchParams: Promise<{ tab?: string; new?: string }> }) {
   const { tab, new: start } = await searchParams;
-  const corrections = await getProductCorrections();
+  const [corrections, user] = await Promise.all([getProductCorrections(), getCurrentUser()]);
   return (
     <ProductRecommend initial={corrections ?? { items: [], approver: false }}
                       initialTab={TABS.includes(tab as RecommendTab) ? (tab as RecommendTab) : undefined}
-                      startManual={start === "manual"} />
+                      startManual={start === "manual"}
+                      writer={user ? displayName(user) : ""} />
   );
 }

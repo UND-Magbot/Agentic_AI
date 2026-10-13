@@ -12,12 +12,13 @@
 - POST /v1/sales-deals/{id}/remove              → 잘못 넣은 계산서·입금·출하·발주서 한 줄 삭제 {kind, index}
 - POST /v1/sales-deals/{id}/po                  → 발주서 파일 첨부(multipart file) — 수주 미확인이면 수주로
 - GET  /v1/sales-deals/{id}/po/{index}          → 발주서 파일 보기·내려받기
+- POST /v1/sales-deals/{id}/quote-upload        → 밖에서 고친 견적서(엑셀·PDF) 올리기 → AI 가 품목을 읽어 돌려줌
+- POST /v1/sales-deals/{id}/quote-upload/confirm → 확인한 품목으로 발행 {upload, initials, items} — 새 발행번호
 - POST /v1/sales-deals/{id}/review              → 이관 확인 완료/되돌리기 {done}
 - GET  /v1/sales-deals/photos/{name}            → 이관한 출하 사진(줄인 사본)
 수주 뒤 진행(사용자 2026-10-07 — sales_deals/flow.py): 거래명세서 발급 → 결제 방식 → 입금 확인(은행 거래내역) → 출하(제품별 사진)
-- POST /v1/sales-deals/{id}/history/rollback     → 히스토리 되돌리기(관리자) {keep_id} — 그 줄 때 내용·번호로
 - GET  /v1/sales-deals/{id}/statement/draft      → 거래명세서 발급 창에 채울 값(견적 품목·기억한 공급받는자)
-- POST /v1/sales-deals/{id}/statement            → 거래명세서 발급(다시 하면 덮어씀) {no, date, buyer, items}
+- POST /v1/sales-deals/{id}/statement            → 거래명세서 발급 {initials, date, buyer, items} — 발급마다 새 번호 TS-{이니셜}{발행일}-NN
 - GET  /v1/sales-deals/{id}/statement/file?fmt=pdf|xlsx → 거래명세서 내려받기
 - POST /v1/sales-deals/{id}/ship-photos          → 출하 사진 한 장 올리기(multipart) → {id}
 - GET  /v1/sales-deals/{id}/ship-photos/{pid}    → 출하 사진 보기
@@ -41,6 +42,8 @@ from .api_auth import get_current_user
 from .database import get_db
 from .models import User, UserDomain, UserRole
 from .sales_deals import service as svc
+from .sales_deals.quote_upload import UploadConfirmIn as QuoteUploadConfirm
+from .user_profile import get_profile
 from .storage import get_object_stream, put_object, remove_object
 
 router = APIRouter(prefix="/v1/sales-deals", tags=["SalesDeals"])
@@ -151,7 +154,7 @@ class StatementBuyerIn(BaseModel):
 
 
 class StatementIn(BaseModel):
-    no: str = Field(default="", max_length=40)
+    initials: str = Field(default="", max_length=4)      # 발행자 이니셜(기본 = 로그인 계정, 폼에서 고침) — 번호는 서버가 매긴다
     date: dt.date
     buyer: StatementBuyerIn
     items: list[StatementItemIn] = Field(min_length=1, max_length=30)
@@ -335,17 +338,6 @@ async def unconfirm_term(deal_id: int, body: TermConfirmIn, user: User = Depends
                          db: AsyncSession = Depends(get_db)) -> dict:
     """회차 입금 확인 취소 — 관리자만."""
     return await _act(db, deal_id, svc.unconfirm_term(db, deal_id, user.id, body.index))
-
-
-class RollbackIn(BaseModel):
-    keep_id: int = Field(gt=0)          # 이 줄 때로 돌아간다(이보다 위 줄은 모두 지움)
-
-
-@router.post("/{deal_id}/history/rollback")
-async def rollback_history(deal_id: int, body: RollbackIn, user: User = Depends(require_admin),
-                           db: AsyncSession = Depends(get_db)) -> dict:
-    """히스토리 되돌리기 — 관리자만. 최신 줄부터 고른 줄까지 지우고 그 아래 줄 때 내용·번호로(사용자 2026-10-08)."""
-    return await _act(db, deal_id, svc.rollback_history(db, deal_id, body.keep_id, user.id))
 
 
 @router.post("/{deal_id}/meeting")
@@ -539,9 +531,9 @@ SHIP_PHOTO_ID = re.compile(r"^[0-9a-f]{32}\.(jpg|jpeg|png|webp)$")
 
 
 @router.get("/{deal_id}/statement/draft")
-async def statement_draft(deal_id: int, _: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
-    try:
-        return await svc.statement_draft(db, deal_id)
+async def statement_draft(deal_id: int, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    try:   # 발행자 이니셜은 로그인 계정 값으로 미리 채운다(폼에서 고칠 수 있음)
+        return await svc.statement_draft(db, deal_id, (await get_profile(db, user.id))["initials"])
     except svc.DealError as e:
         raise _fail(e) from e
 
@@ -622,7 +614,8 @@ async def ship_photo(deal_id: int, pid: str, _: User = Depends(require_sales)) -
 
 class OrderDraftIn(BaseModel):
     """왼쪽에서 직접 고친 명세서 초안(발급 전이라 빈 칸이 있어도 된다)."""
-    no: str = Field(default="", max_length=40)
+    no: str = Field(default="", max_length=40)            # 발급한 번호(보기용 — 새로 발급하면 서버가 새 번호)
+    initials: str = Field(default="", max_length=4)       # 발행자 이니셜
     date: dt.date
     buyer: dict[Literal["reg_no", "name", "ceo", "address"], str] = Field(default_factory=dict)
     items: list[OrderItemIn] = Field(default_factory=list, max_length=30)
@@ -646,6 +639,42 @@ _NOTE = {"issue": "거래명세서를 발급했습니다.", "payment": "입금�
          "case": "결제 조건을 정했습니다."}
 
 
+@router.post("/{deal_id}/quote-upload")
+async def quote_upload(deal_id: int, file: UploadFile = File(...), _: User = Depends(require_sales),
+                       db: AsyncSession = Depends(get_db)) -> dict:
+    """밖에서 고친 견적서 파일 올리기(사용자 2026-10-12) — 저장하고 AI 가 품목·금액을 읽어 돌려준다(아직 발행 전)."""
+    from .sales_deals import quote_upload as qu
+
+    try:
+        await svc.get_deal(db, deal_id, dt.date.today())
+    except svc.DealError as e:
+        raise _fail(e) from e
+    await db.rollback()                                   # AI 판독 동안 트랜잭션을 잡아 두지 않는다
+    try:
+        return await qu.store_and_read(file, f"sales-deals/{deal_id}/quote/")
+    except qu.UploadError as e:
+        raise HTTPException(e.status, detail=str(e)) from e
+
+
+@router.post("/{deal_id}/quote-upload/confirm")
+async def quote_upload_confirm(deal_id: int, body: "QuoteUploadConfirm", user: User = Depends(require_sales),
+                               db: AsyncSession = Depends(get_db)) -> dict:
+    """확인한 품목으로 발행 — 견적서 발행 한 번(새 발행번호·판 +1·영업 건 견적 갱신)."""
+    from .company_knowledge import product_recommend as pr
+
+    try:
+        await pr.quote_issue_upload(qid=None, deal_id=deal_id, user_id=user.id, owner_check=False,
+                                    upload=body.upload.model_dump(), items=[x.model_dump() for x in body.items],
+                                    initials=body.initials, doc_no=body.doc_no)
+    except svc.DealError as e:
+        raise _fail(e) from e
+    except pr.DuplicateDocNo as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(e)) from e
+    except pr.RecommendError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+    return await svc.get_deal(db, deal_id, dt.date.today())
+
+
 @router.get("/{deal_id}/quote-file")
 async def deal_quote_file(deal_id: int, quote: int, revision: int | None = None, fmt: Literal["pdf", "xlsx"] = "pdf",
                           _: User = Depends(require_sales), db: AsyncSession = Depends(get_db)):
@@ -666,7 +695,8 @@ async def deal_quote_file(deal_id: int, quote: int, revision: int | None = None,
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e)) from e
     except pr.RecommendError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(e)) from e
-    mime = "application/pdf" if fmt == "pdf" else PO_TYPES[".xlsx"]
+    mime = "application/pdf" if name.lower().endswith(".pdf") else PO_TYPES[".xlsx"]   # 올린 PDF 는 엑셀로 달라도 PDF
+    fmt = "pdf" if mime == "application/pdf" else "xlsx"
     return Response(content=data, media_type=mime, headers={
         "Content-Disposition": f"attachment; filename=\"quote.{fmt}\"; filename*=UTF-8''{urllib.parse.quote(name, safe='')}",
         "Cache-Control": "private, no-store"})
@@ -675,7 +705,8 @@ async def deal_quote_file(deal_id: int, quote: int, revision: int | None = None,
 @router.get("/{deal_id}/order")
 async def order_open(deal_id: int, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
     try:   # admin — 화면이 관리자 전용 버튼(입금 확인 취소)을 보일지 정한다(실제 막는 것은 각 API)
-        return {**await svc.order_open(db, deal_id), "admin": is_admin(user)}
+        res = await svc.order_open(db, deal_id, (await get_profile(db, user.id))["initials"])
+        return {**res, "admin": is_admin(user)}
     except svc.DealError as e:
         raise _fail(e) from e
 
@@ -786,6 +817,7 @@ async def order_preview(deal_id: int, _: User = Depends(require_sales), db: Asyn
         raise _fail(e) from e
     if not draft.get("date"):
         draft = {**draft, "date": dt.date.today().isoformat()}
+    draft = {**draft, "no": draft.get("no") or "(발급 시 부여)"}
     try:
         data = await qx.to_pdf(sx.build_xlsx(draft, strict=False))
     except qx.QuoteError as e:

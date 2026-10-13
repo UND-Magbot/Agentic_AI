@@ -22,8 +22,9 @@ from . import flow
 HEAD = ["고객사", "건명", "번호", "담당·입력", "견적일·바뀐 때", "공급가액", "단계", "수주일", "결제 조건", "확인한 입금(공급가액)",
         "다음 예정 입금일", "첫 출하일", "알림"]
 WIDTH = [22, 30, 18, 10, 14, 14, 18, 12, 34, 16, 14, 12, 40]
-HIST_HEAD = ["고객사", "건명", "프로젝트 번호", "히스토리 번호", "바뀐 때", "바뀐 내용", "단계", "공급가액", "입력", "비고"]
-HIST_WIDTH = [22, 30, 14, 18, 17, 40, 16, 14, 10, 16]
+# 히스토리는 시간순 순번 1, 2, 3 …, 발행 줄에는 그 발행번호(사용자 2026-10-12)
+HIST_HEAD = ["고객사", "건명", "번호", "순번", "바뀐 때", "바뀐 내용", "발행번호", "단계", "공급가액", "입력", "비고"]
+HIST_WIDTH = [22, 30, 20, 6, 17, 40, 20, 16, 14, 10, 16]
 KST = ZoneInfo("Asia/Seoul")
 HIST_FILL = PatternFill("solid", fgColor="F6F7F9")
 HIST_FONT = Font(color="555555", size=10)
@@ -34,7 +35,8 @@ ACTION_LABEL = {
     "review_done": "확인 완료", "review_reopen": "확인 되돌리기", "po_upload": "발주서 첨부", "remove_po_file": "발주서 삭제",
     "po_compare": "발주서 품목 대조", "shipment_edit": "출하 기록 수정", "reset_to_quote": "견적 상태로 되돌림(테스트)",
     "statement": "거래명세서 발급", "pay_case": "결제 방식 선택", "pay_terms": "결제 조건 저장", "drop": "드랍", "undrop": "드랍 되살리기",
-    "recommend": "제품 추천 확정", "quote": "견적서 발행", "quote_revision": "견적서 수정", "meeting": "미팅 정보 입력",
+    "recommend": "제품 추천 확정", "quote": "견적서 발행", "quote_revision": "견적서 재발행", "meeting": "미팅 정보 입력",
+    "quote_upload": "견적서 첨부(외부 수정본)",
 }
 WON = "#,##0"
 BOLD = Font(bold=True)
@@ -46,10 +48,16 @@ def _row(r: dict[str, Any]) -> list[Any]:
     fl = r.get("flow") or {}
     nxt = next((t for t in fl.get("terms") or [] if not t.get("confirmed")), None)
     ships = sorted(s.get("date") for s in r.get("shipments") or [] if s.get("date"))
-    return [r.get("customer") or "", r.get("title") or "", r.get("display_no") or r["deal_no"] or "번호 미부여", r.get("owner") or "",
+    return [r.get("customer") or "", r.get("title") or "", _nos(r), r.get("owner") or "",
             r.get("base_date") or "", flow.supply_total(r), r.get("stage") or "", r.get("won_date") or "",
             fl.get("pay_case_label") or "", fl.get("paid") or 0, (nxt or {}).get("expected_date") or "",
             ships[0] if ships else "", " / ".join(a["text"] for a in r.get("alerts") or [])]
+
+
+def _nos(r: dict[str, Any]) -> str:
+    """번호 칸 — 최근 견적서 번호, 거래명세서를 발행했으면 최근 명세서 번호도(사용자 2026-10-12)."""
+    no = r.get("display_no") or r["deal_no"] or "번호 미부여"
+    return f"{no} / {r['statement_no']}" if r.get("statement_no") else no
 
 
 def _when(iso: str | None) -> str:
@@ -72,10 +80,10 @@ def _what(h: dict[str, Any]) -> str:
     elif a in ("shipment", "shipment_edit"):
         extra = f"{d.get('date') or ''} · {d.get('carrier') or ''}".strip(" ·")
     elif a == "statement":
-        extra = f"{d.get('no') or ''} · 합계 {d.get('total') or 0:,.0f}원"
+        extra = f"합계 {d.get('total') or 0:,.0f}원"
     elif a == "pay_terms":
         extra = ", ".join(d.get("terms") or [])
-    elif a in ("quote", "quote_revision"):
+    elif a in ("quote", "quote_revision", "quote_upload"):
         extra = f"V{d.get('revision')} · {d.get('amount') or 0:,.0f}원" if d.get("revision") else ""
     elif a == "drop":
         extra = str(d.get("reason") or "")
@@ -91,8 +99,9 @@ def _stage(h: dict[str, Any]) -> str:
 
 
 def _hist_row(r: dict[str, Any], h: dict[str, Any]) -> list[Any]:
-    return [r.get("customer") or "", r.get("title") or "", r.get("deal_no") or "", h.get("ver_no") or "", _when(h.get("created_at")),
-            _what(h), _stage(h), h.get("amount"), h.get("user_name") or "시스템", "버전 업데이트됨" if h.get("superseded") else ""]
+    return [r.get("customer") or "", r.get("title") or "", _nos(r), h.get("seq"), _when(h.get("created_at")),
+            _what(h), h.get("doc_no") or "", _stage(h), h.get("amount"), h.get("user_name") or "시스템",
+            "버전 업데이트됨" if h.get("superseded") else ""]
 
 
 def build_xlsx(data: dict[str, Any]) -> bytes:
@@ -111,9 +120,10 @@ def build_xlsx(data: dict[str, Any]) -> bytes:
         if (r.get("flow") or {}).get("overdue"):
             for c in ws[ws.max_row]:
                 c.fill = LATE_FILL
-        # 프로젝트 아래에 히스토리(최신 먼저) — 번호·바뀐 때·바뀐 내용·단계·공급가액·입력, 그룹으로 접힘
+        # 프로젝트 아래에 히스토리(최신 먼저) — 순번(발행번호)·바뀐 때·바뀐 내용·단계·공급가액·입력, 그룹으로 접힘
         for h in r.get("history") or []:
-            ws.append(["", f"  └ {_what(h)}", h.get("ver_no") or "", h.get("user_name") or "시스템", _when(h.get("created_at")),
+            no = f"{h.get('seq')}" + (f"  {h['doc_no']}" if h.get("doc_no") else "")
+            ws.append(["", f"  └ {_what(h)}", no, h.get("user_name") or "시스템", _when(h.get("created_at")),
                        h.get("amount"), _stage(h) + (" (버전 업데이트됨)" if h.get("superseded") else "")])
             ws.row_dimensions[ws.max_row].outlineLevel = 1
             for c in ws[ws.max_row]:
@@ -136,7 +146,7 @@ def build_xlsx(data: dict[str, Any]) -> bytes:
             hs.append(_hist_row(r, h))
     for i, w in enumerate(HIST_WIDTH, 1):
         hs.column_dimensions[get_column_letter(i)].width = w
-    for c in hs["H"][1:]:
+    for c in hs["I"][1:]:
         c.number_format = WON
     hs.freeze_panes = "A2"
     hs.auto_filter.ref = f"A1:{get_column_letter(len(HIST_HEAD))}{max(hs.max_row, 1)}"

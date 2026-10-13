@@ -244,11 +244,11 @@ QUOTE_FIXED_TERMS_EN = {
 # 양식 항목명 — 한글 양식의 표 머리(영문 그대로 쓰는 칸 포함)와 영문 양식의 같은 자리
 QUOTE_LABELS = {
     "ko": {"date": "Quotation Date", "no": "Quotation No.", "by": "Quotation by", "customer": "Customer", "comments": "Comments",
-           "goods": "Goods Description & Details", "item": "Commodity & Description", "qty": "Quantity", "price": "Price",
+           "goods": "Goods Description & Details", "commodity": "Commodity", "spec": "Specifications", "qty": "Quantity", "price": "Price",
            "amount": "Supply amount", "remark": "Remark", "total": "Total (부가세 별도)", "delivery": "납기 일자",
            "place": "납품장소", "validity": "유효일자", "payment": "결제조건", "note": "비    고", "order": "발주 확인"},
     "en": {"date": "Quotation Date", "no": "Quotation No.", "by": "Quotation by", "customer": "Customer", "comments": "Comments",
-           "goods": "Goods Description & Details", "item": "Commodity & Description", "qty": "Quantity", "price": "Price",
+           "goods": "Goods Description & Details", "commodity": "Commodity", "spec": "Specifications", "qty": "Quantity", "price": "Price",
            "amount": "Supply amount", "remark": "Remark", "total": "Total Amount", "delivery": "Delivery Schedule",
            "place": "Delivery Place", "validity": "Validity", "payment": "Payment Terms", "note": "Remarks",
            "order": "Purchase Order Confirmation"},
@@ -269,7 +269,8 @@ def quote_file_name(customer: str, subject: str, initials: str, day: date, quote
     """파일명 '(주)유엔디로보틱스_견적서_{고객}_{내용}_{견적번호}' — 예: …_성진물류_magbot툴체인저_VT20261008.
     새 견적번호(건 번호 = 이니셜+날짜, 사용자 2026-10-08)에 이니셜·날짜가 이미 있어 따로 붙이지 않는다.
     예전 번호(S26-0182 …)는 그대로 '…_{이니셜}{YYMMDD}_{견적번호}'(예: …_가나테크_magbot툴체인저_VT260930_S26-0182)."""
-    if quote_no.startswith(f"{initials}{day:%Y%m%d}"):
+    # 발행번호(QT-LU20261012-01, 사용자 2026-10-12)에도 이니셜·날짜가 들어 있다
+    if quote_no.startswith(f"{initials}{day:%Y%m%d}") or re.match(r"^QT-[A-Z]{2,4}\d{8}-\d{2,}$", quote_no):
         return f"(주)유엔디로보틱스_견적서_{customer}_{subject}_{quote_no}"
     return f"(주)유엔디로보틱스_견적서_{customer}_{subject}_{initials}{day:%y%m%d}_{quote_no}"
 

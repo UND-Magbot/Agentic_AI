@@ -7,7 +7,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { AgentBubble, type AgentStep, streamNdjson } from "@/components/domains/sales/agent-chat";
-import { type Act, ShipDialog, type ShipDraft, ShipForm, StatementDialog, StatementItems, shipmentDraft } from "@/components/domains/sales/deal-flow";
+import { type Act, BUYER_HINT, ShipDialog, type ShipDraft, ShipForm, StatementDialog, StatementItems, shipmentDraft } from "@/components/domains/sales/deal-flow";
 import { INPUT, Muted, STAGE_DONE, STAGE_SHIP_ONLY, STAGE_TONE, dealRequest, shortDate, todayIso, won } from "@/components/domains/sales/deal-format";
 import { DownloadDialog, PreviewDialog } from "@/components/domains/sales/quote-workspace";
 import { Icon } from "@/components/shared/ui/icon";
@@ -550,7 +550,7 @@ export function OrderWorkspace({ id, onBack }: { id: number; onBack: () => void 
         <section className={cn("flex flex-col gap-2 rounded-xl border bg-surface p-4 text-[12.5px]", !st ? "border-accent/50" : "border-border")}>
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-[14px] font-semibold">거래명세서</h3>
-            {st ? <span className="text-emerald-700 dark:text-emerald-300">✓ 발급 {st.date} · 합계 {won(st.totals?.total)}원</span>
+            {st ? <span className="text-emerald-700 dark:text-emerald-300">✓ 발급 <b className="font-mono">{st.no}</b> · {st.date} · 합계 {won(st.totals?.total)}원</span>
               : <span className="text-foreground-subtle">발급 전 초안</span>}
             {st && (
               <button type="button" onClick={() => setSaving(true)} className="ml-auto inline-flex items-center gap-1 font-semibold text-accent hover:underline"
@@ -560,14 +560,19 @@ export function OrderWorkspace({ id, onBack }: { id: number; onBack: () => void 
             )}
           </div>
           <div className="grid gap-2 md:grid-cols-4">
-            <Lab label="발행번호"><input value={draft.no} onChange={(e) => edit({ ...draft, no: e.target.value })} className={inputCls} /></Lab>
+            <Lab label="발행자 이니셜 *"><input value={draft.initials ?? ""} maxLength={4} placeholder="예: LU"
+                                         onChange={(e) => edit({ ...draft, initials: e.target.value.toUpperCase() })} className={inputCls} /></Lab>
             <Lab label="발행일자"><input type="date" value={draft.date} onChange={(e) => edit({ ...draft, date: e.target.value })} className={inputCls} /></Lab>
           </div>
+          <p className="text-[11.5px] text-foreground-subtle">
+            발행번호는 발급할 때마다 자동으로 새로 붙습니다 — TS-{(draft.initials || "LU").toUpperCase()}{draft.date.replaceAll("-", "")}-01 (그 발행자의 그날 몇 번째 명세서인지).
+          </p>
           {/* 주소는 한 줄 통째로 — 긴 주소도 끝까지 보며 오타 확인 */}
           <div className="grid gap-2 md:grid-cols-3">
             {([["reg_no", "등록번호 *"], ["name", "상호 *"], ["ceo", "성명(대표)"], ["address", "주소 *"]] as const).map(([k, lab]) => (
               <Lab key={k} label={`공급받는자 ${lab}`} wide={k === "address"}>
-                <input value={draft.buyer[k] ?? ""} onChange={(e) => edit({ ...draft, buyer: { ...draft.buyer, [k]: e.target.value } })} className={inputCls} />
+                <input value={draft.buyer[k] ?? ""} onChange={(e) => edit({ ...draft, buyer: { ...draft.buyer, [k]: e.target.value } })} className={inputCls}
+                       placeholder={BUYER_HINT[k]} />
               </Lab>
             ))}
           </div>
@@ -582,8 +587,8 @@ export function OrderWorkspace({ id, onBack }: { id: number; onBack: () => void 
               <Icon name="eye" className="h-4 w-4" /> 미리보기
             </button>
             <button type="button" className={primaryBtn} disabled={!!busy} onClick={() => void issue()}
-                    title={st ? "고친 초안으로 발급본을 바꿉니다(덮어쓰기)" : ""}>
-              <Icon name="file-spreadsheet" className="h-4 w-4" /> {st ? "고쳐서 다시 발급 (덮어쓰기)" : "거래명세서 발급"}
+                    title={st ? "고친 초안으로 다시 발급합니다 — 새 발행번호가 붙고, 예전 번호는 히스토리에 남습니다" : ""}>
+              <Icon name="file-spreadsheet" className="h-4 w-4" /> {st ? "고쳐서 다시 발급 (새 번호)" : "거래명세서 발급"}
             </button>
           </div>
         </section>

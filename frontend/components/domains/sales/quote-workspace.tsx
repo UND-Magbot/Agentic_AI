@@ -5,14 +5,27 @@
 // 발행 전후 PDF 미리보기, 발행 뒤 덮어쓰기(같은 판), 내려받기는 PDF·엑셀 중 골라 다른 이름으로 저장(사용자 2026-10-06).
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { QuoteDelivery, QuoteForm, QuoteLine, QuoteListItem, QuoteSession, QuoteWork } from "@/lib/shared/product-recommend";
 import { RichText } from "@/components/domains/sales/agent-chat";
 import { Icon } from "@/components/shared/ui/icon";
 import { cn } from "@/lib/shared/utils";
+import { QuoteUploadDialog } from "./quote-upload-dialog";
 import { ErrorBox, inputCls, primaryBtn, secondaryBtn } from "./proposal-actions";
 
 const CONTACT_KEY = "atcQuoteContact";
+
+/** 내용이 길어지면 높이가 늘어나는 글 칸(규격 여러 줄 — 사용자 2026-10-12). Enter 는 줄바꿈. */
+function AutoTextarea({ value, className, ...rest }: React.TextareaHTMLAttributes<HTMLTextAreaElement> & { value: string }) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight + 2}px`;
+  }, [value]);
+  return <textarea ref={ref} rows={1} value={value} className={cn(className, "min-h-[34px] resize-none overflow-hidden py-1.5 leading-snug")} {...rest} />;
+}
 const CONTACT_FIELDS = ["initials", "contact_name", "contact_title", "contact_mobile", "contact_email"] as const;
 
 /** 브라우저에 기억한 담당자 정보 — 새 견적 초안에 미리 채운다(저장이 막혀 있어도 그대로 진행). */
@@ -295,7 +308,7 @@ const toDraft = (q: QuoteSession): Draft => ({
 
 const HEAD: { k: keyof QuoteForm; label: string; wide?: boolean; area?: boolean; req?: boolean; ph?: string }[] = [
   { k: "customer", label: "고객사", req: true }, { k: "to", label: "받는 분(To)" }, { k: "cc", label: "참조(CC)" },
-  { k: "subject", label: "파일명 내용", ph: "magbot툴체인저" }, { k: "initials", label: "담당자 이니셜", req: true, ph: "예: VT" },
+  { k: "initials", label: "담당자 이니셜", req: true, ph: "예: VT" },
   { k: "contact_name", label: "담당자 이름", req: true }, { k: "contact_title", label: "직함" },
   { k: "contact_mobile", label: "휴대폰", req: true }, { k: "contact_email", label: "이메일", req: true },
   { k: "delivery", label: "납기" }, { k: "place", label: "납품장소" }, { k: "payment", label: "결제조건" },
@@ -314,6 +327,7 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
   const [text, setText] = useState("");
   const [preview, setPreview] = useState(false);
   const [saving, setSaving] = useState<{ revision: number; fileName: string; title: string } | null>(null);
+  const [uploading, setUploading] = useState(false);
   const chatEnd = useRef<HTMLDivElement>(null);
 
   function load(s: QuoteSession) {
@@ -358,7 +372,7 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
       include_options: d.include,
       // 물류비·인건비 줄은 납품 방식으로, 화면에서 넣은 옵션 줄은 include_options 로 보낸다(두 번 들어가지 않게)
       lines: d.lines.filter((l) => !isAuto(l) && !l.id.startsWith("new-opt-")).map((l) => ({
-        id: l.id.startsWith("new") ? null : l.id, name: l.name, qty: l.qty, unit_price: l.unit_price, remark: l.remark ?? "",
+        id: l.id.startsWith("new") ? null : l.id, name: l.name, commodity: l.commodity ?? "", qty: l.qty, unit_price: l.unit_price, remark: l.remark ?? "",
         ...(l.conditional && l.confirmed ? { confirmed: true } : {}),
       })),
     };
@@ -366,15 +380,32 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
     if (s) load(s);
   }
 
-  /** 발행(또는 덮어쓰기) → 바로 내려받기 창(PDF·엑셀 고르기, 다른 이름으로 저장). */
-  async function issue(overwrite = false) {
+  /** 품목 사진 올리기·빼기 — 서버 상태로 바로 저장(견적서 Remark 칸, 사용자 2026-10-12). */
+  async function uploadPhoto(lineId: string, f: File) {
+    const fd = new FormData();
+    fd.append("file", f, f.name);
+    const s = await run("사진 올리는 중", async () => {
+      const r = await fetch(`/api/product-recommend/quotes/${id}/lines/${lineId}/photo`, { method: "POST", body: fd });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(typeof d?.detail === "string" ? d.detail : "사진을 올리지 못했습니다.");
+      return d as QuoteSession;
+    });
+    if (s) load(s);
+  }
+  async function removePhoto(lineId: string) {
+    const s = await run("사진 빼는 중", () => api<QuoteSession>(`/quotes/${id}/lines/${lineId}/photo/remove`, {}));
+    if (s) load(s);
+  }
+
+  /** 발행·재발행(늘 새 발행번호, 사용자 2026-10-12) → 바로 내려받기 창(PDF·엑셀 고르기, 다른 이름으로 저장). */
+  async function issue() {
     if (!q) return;
-    const s = await run(overwrite ? "덮어쓰는 중" : "발행 중", () => api<QuoteSession>(`/quotes/${id}/issue`, { overwrite }));
+    const s = await run("발행 중", () => api<QuoteSession>(`/quotes/${id}/issue`, {}));
     if (s) {
       load(s);
       rememberContact(s.state.form);
       const h = s.history[s.history.length - 1];
-      if (h) setSaving({ revision: h.revision, fileName: h.file_name, title: `${overwrite ? "덮어썼습니다" : "발행했습니다"} — 내려받기` });
+      if (h) setSaving({ revision: h.revision, fileName: h.file_name, title: `발행했습니다${h.quote_no ? ` — ${h.quote_no}` : ""} · 내려받기` });
     }
   }
 
@@ -400,8 +431,9 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
   const issued = q.status === "issued";
   const optionsLeft = q.state.options.filter((o) => !d.include.includes(o.name));
 
+  // 왼쪽(견적 내용)을 넓게 — 품목 규격을 여러 줄로 적어도 잘 보이게(사용자 2026-10-12)
   return (
-    <div className="grid items-start gap-4 lg:grid-cols-2">
+    <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
       <div className="flex min-w-0 flex-col gap-4">
         {/* 진행 상황 */}
         <section className="flex flex-col gap-2 rounded-xl border border-accent/30 bg-surface p-4">
@@ -472,12 +504,13 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
             <span className="text-[11.5px] text-foreground-subtle">금액은 원화(VAT 별도){en ? " — 발행 때 환율로 달러 환산" : ""} · 제품 단가는 회사 단가표</span>
           </div>
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[560px] text-[12.5px]">
+            <table className="w-full min-w-[820px] text-[12.5px]">
               <thead>
                 <tr className="text-left text-[11.5px] text-foreground-subtle">
-                  <th className="px-1.5 py-1 font-medium">구분</th><th className="px-1.5 py-1 font-medium">품목</th>
+                  <th className="px-1.5 py-1 font-medium">구분</th><th className="w-[150px] px-1.5 py-1 font-medium">품목</th>
+                  <th className="min-w-[300px] px-1.5 py-1 font-medium">규격</th>
                   <th className="w-[70px] px-1.5 py-1 font-medium">수량</th><th className="w-[120px] px-1.5 py-1 font-medium">단가</th>
-                  <th className="px-1.5 py-1 text-right font-medium">금액</th><th className="px-1.5 py-1 font-medium">비고</th><th />
+                  <th className="px-1.5 py-1 text-right font-medium">금액</th><th className="w-[150px] px-1.5 py-1 font-medium">비고</th><th />
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -485,8 +518,14 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
                   <tr key={l.id}>
                     <td className="px-1.5 py-1 text-[11.5px] text-foreground-subtle">{KIND_KO[l.kind]}</td>
                     <td className="px-1.5 py-1">
+                      {isAuto(l) ? <span className="text-foreground-muted">{l.commodity}</span> : (
+                        <input className={cn(inputCls, "text-[12.5px]")} value={l.commodity ?? ""} aria-label="품목" placeholder="예: Magbot ATC"
+                               disabled={!!busy} onChange={(e) => setLine(i, { commodity: e.target.value })} />
+                      )}
+                    </td>
+                    <td className="px-1.5 py-1">
                       {l.kind === "extra"
-                        ? <input className={cn(inputCls, "text-[12.5px]")} value={l.name} aria-label="품목명" disabled={!!busy} onChange={(e) => setLine(i, { name: e.target.value })} />
+                        ? <AutoTextarea className={cn(inputCls, "text-[12.5px]")} value={l.name} aria-label="규격" placeholder={"모델·사양 — 여러 줄 가능\n예: TCV1\n- Master T.C"} disabled={!!busy} onChange={(e) => setLine(i, { name: e.target.value })} />
                         : <span className="font-medium text-foreground">{l.name}</span>}
                     </td>
                     <td className="px-1.5 py-1">
@@ -515,8 +554,30 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
                     <td className="whitespace-nowrap px-1.5 py-1 text-right font-semibold">{won((l.qty ?? 0) * (l.unit_price ?? 0))}</td>
                     <td className="px-1.5 py-1">
                       {isAuto(l) ? <span className="text-foreground-muted">{l.remark}</span> : (
-                        <input className={cn(inputCls, "text-[12px]")} value={l.remark ?? ""} aria-label="비고" disabled={!!busy}
-                               onChange={(e) => setLine(i, { remark: e.target.value })} />
+                        <div className="flex flex-col gap-1">
+                          <input className={cn(inputCls, "text-[12px]")} value={l.remark ?? ""} aria-label="비고" disabled={!!busy}
+                                 onChange={(e) => setLine(i, { remark: e.target.value })} />
+                          {/* 품목 사진 — 견적서 Remark 칸에 작게(사용자 2026-10-12). 저장된 줄에만(새 줄·고친 내용은 먼저 저장) */}
+                          {l.photo ? (
+                            <span className="relative inline-flex w-fit">
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img src={`/api/product-recommend/quotes/${q.id}/photo/${l.photo.split("/").pop()}`} alt={`${l.name} 사진`}
+                                   className="h-10 w-auto max-w-[96px] rounded border border-border object-contain" />
+                              <button type="button" aria-label="사진 빼기" disabled={!!busy || dirty}
+                                      title={dirty ? "먼저 변경을 저장해 주세요" : "사진 빼기"}
+                                      onClick={() => void removePhoto(l.id)}
+                                      className="absolute -right-1.5 -top-1.5 grid h-4 w-4 place-items-center rounded-full bg-black/60 text-[10px] text-white disabled:opacity-40">✕</button>
+                            </span>
+                          ) : (
+                            <label className={cn("inline-flex w-fit cursor-pointer items-center gap-1 rounded border border-dashed border-border px-1.5 py-0.5 text-[11px] text-foreground-muted hover:text-foreground",
+                              (busy || dirty || l.id.startsWith("new")) && "pointer-events-none opacity-50")}
+                                   title={dirty || l.id.startsWith("new") ? "먼저 변경을 저장해 주세요" : "견적서 Remark 칸에 작게 들어갑니다(JPG·PNG·WEBP)"}>
+                              <Icon name="paperclip" className="h-3 w-3" /> 사진
+                              <input type="file" accept="image/jpeg,image/png,image/webp" className="sr-only"
+                                     onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) void uploadPhoto(l.id, f); }} />
+                            </label>
+                          )}
+                        </div>
                       )}
                     </td>
                     <td className="px-1 py-1">
@@ -534,7 +595,7 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
           </div>
           <div className="flex flex-wrap items-center gap-1.5 text-[12px]">
             <button type="button" disabled={!!busy} className="inline-flex items-center gap-1 rounded border border-border px-2 py-0.5 text-foreground-muted hover:text-foreground"
-                    onClick={() => edit({ lines: [...d.lines, { id: `new${Date.now()}`, kind: "extra", key: "extra", name: "", qty: 1, unit_price: null, remark: "" }] })}>
+                    onClick={() => edit({ lines: [...d.lines, { id: `new${Date.now()}`, kind: "extra", key: "extra", name: "", commodity: "", qty: 1, unit_price: null, remark: "" }] })}>
               <Icon name="plus" className="h-3.5 w-3.5" /> 항목 추가
             </button>
             {q.manual && <PricePicker disabled={!!busy}
@@ -595,19 +656,17 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
                     title={q.problems.length ? "먼저 위의 확인할 것을 채워 주세요" : dirty ? "먼저 변경을 저장해 주세요" : "지금 내용 그대로 견적서를 봅니다"}>
               <Icon name="eye" className="h-4 w-4" /> 미리보기
             </button>
-            {issued && (
-              <button type="button" className={secondaryBtn} disabled={dirty || !!busy || q.problems.length > 0} onClick={() => void issue(true)}
-                      title={`판 번호를 올리지 않고 v${q.revision + 1}을 지금 내용으로 바꿉니다`}>
-                <Icon name="refresh" className="h-4 w-4" /> 덮어쓰기 (v{q.revision + 1})
-              </button>
-            )}
+            <button type="button" className={secondaryBtn} disabled={dirty || !!busy} onClick={() => setUploading(true)}
+                    title={dirty ? "먼저 변경을 저장해 주세요" : "엑셀에서 고쳤거나 따로 만든 견적서 파일로 발행합니다(새 번호)"}>
+              <Icon name="paperclip" className="h-4 w-4" /> 고친 파일로 발행
+            </button>
             <button type="button" className={primaryBtn} disabled={dirty || !!busy || q.problems.length > 0} onClick={() => void issue()}
                     title={q.problems.length ? "발행 전에 위의 확인할 것을 채워 주세요" : dirty ? "먼저 변경을 저장해 주세요" : ""}>
-              <Icon name="file-spreadsheet" className="h-4 w-4" /> {issued ? `수정본 발행 (v${q.revision + 2})` : "견적서 발행"}
+              <Icon name="file-spreadsheet" className="h-4 w-4" /> {issued ? "재발행 (새 번호)" : "견적서 발행"}
             </button>
           </div>
           {issued && !dirty && (
-            <p className="text-[11.5px] text-foreground-subtle">발행 뒤에도 고칠 수 있습니다 — 고치고 저장한 뒤 [덮어쓰기]는 같은 판을 바꾸고, [수정본 발행]은 다음 판을 만듭니다.</p>
+            <p className="text-[11.5px] text-foreground-subtle">발행 뒤에도 고칠 수 있습니다 — 고치고 저장한 뒤 [재발행]하면 새 발행번호(QT-이니셜+오늘 날짜-순번)가 붙고, 예전 판은 아래 발행 이력에 남습니다.</p>
           )}
           {dirty && <p className="text-[11.5px] text-amber-700 dark:text-amber-300">직접 고친 내용이 있습니다 — [변경 저장] 후 대화·발행할 수 있습니다.</p>}
         </section>
@@ -618,11 +677,13 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
             <h3 className="text-[14px] font-semibold text-foreground">발행 이력</h3>
             {[...q.history].reverse().map((h) => (
               <div key={h.revision} className="flex flex-wrap items-center gap-2">
-                <span className="font-medium">v{h.revision + 1}{h.revision ? "" : " (최초 발행)"}</span>
+                <span className="font-mono font-medium">{h.quote_no ?? `v${h.revision + 1}`}</span>
+                {!h.revision && <span className="text-foreground-subtle">(최초 발행)</span>}
+                {h.uploaded && <span className="rounded bg-amber-500/12 px-1.5 text-[11px] font-semibold text-amber-700 dark:text-amber-300">외부 수정본</span>}
                 <span className="text-foreground-subtle">{new Date(h.issued_at).toLocaleString("ko-KR")}</span>
                 <span>{h.currency === "USD" ? `$${h.total.toLocaleString("en-US", { minimumFractionDigits: 2 })}` : won(h.total)}</span>
                 <button type="button" className="ml-auto inline-flex items-center gap-1 text-accent hover:underline"
-                        onClick={() => setSaving({ revision: h.revision, fileName: h.file_name, title: `v${h.revision + 1} 다시 다운로드` })}>
+                        onClick={() => setSaving({ revision: h.revision, fileName: h.file_name, title: `${h.quote_no ?? `v${h.revision + 1}`} 다시 다운로드` })}>
                   <Icon name="download" className="h-3.5 w-3.5" /> 다시 다운로드
                 </button>
               </div>
@@ -633,6 +694,11 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
       </div>
       {preview && <PreviewDialog url={`/api/product-recommend/quotes/${q.id}/preview`} title="견적서 미리보기"
                                   sub="지금 저장된 내용 그대로 · 발행 전이면 견적번호는 발행 때 정해집니다" onClose={() => setPreview(false)} />}
+      {uploading && (
+        <QuoteUploadDialog title="고친 견적서 파일로 발행" uploadUrl={`/api/product-recommend/quotes/${q.id}/upload`}
+                           confirmUrl={`/api/product-recommend/quotes/${q.id}/upload/confirm`}
+                           onDone={(d) => { setUploading(false); load(d as QuoteSession); }} onClose={() => setUploading(false)} />
+      )}
       {saving && <DownloadDialog urlFor={(fmt) => `/api/product-recommend/quotes/${q.id}/file?fmt=${fmt}&revision=${saving.revision}`}
                                  fileName={saving.fileName} title={saving.title} onClose={() => setSaving(null)} />}
 

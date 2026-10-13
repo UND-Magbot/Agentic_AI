@@ -242,7 +242,7 @@ def followups(intake: dict[str, Any]) -> list[dict[str, Any]]:
             if f["id"] == "E02" and not (e.get("electrical") or {}).get("comm_interface") and followup_done("E02", e):
                 continue
             if _cond(f["show_when"], e):
-                label = (e.get("name") or e.get("model") or f"툴 {i + 1}") if f["scope"] == "tool" else \
+                label = tool_label(e, i) if f["scope"] == "tool" else \
                     (" ".join(x for x in (e.get("manufacturer"), e.get("model")) if x) or f"로봇 {i + 1}") \
                     if f["scope"] == "robot" else "프로젝트"
                 out.append({"id": f["id"], "question_ko": f["question_ko"], "scope": f["scope"],
@@ -254,6 +254,16 @@ def followups(intake: dict[str, Any]) -> list[dict[str, Any]]:
 # ── 미팅 질문지 확인 질문 · 자료 요청 (agent_instruction_ko) ─────────────────────────────
 # "미팅 메모에 있는 내용은 먼저 채우고 미확인 값만 확인한다 … 모르면 모델명·사진·도면으로 진행하고 같은 기술 질문을
 #  반복하지 않는다. 답변에 해당하는 후속 질문만 표시한다." — 비어 있는 핵심 칸만 짧게 묻고, '모름'은 자료 요청으로.
+
+# 질문 보여 주는 순서(사용자 2026-10-12, 안 B — 영업 대화 순서). 번호(J01~J10)·규칙은 질문지 그대로, 묻는 순서만.
+# 화면 atc-recommend.QUESTION_ORDER 와 같게.
+QUESTION_ORDER = ["J02", "J01", "J06", "J03", "J04", "J05", "J07", "J08", "J09", "J10"]
+
+
+def ordered_bank() -> list[dict[str, Any]]:
+    at = {qid: i for i, qid in enumerate(QUESTION_ORDER)}
+    return sorted(SPEC["question_bank"], key=lambda q: at.get(q["id"], len(at)))
+
 
 # 선정에 쓰는 핵심 칸(그 외 칸 — 툴 모델명·제품명 등 — 은 비어 있어도 묻지 않는다)
 CORE_FIELDS = {
@@ -287,9 +297,16 @@ def _skip(entity: dict[str, Any], path: str) -> bool:
     return path.startswith("mass_components.") and entity.get("workpiece_not_applicable") is True
 
 
+def tool_label(t: dict[str, Any], i: int) -> str:
+    """툴 카드 이름 — '툴 1 · 전동 그리퍼 (OnRobot RG2)'(번호 + 작동 방식 + 모델명, 사용자 2026-10-12). 적은 것만 붙인다."""
+    name, model = str(t.get("name") or "").strip(), str(t.get("model") or "").strip()
+    tail = name + (f" ({model})" if model and name else model)
+    return f"툴 {i + 1}" + (f" · {tail}" if tail else "")
+
+
 def _label(scope: str, e: dict[str, Any], i: int) -> str:
     if scope == "tool":
-        return e.get("name") or e.get("model") or f"툴 {i + 1}"
+        return tool_label(e, i)
     if scope == "robot":
         return " ".join(x for x in (e.get("manufacturer"), e.get("model")) if x) or f"로봇 {i + 1}"
     return "프로젝트"
@@ -299,7 +316,7 @@ def pending_questions(intake: dict[str, Any]) -> list[dict[str, Any]]:
     """질문지에서 비어 있는 핵심 칸 + 해당하는 후속 질문(질문지에 이미 답한 조건 제외). '모름' 칸은 묻지 않는다."""
     project = intake.get("project") or {}
     out = []
-    for q in SPEC["question_bank"]:
+    for q in ordered_bank():
         ents = intake.get("tools") or [] if q["scope"] == "tool" else intake.get("robots") or [] if q["scope"] == "robot" else [project]
         core = set(CORE_FIELDS.get(q["id"], ()))
         for i, e in enumerate(ents):
@@ -331,7 +348,8 @@ def data_requests(intake: dict[str, Any]) -> list[str]:
     """'모름' 칸 → 받아 올 자료(같은 기술 질문을 반복하지 않고 자료 요청으로 전환)."""
     project = intake.get("project") or {}
     out = []
-    for qid, paths in CORE_FIELDS.items():
+    for qid in QUESTION_ORDER:
+        paths = CORE_FIELDS[qid]
         scope = next(q["scope"] for q in SPEC["question_bank"] if q["id"] == qid)
         ents = intake.get("tools") or [] if scope == "tool" else intake.get("robots") or [] if scope == "robot" else [project]
         for i, e in enumerate(ents):

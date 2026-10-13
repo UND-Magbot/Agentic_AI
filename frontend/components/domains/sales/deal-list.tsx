@@ -10,7 +10,7 @@ import { useRouter } from "next/navigation";
 import { Fragment, useMemo, useState } from "react";
 import { DealDetail } from "@/components/domains/sales/deal-detail";
 import { DealMeetingDialog, hasMeeting } from "@/components/domains/sales/deal-meeting";
-import { ACTION_LABEL, Muted, STAGE_TONE, StageChip, dealRequest, eventDetail, quoteVer, shortDate, stamp, won } from "@/components/domains/sales/deal-format";
+import { ACTION_LABEL, Muted, STAGE_TONE, StageChip, eventDetail, quoteVer, shortDate, stamp, won } from "@/components/domains/sales/deal-format";
 import { DealNewForm } from "@/components/domains/sales/deal-new-form";
 import type { DealKpi, DealListData, DealRow, DealStage } from "@/lib/shared/sales-deals";
 import { cn } from "@/lib/shared/utils";
@@ -114,7 +114,7 @@ export function DealList({ data, onRefresh, onMeeting, onOrder, onQuote }: {
       if (f.review && !hasReview(r)) return false;
       if (f.overdue && !isOverdue(r)) return false;
       if (!q) return true;
-      const hay = [r.display_no, r.deal_no, r.legacy_no, r.customer, r.title, ...(r.quote?.items.map((i) => i.name) ?? [])]
+      const hay = [r.display_no, r.statement_no, r.deal_no, r.legacy_no, r.customer, r.title, ...(r.quote?.items.map((i) => i.name) ?? [])]
         .join(" ").toLowerCase();
       return hay.includes(q);
     });
@@ -256,6 +256,7 @@ export function DealList({ data, onRefresh, onMeeting, onOrder, onQuote }: {
                 </td>
                 <td className="whitespace-nowrap px-3 py-2 font-mono text-[12px]">
                   {r.display_no ?? r.deal_no ?? "번호 미부여"}
+                  {r.statement_no && <div className="text-foreground-muted">{r.statement_no}</div>}
                   {r.legacy_no && <div className="text-[11px] text-foreground-subtle">옛 {r.legacy_no}</div>}
                   {!selecting && (r.history?.length ?? 0) > 0 && (
                     <button type="button" aria-expanded={shown.has(r.id)} onClick={(e) => { e.stopPropagation(); toggleShown(r.id); }}
@@ -283,7 +284,7 @@ export function DealList({ data, onRefresh, onMeeting, onOrder, onQuote }: {
               {!selecting && shown.has(r.id) && (
                 <tr className="border-b border-border/70 bg-foreground/[0.02]">
                   <td colSpan={9} className="px-3 pb-3 pt-1">
-                    <HistoryPanel row={r} admin={admin} onChanged={refresh} />
+                    <HistoryPanel row={r} />
                   </td>
                 </tr>
               )}
@@ -497,122 +498,45 @@ function uniq(xs: string[]): string[] {
   return [...new Set(xs.filter(Boolean))].sort();
 }
 
-/** 건(프로젝트) 안의 히스토리 — 바뀔 때마다 번호 하나, 최신 먼저(사용자 2026-10-08). 견적서가 새 판으로 바뀌면 옛 판 줄에
- *  '버전 업데이트됨'. 관리자는 되돌리기: 맨 위 줄만 단독으로, 아래 줄을 누르면 맨 위부터 그 줄까지 한 덩어리로 골라진다
- *  (중간 한 줄만 지우면 내용이 꼬이므로). 고른 줄을 지우면 그 바로 아래 줄 때 내용·번호로 돌아간다. */
-function HistoryPanel({ row, admin, onChanged }: { row: DealRow; admin: boolean; onChanged: () => void }) {
-  // 고른 범위 = 0 ~ upto(최신부터). null = 안 고름
-  const [upto, setUpto] = useState<number | null>(null);
-  const [asking, setAsking] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+/** 건(프로젝트) 안의 히스토리 — 시간순 순번 1, 2, 3 …, 최신 먼저(사용자 2026-10-12). 줄에는 그 줄의 발행번호만 보이고,
+ *  같은 문서가 다시 발행되면 예전 발행 줄에 '버전 업데이트됨'. 되돌리기는 없앴다 — 문제는 고쳐서 재발행. */
+function HistoryPanel({ row }: { row: DealRow }) {
   const hist = row.history ?? [];
-  // 견적서 발행 줄부터는 못 고른다(그 줄 위까지만) — 맨 아래 줄은 돌아갈 곳이 없어 못 고름
-  const stopAt = hist.findIndex((h) => !h.removable);
-  const maxPick = Math.min(stopAt === -1 ? hist.length - 1 : stopAt, hist.length - 1) - 1;
-  const keep = upto != null ? hist[upto + 1] : null;
-  const nextNo = keep ? Number(keep.ver_no.split("-").pop()) + 1 : null;
-
-  function pick(i: number) {
-    setAsking(false);
-    setErr(null);
-    setUpto((cur) => (cur === i ? (i === 0 ? null : i - 1) : i));
-  }
-
-  async function rollback() {
-    if (!keep) return;
-    setBusy(true);
-    setErr(null);
-    try {
-      await dealRequest(`/${row.id}/history/rollback`, { keep_id: keep.id });
-      setUpto(null);
-      setAsking(false);
-      onChanged();
-    } catch (e) {
-      setErr((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
     <div className="rounded-lg border border-border bg-surface">
-      {admin && upto != null && keep && (
-        <div className="flex flex-wrap items-center gap-2 border-b border-red-500/30 bg-red-500/[0.06] px-3 py-2 text-[12.5px]">
-          {!asking ? (
-            <>
-              <span><b>{upto + 1}개</b>를 되돌리면 <b className="font-mono">{keep.ver_no}</b> 때 내용으로 돌아갑니다.</span>
-              <button type="button" onClick={() => setAsking(true)} disabled={!keep.restorable}
-                      className="ml-auto rounded-md bg-red-600 px-2.5 py-1 text-[12px] font-semibold text-white disabled:opacity-40">되돌리기</button>
-              <button type="button" onClick={() => setUpto(null)} className="text-[12px] text-foreground-muted">선택 해제</button>
-              {!keep.restorable && <span className="w-full text-[11.5px] text-red-700 dark:text-red-300">{keep.ver_no} 은(는) 되돌리기 기능 전에 남은 기록이라 그때 내용으로 돌아갈 수 없습니다.</span>}
-            </>
-          ) : (
-            <>
-              <span className="text-red-800 dark:text-red-200">
-                정말 되돌릴까요? 고른 줄 뒤에 바뀐 내용(입금 확인·출하·명세서 등)이 모두 <b className="font-mono">{keep.ver_no}</b> 때로 돌아가고,
-                번호는 <b className="font-mono">-{String(nextNo).padStart(2, "0")}</b>부터 다시 이어집니다.
-              </span>
-              <button type="button" disabled={busy} onClick={() => void rollback()}
-                      className="ml-auto rounded-md bg-red-600 px-2.5 py-1 text-[12px] font-semibold text-white disabled:opacity-40">
-                {busy ? "되돌리는 중…" : `${upto + 1}개 되돌리기`}
-              </button>
-              <button type="button" disabled={busy} onClick={() => setAsking(false)} className="text-[12px] text-foreground-muted">취소</button>
-            </>
-          )}
-        </div>
-      )}
       <table className="w-full border-collapse text-[12.5px]">
         <thead>
           <tr className="border-b border-border text-left text-[11.5px] text-foreground-muted">
-            {admin && <th className="w-8 px-3 py-1.5" aria-label="되돌릴 줄 고르기" />}
-            {["번호", "바뀐 때", "바뀐 내용", "단계", "공급가액", "입력"].map((h) => (
+            {["순번", "바뀐 때", "바뀐 내용", "발행번호", "단계", "공급가액", "입력"].map((h) => (
               <th key={h} className={cn("whitespace-nowrap px-3 py-1.5 font-semibold", h === "공급가액" && "text-right")}>{h}</th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {hist.map((h, i) => {
-            const picked = upto != null && i <= upto;
-            const canPick = admin && i <= maxPick;
-            return (
-              <tr key={h.id} onClick={canPick ? () => pick(i) : undefined}
-                  className={cn("border-b border-border/60 last:border-0", h.superseded && "text-foreground-muted",
-                    canPick && "cursor-pointer hover:bg-foreground/[0.03]", picked && "bg-red-500/10 hover:bg-red-500/12")}>
-                {admin && (
-                  <td className="w-8 px-3 py-1.5" onClick={(e) => e.stopPropagation()}>
-                    {canPick && (
-                      <input type="checkbox" checked={picked} onChange={() => pick(i)} aria-label={`${h.ver_no}까지 되돌리기 선택`}
-                             className="h-4 w-4 cursor-pointer accent-red-600" />
-                    )}
-                  </td>
-                )}
-                <td className="whitespace-nowrap px-3 py-1.5 font-mono text-[12px]">
-                  {h.ver_no}
-                  {i === 0 && <span className="ml-1.5 rounded bg-accent/10 px-1 font-sans text-[10.5px] font-semibold text-accent">현재</span>}
-                </td>
-                <td className="whitespace-nowrap px-3 py-1.5 tabular-nums">{stamp(h.created_at)}</td>
-                <td className="px-3 py-1.5">
-                  <span className="font-medium">{ACTION_LABEL[h.action] ?? h.action}</span>
-                  {eventDetail(h) && <span className="ml-1.5 text-foreground-muted">{eventDetail(h)}</span>}
-                </td>
-                <td className="whitespace-nowrap px-3 py-1.5">
-                  {h.stage ? <StageChip stage={h.stage} version={quoteVer(h.stage, h.quote_rev)} className={cn(h.superseded && "opacity-70")} /> : <Muted>-</Muted>}
-                  {h.superseded && <div className="mt-0.5 text-[10.5px] font-semibold text-amber-700 dark:text-amber-300">└ 버전 업데이트됨</div>}
-                </td>
-                <td className="whitespace-nowrap px-3 py-1.5 text-right tabular-nums">{h.amount != null ? won(h.amount) : <Muted>-</Muted>}</td>
-                <td className="whitespace-nowrap px-3 py-1.5">{h.user_name ?? <Muted>시스템</Muted>}</td>
-              </tr>
-            );
-          })}
+          {hist.map((h, i) => (
+            <tr key={h.id} className={cn("border-b border-border/60 last:border-0", h.superseded && "text-foreground-muted")}>
+              <td className="whitespace-nowrap px-3 py-1.5 tabular-nums">
+                {h.seq}
+                {i === 0 && <span className="ml-1.5 rounded bg-accent/10 px-1 text-[10.5px] font-semibold text-accent">최근</span>}
+              </td>
+              <td className="whitespace-nowrap px-3 py-1.5 tabular-nums">{stamp(h.created_at)}</td>
+              <td className="px-3 py-1.5">
+                <span className="font-medium">{ACTION_LABEL[h.action] ?? h.action}</span>
+                {eventDetail(h) && <span className="ml-1.5 text-foreground-muted">{eventDetail(h)}</span>}
+              </td>
+              <td className="whitespace-nowrap px-3 py-1.5 font-mono text-[12px]">
+                {h.doc_no ?? <Muted>-</Muted>}
+                {h.superseded && <div className="font-sans text-[10.5px] font-semibold text-amber-700 dark:text-amber-300">└ 버전 업데이트됨</div>}
+              </td>
+              <td className="whitespace-nowrap px-3 py-1.5">
+                {h.stage ? <StageChip stage={h.stage} version={quoteVer(h.stage, h.quote_rev)} className={cn(h.superseded && "opacity-70")} /> : <Muted>-</Muted>}
+              </td>
+              <td className="whitespace-nowrap px-3 py-1.5 text-right tabular-nums">{h.amount != null ? won(h.amount) : <Muted>-</Muted>}</td>
+              <td className="whitespace-nowrap px-3 py-1.5">{h.user_name ?? <Muted>시스템</Muted>}</td>
+            </tr>
+          ))}
         </tbody>
       </table>
-      {admin && maxPick >= 0 && upto == null && (
-        <p className="border-t border-border/60 px-3 py-1.5 text-[11.5px] text-foreground-subtle">
-          실수로 바꿨으면 되돌릴 줄을 고르세요 — 맨 위 줄만 따로, 아래 줄을 누르면 맨 위부터 그 줄까지 같이 골라집니다. 견적서 발행 줄은 되돌리지 않습니다.
-        </p>
-      )}
-      {err && <p className="px-3 py-1.5 text-[12px] text-red-600">{err}</p>}
     </div>
   );
 }

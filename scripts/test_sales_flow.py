@@ -95,7 +95,8 @@ check(derive({**deal(SPLIT, confirmed=(0, 1, 2)), "paid_full": True}, date(2026,
       "결제 조건 건: 완납이어도 출하 전에는 '완료'가 아님")
 
 # 5) 분기별 수주금액·올해 매출(출하일 기준) — 공급가액, 드랍 제외(예전 실주 기록 포함)
-from app.sales_deals.service import kpi, NEW_NO  # noqa: E402
+from app.sales_deals.service import kpi  # noqa: E402
+from app.sales_deals import doc_numbers as dn  # noqa: E402
 rows = [{**deal(SPLIT, shipped=True), "won_date": "2026-02-10"},
         {**deal(SPLIT), "won_date": "2026-08-01"},
         {**deal(SPLIT, shipped=True), "won_date": "2026-05-01", "dropped": True},
@@ -109,34 +110,38 @@ legacy = {**deal(None, statement=False), "won_date": None, "quote": None, "impor
 k = kpi([legacy], date(2026, 10, 8))
 check(k["won_by_quarter"] == [0, 3_000_000, 0, 0] and k["won_estimated"] == 1,
       "수주일 없는 옮긴 건: 첫 계산서 발행일 분기 · 공급가액 = 계산서 공급가액 합, 대신 셈 1건", str(k))
-check(NEW_NO.match("AL20261008") and NEW_NO.match("AL20261008B") and not NEW_NO.match("S26-0182"), "새 건번호 형식(이니셜+날짜)")
+check(dn.format_no("QT", "LU", date(2026, 10, 12), 1) == "QT-LU20261012-01" and dn.format_no("TS", "VT", date(2026, 10, 12), 12)
+      == "TS-VT20261012-12" and dn.clean_initials(" lu ") == "LU" and dn.clean_initials("L") is None
+      and dn.DOC_NO_RE.match("QT-LU20261012-03"), "발행번호 형식(문서 종류-이니셜+발행일-순번)")
 
 # 6) 리스트 엑셀
 import openpyxl as _ox  # noqa: E402
 from app.sales_deals.export import build_xlsx  # noqa: E402
-rr = [{**deal(SPLIT), "deal_no": "AL20261008", "display_no": "AL20261008-03", "title": "ATC", "owner": "Alex",
+rr = [{**deal(SPLIT), "deal_no": "QT-AL20261008-01", "display_no": "QT-AL20261008-02", "statement_no": "TS-AL20261010-01",
+       "title": "ATC", "owner": "Alex",
        "base_date": "2026-08-20", "stage": "수주", "alerts": [{"text": "선금 지남"}],
        "flow": {"terms": flow.terms(deal(SPLIT)), "pay_case_label": "선금 30%", "paid": 0, "overdue": [1]},
        "customer": "한빛플라스틱",
        # 히스토리(최신 먼저) — 엑셀에 전부 들어가야 함(사용자 2026-10-08)
        "history": [
-           {"ver_no": "AL20261010-03", "action": "payment", "detail": {"note": "선금 30% 입금 확인", "date": "2026-10-10", "amount": 1_110_000},
+           {"seq": 3, "doc_no": None, "action": "payment", "detail": {"note": "선금 30% 입금 확인", "date": "2026-10-10", "amount": 1_110_000},
             "created_at": "2026-10-10T01:00:00+00:00", "user_name": "Alex", "stage": "수주", "quote_rev": 2, "amount": 3_700_000, "superseded": False},
-           {"ver_no": "AL20261008-02", "action": "quote_revision", "detail": {"revision": 2, "amount": 3_700_000},
+           {"seq": 2, "doc_no": "QT-AL20261008-02", "action": "quote_revision", "detail": {"revision": 2, "amount": 3_700_000},
             "created_at": "2026-10-08T05:00:00+00:00", "user_name": "Alex", "stage": "견적", "quote_rev": 2, "amount": 3_700_000, "superseded": False},
-           {"ver_no": "AL20261008-01", "action": "quote", "detail": {"revision": 1, "amount": 3_500_000},
+           {"seq": 1, "doc_no": "QT-AL20261008-01", "action": "quote", "detail": {"revision": 1, "amount": 3_500_000},
             "created_at": "2026-10-08T01:00:00+00:00", "user_name": "Alex", "stage": "견적", "quote_rev": 1, "amount": 3_500_000, "superseded": True}]}]
 wb = _ox.load_workbook(io.BytesIO(build_xlsx({"rows": rr, "kpi": k, "summary": {"수주": 1}, "today": "2026-10-08"})))
 ws = wb["영업 건"]
-check(ws["A2"].value == "한빛플라스틱" and ws["C2"].value == "AL20261008-03" and ws["F2"].value == 3_700_000 and ws["K2"].value == "2026-09-10"
-      and ws["A2"].fill.fgColor.rgb.endswith("FDE2E1") and "요약" in wb.sheetnames, "엑셀: 프로젝트 먼저·표시 번호·공급가액·다음 예정일·지남 강조")
-check([ws[f"C{i}"].value for i in (3, 4, 5)] == ["AL20261010-03", "AL20261008-02", "AL20261008-01"]
+check(ws["A2"].value == "한빛플라스틱" and ws["C2"].value == "QT-AL20261008-02 / TS-AL20261010-01" and ws["F2"].value == 3_700_000 and ws["K2"].value == "2026-09-10"
+      and ws["A2"].fill.fgColor.rgb.endswith("FDE2E1") and "요약" in wb.sheetnames, "엑셀: 프로젝트 먼저·최근 견적서·명세서 번호·공급가액·다음 예정일·지남 강조")
+check([ws[f"C{i}"].value for i in (3, 4, 5)] == ["3", "2  QT-AL20261008-02", "1  QT-AL20261008-01"]
       and all(ws.row_dimensions[i].outlineLevel == 1 for i in (3, 4, 5)) and "입금 확인" in ws["B3"].value
       and ws["E3"].value == "2026-10-10 10:00" and ws["G5"].value == "견적 V1 (버전 업데이트됨)",
-      "엑셀 시트1: 프로젝트 아래 히스토리 3줄(그룹으로 접힘, 한국 시각, 옛 판 표시)", str([ws[f"G{i}"].value for i in (3, 4, 5)]))
+      "엑셀 시트1: 프로젝트 아래 히스토리 3줄(순번·발행번호, 그룹으로 접힘, 한국 시각, 옛 판 표시)", str([ws[f"G{i}"].value for i in (3, 4, 5)]))
 hs = wb["히스토리 전체"]
-check(hs.max_row == 4 and hs["D2"].value == "AL20261010-03" and hs["A2"].value == "한빛플라스틱" and hs["G3"].value == "견적 V2"
-      and hs["J4"].value == "버전 업데이트됨", "엑셀 시트2: 히스토리 전체 한 표", str([c.value for c in hs[4]]))
+check(hs.max_row == 4 and hs["D2"].value == 3 and hs["G3"].value == "QT-AL20261008-02" and hs["A2"].value == "한빛플라스틱"
+      and hs["H3"].value == "견적 V2" and hs["K4"].value == "버전 업데이트됨", "엑셀 시트2: 히스토리 전체 한 표(순번·발행번호)",
+      str([c.value for c in hs[4]]))
 
 # 7) 거래명세서
 check(sx.split_name("TCV1\n- MASTER T.C (Payload 10Kg)") == ("TCV1 MASTER T.C", "Payload 10Kg")

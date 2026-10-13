@@ -19,6 +19,7 @@ import { Icon } from "@/components/shared/ui/icon";
 import { cn } from "@/lib/shared/utils";
 import {
   AtcCandidatePreview, AtcIntakeSummary, AtcLivePreview, AtcMeetingUpload, GroupedFields, AtcResultView, AtcWizard, describeAnswer, emptyIntake,
+  type SpecCandidate, SPEC_FILL_PATHS, SpecAskContext, SpecLockContext, autoUtilities, questionTitle,
   markUnknown, updateEntity, type RecState,
 } from "./atc-recommend";
 import { ErrorBox, inputCls, primaryBtn, secondaryBtn } from "./proposal-actions";
@@ -126,7 +127,7 @@ function atcLines(intake: AtcIntake): string[] {
   lines.push(`교체 툴 ${(intake.project.tool_count as number | null) ?? "모름"}개`);
   for (const [i, t] of intake.tools.entries()) {
     const it = (t.intake ?? {}) as Record<string, unknown>;
-    const wp = t.workpiece_not_applicable ? "제품 없음" : `제품 ${(t.mass_components as Record<string, unknown>)?.max_simultaneous_workpieces_kg ?? "?"}kg`;
+    const wp = t.workpiece_not_applicable ? "대상물 없음" : `대상물 ${(t.mass_components as Record<string, unknown>)?.max_simultaneous_workpieces_kg ?? "?"}kg`;
     lines.push(`${(t.name as string) || `툴 ${i + 1}`}: 툴 ${it.tool_assembly_mass_kg ?? "?"}kg + ${wp} · 기울임 ${yn(it.tilts_or_flips)} · 전기 ${yn(it.needs_power)} · 공압 ${yn(it.needs_air)} · 센서 ${yn(it.has_sensors_or_signals)}`);
   }
   return lines;
@@ -173,6 +174,106 @@ function SpecResultBody({ spec, tool }: { spec: SpecSearch; tool: Record<string,
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/** 공개 사양 검색값을 툴의 빈 칸에만 넣는다(이미 적은 값은 그대로) — 외부 자료 값은 '추정'으로 근거를 남긴다. */
+function fillFromSpec(intake: AtcIntake, toolIdx: number, spec: SpecSearch): { next: AtcIntake; filled: string[] } {
+  let next = intake;
+  const tool = (next.tools[toolIdx] ?? {}) as Record<string, unknown>;
+  const filled: string[] = [];
+  const evidence = [...((tool.spec_evidence as unknown[]) ?? [])];
+  for (const f of spec.fields) {
+    const p = toolPath(f.path);
+    if (!empty(readPath(next.tools[toolIdx], p))) continue;
+    next = updateEntity(next, "tool", toolIdx, p, f.value);
+    filled.push(f.label.split("(")[0].trim());
+    // JSON answer_evidence — 외부 공개 자료에서 온 값은 '추정'(출처 기록), 확정은 엔지니어
+    evidence.push({ field_path: f.path, normalized_value: f.value, raw_answer: f.evidence, status: "estimated",
+                    source_document: spec.sources[0]?.url ?? null, source_location: "외부 공개 자료 검색" });
+  }
+  return { next: updateEntity(next, "tool", toolIdx, "spec_evidence", evidence), filled };
+}
+
+/** 질문지에서 시작한 공개 사양 검색(뒤에서 진행) — 툴 하나에 하나. */
+type SpecJob = { tool: number; name: string; product: string; status: "running" | "done" | "failed";
+                 spec?: SpecSearch; error?: string; state?: "applied" | "skipped";
+                 /** 실패·값 없음 팝업을 [확인]으로 닫음 */
+                 popped?: boolean };
+
+/** 시중 제품 툴 — 공개 사양 검색 여부 팝업(커서를 옮길 때·4번 [다음 →] 때, 툴마다 한 번). */
+function SpecAskPopup({ items, onAnswer }: { items: SpecCandidate[]; onAnswer: (search: boolean) => void }) {
+  return (
+    <div role="dialog" aria-modal="true" aria-labelledby="spec-ask-title"
+         className="anim-fade-in fixed inset-0 z-50 grid place-items-center bg-black/40 px-4">
+      <div className="anim-fade-in-up w-full max-w-[480px] rounded-2xl border border-border bg-surface-raised p-5 text-[13px] shadow-[0_30px_70px_-30px_rgba(15,30,70,0.55)]">
+        <h2 id="spec-ask-title" className="text-[15px] font-semibold text-foreground">공개 사양을 검색할까요?</h2>
+        <p className="mt-2 text-foreground">
+          {items.map((x) => `‘${x.product}’`).join(", ")} 은(는) 시중 제품으로 보입니다.
+          공개 사양(무게·크기·전원·공압)을 외부 AI 로 검색해서 뒤 질문의 답을 미리 채울까요?
+        </p>
+        <p className="mt-1.5 text-[12px] text-foreground-subtle">
+          검색은 1~2분 걸립니다. 그동안 크기·무게처럼 검색으로 채울 칸은 막아 두고, 다른 질문은 계속 답하시면 됩니다.
+          결과가 오면 팝업으로 확인한 뒤 비어 있는 칸에만 채웁니다. 외부로는 제품명만 보냅니다.
+        </p>
+        <div className="mt-4 flex flex-wrap justify-end gap-2">
+          <button type="button" className={secondaryBtn} onClick={() => onAnswer(false)}>건너뛰기 — 직접 입력</button>
+          <button type="button" className={primaryBtn} autoFocus onClick={() => onAnswer(true)}>
+            <Icon name="search" className="h-4 w-4" /> 검색하고 계속
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 검색이 끝나면 어느 질문을 작성 중이든 뜨는 요약 팝업 — 검색 결과를 보여 주는 곳은 이 팝업 하나(사용자 2026-10-12).
+ *  값이 있으면 [빈 칸에 채우기]·[쓰지 않기] 중 골라야 닫힌다. 실패·값 없음은 [확인]. */
+function SpecDonePopup({ job, intake, onApply, onClose }: {
+  job: SpecJob; intake: AtcIntake; onApply: (tool: number, apply: boolean) => void; onClose: (tool: number) => void;
+}) {
+  const ok = job.status === "done" && !!job.spec;
+  const hasFields = ok && job.spec!.fields.length > 0;
+  return (
+    <div role="dialog" aria-modal="true" aria-labelledby="spec-done-title"
+         className="anim-fade-in fixed inset-0 z-50 grid place-items-center bg-black/40 px-4">
+      <div className="anim-fade-in-up max-h-[85vh] w-full max-w-[520px] overflow-y-auto rounded-2xl border border-border bg-surface-raised p-5 text-[13px] shadow-[0_30px_70px_-30px_rgba(15,30,70,0.55)]">
+        <div className="mb-3">
+          <p className="text-[11.5px] font-semibold text-accent">{job.name}</p>
+          <h2 id="spec-done-title" className="text-[15px] font-semibold text-foreground">
+            {ok ? "공개 사양 검색이 끝났습니다" : "공개 사양을 검색하지 못했습니다"}
+          </h2>
+        </div>
+        {ok ? <SpecResultBody spec={job.spec!} tool={(intake.tools[job.tool] ?? {}) as Record<string, unknown>} />
+          : <p className="text-foreground-muted">‘{job.product}’ — {job.error}. 비어 있는 칸은 직접 적거나 AI 가 대화에서 묻습니다.</p>}
+        <div className="mt-4 flex flex-wrap justify-end gap-2">
+          {hasFields ? (
+            <>
+              <button type="button" className={secondaryBtn} onClick={() => onApply(job.tool, false)}>쓰지 않기</button>
+              <button type="button" className={primaryBtn} autoFocus onClick={() => onApply(job.tool, true)}>
+                <Icon name="check" className="h-4 w-4" /> 빈 칸에 채우기
+              </button>
+            </>
+          ) : (
+            <button type="button" className={primaryBtn} autoFocus onClick={() => onClose(job.tool)}>확인</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 검색을 시작했다는 알림(몇 초 뒤 사라짐) — 결과는 끝나면 요약 팝업으로. */
+function SpecNotice({ text, onClose }: { text: string; onClose: () => void }) {
+  return (
+    <div role="status" className="anim-fade-in-up fixed bottom-6 left-1/2 z-50 flex w-[min(92vw,520px)] -translate-x-1/2 items-start gap-2 rounded-xl border border-accent/40 bg-surface-raised px-4 py-3 text-[13px] shadow-lg">
+      <Icon name="search" className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
+      <div className="flex flex-1 flex-col gap-2">
+        <p className="text-foreground">{text}</p>
+        <button type="button" onClick={onClose} className="self-end rounded-md bg-accent px-3 py-1 text-[12px] font-semibold text-white hover:brightness-105">확인</button>
+      </div>
+      <button type="button" onClick={onClose} aria-label="알림 닫기" className="text-foreground-subtle hover:text-foreground">×</button>
     </div>
   );
 }
@@ -262,7 +363,7 @@ function StepList({ steps }: { steps: string[] }) {
   );
 }
 
-const SEARCH_STEPS = ["툴측 총무게 계산(툴 + 한 번에 드는 제품)", "제품 DB 툴체인저 정격과 대조", "속도 보정·포고핀·공압 모듈 산정", "후보와 추천 근거 정리"];
+const SEARCH_STEPS = ["툴측 총무게 계산(툴 + 대상물 최대 무게)", "제품 DB 툴체인저 정격과 대조", "속도 보정·포고핀·공압 모듈 산정", "후보와 추천 근거 정리"];
 
 /** 찾는 동안 — 왼쪽에 단계 문구와 로딩. */
 function Finding({ message, sub, steps = SEARCH_STEPS }: { message?: string; sub?: string; steps?: string[] }) {
@@ -775,7 +876,7 @@ function MeetingInfo({ id, onClose }: { id: number; onClose: () => void }) {
                       .filter(Boolean).join("·");
                     return [`툴 ${i + 1}`, [`${str(t.name) || `툴 ${i + 1}`}${num(t.installed_quantity) != null ? ` ×${num(t.installed_quantity)}` : ""}`,
                       num(ti.tool_assembly_mass_kg) != null && `툴 ${num(ti.tool_assembly_mass_kg)}kg`,
-                      num(mc.max_simultaneous_workpieces_kg) != null && `제품 ${num(mc.max_simultaneous_workpieces_kg)}kg`, uses].filter(Boolean).join(" · ")];
+                      num(mc.max_simultaneous_workpieces_kg) != null && `대상물 ${num(mc.max_simultaneous_workpieces_kg)}kg`, uses].filter(Boolean).join(" · ")];
                   }),
                 ]} />
               ) : (
@@ -817,8 +918,10 @@ function MeetRows({ rows }: { rows: [string, string][] }) {
 
 export type RecommendTab = "recommend" | "quote" | "order" | "deals" | "memory";
 
-export function ProductRecommend({ initial, initialTab, startManual }: {
+export function ProductRecommend({ initial, initialTab, startManual, writer = "" }: {
   initial: CorrectionList; initialTab?: RecommendTab; startManual?: boolean;
+  /** 로그인 계정의 영문 이름 — 질문지 고객 정보의 작성자(영업 담당) 기본값 */
+  writer?: string;
 }) {
   const [tab, setTab] = useState<RecommendTab>(initialTab ?? "recommend");
   const [quoteId, setQuoteId] = useState<number | null>(null);
@@ -833,7 +936,7 @@ export function ProductRecommend({ initial, initialTab, startManual }: {
   const [product, setProduct] = useState<"atc" | "other">("atc");
   const [phase, setPhase] = useState<"form" | "session">("form");
   const [answers, setAnswers] = useState<Record<string, string>>({});
-  const [atcIntake, setAtcIntake] = useState<AtcIntake>(emptyIntake);
+  const [atcIntake, setAtcIntake] = useState<AtcIntake>(() => emptyIntake(writer));
   const [atcStep, setAtcStep] = useState(0);
   const [showUpload, setShowUpload] = useState(false);
   const [meeting, setMeeting] = useState<AtcMeeting | null>(null);
@@ -866,6 +969,20 @@ export function ProductRecommend({ initial, initialTab, startManual }: {
   const skipped = useRef(new Set<string>());
   // 실제 제품으로 보여 외부 사양 검색을 이미 제안한 툴(같은 툴을 다시 묻지 않음)
   const specOffered = useRef(new Set<number>());
+  // 질문지 4번에서 검색 여부를 이미 물은 툴(대화에서 다시 묻지 않음) · 뒤에서 돌고 있는 검색
+  const wizardOffered = useRef(new Set<number>());
+  const [specJobs, setSpecJobs] = useState<SpecJob[]>([]);
+  const [specNotice, setSpecNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (!specNotice) return;
+    const t = setTimeout(() => setSpecNotice(null), 6000);
+    return () => clearTimeout(t);
+  }, [specNotice]);
+  // 검색 여부 팝업 — after: 고른 뒤 이어서 할 일(4번 [다음 →]이면 다음 질문으로)
+  const [specAsk, setSpecAsk] = useState<{ items: SpecCandidate[]; after: (() => void)[] } | null>(null);
+  const specAskRef = useRef(specAsk);
+  const specChecking = useRef(false);
+  useEffect(() => { specAskRef.current = specAsk; }, [specAsk]);
   const recRef = useRef<Recommendation | null>(null);
   // AI 가 마지막으로 제안한 모델 — '이걸로 할게'가 가리키는 대상
   const suggestedRef = useRef<string | null>(null);
@@ -936,7 +1053,8 @@ export function ProductRecommend({ initial, initialTab, startManual }: {
     setPreview(null);
     resetVersions();
     skipped.current = new Set();
-    specOffered.current = new Set();
+    specOffered.current = new Set(wizardOffered.current);
+    if (product === "atc") setIntake(autoUtilities(intakeRef.current));   // 미팅 파일로 채운 툴도 작동 방식으로 전기·공압 미리 선택
     setStage("asking");
     say(product === "atc"
       ? (m ? "미팅 질문지를 읽어 왼쪽에 정리했습니다. 비어 있는 것만 몇 가지 여쭤보고, 조건을 함께 확인한 뒤 툴체인저 후보를 찾겠습니다."
@@ -1207,26 +1325,86 @@ export function ProductRecommend({ initial, initialTab, startManual }: {
   async function applySpec(m: Extract<Msg, { type: "spec_result" }>, apply: boolean) {
     patch(m.id, apply ? "applied" : "skipped");
     if (apply) {
-      let next = intakeRef.current;
-      const tool = (next.tools[m.tool] ?? {}) as Record<string, unknown>;
-      const filled: string[] = [];
-      const evidence = [...((tool.spec_evidence as unknown[]) ?? [])];
-      for (const f of m.spec.fields) {
-        const p = toolPath(f.path);
-        if (!empty(readPath(next.tools[m.tool], p))) continue;
-        next = updateEntity(next, "tool", m.tool, p, f.value);
-        filled.push(f.label.split("(")[0].trim());
-        // JSON answer_evidence — 외부 공개 자료에서 온 값은 '추정'(출처 기록), 확정은 엔지니어
-        evidence.push({ field_path: f.path, normalized_value: f.value, raw_answer: f.evidence, status: "estimated",
-                        source_document: m.spec.sources[0]?.url ?? null, source_location: "외부 공개 자료 검색" });
-      }
-      next = updateEntity(next, "tool", m.tool, "spec_evidence", evidence);
+      const { next, filled } = fillFromSpec(intakeRef.current, m.tool, m.spec);
       setIntake(next);
       push({ role: "user", text: filled.length ? `빈 칸에 채우기 — ${filled.join(", ")}` : "채울 빈 칸이 없음" });
     } else {
       push({ role: "user", text: "쓰지 않기" });
     }
     await advance();
+  }
+
+  // ── 질문지 4번: 시중 제품 툴이면 넘어가기 전에 공개 사양 검색 여부(영업부 요청 2026-10-12) ──
+
+  async function checkSpec(intake: AtcIntake): Promise<SpecCandidate[]> {
+    const ev = await post<AtcOutput>("/atc/evaluate", { intake });
+    return (ev.real_products ?? []).filter((x) => !wizardOffered.current.has(x.index));
+  }
+
+  /** 아직 묻지 않은 시중 제품 툴이 있으면 검색 여부 팝업 — 고르면 after 실행. 없으면 바로 after. */
+  async function askSpec(after?: () => void) {
+    if (specAskRef.current) {                       // 이미 떠 있으면 고른 뒤 이어서
+      if (after) setSpecAsk((cur) => (cur ? { ...cur, after: [...cur.after, after] } : cur));
+      return;
+    }
+    if (specChecking.current) {
+      after?.();
+      return;
+    }
+    specChecking.current = true;
+    try {
+      const items = await checkSpec(intakeRef.current);
+      if (items.length) {
+        const next = { items, after: after ? [after] : [] };
+        specAskRef.current = next;
+        setSpecAsk(next);
+        return;
+      }
+    } catch {
+      /* 확인을 못 해도 질문은 계속 */
+    } finally {
+      specChecking.current = false;
+    }
+    after?.();
+  }
+  const specGate = () => new Promise<void>((resolve) => void askSpec(resolve));
+
+  function answerSpecAsk(search: boolean) {
+    const cur = specAskRef.current;
+    if (!cur) return;
+    decideSpec(cur.items, search);
+    specAskRef.current = null;
+    setSpecAsk(null);
+    cur.after.forEach((f) => f());
+  }
+
+  /** 검색하기로 하면 뒤에서 돌리고 질문은 계속 — 결과는 질문지 위(대화로 넘어가면 왼쪽)에서 확인 후 채운다. */
+  function decideSpec(items: SpecCandidate[], search: boolean) {
+    for (const x of items) wizardOffered.current.add(x.index);
+    if (!search) return;
+    setSpecNotice(`${items.map((x) => `‘${x.product}’`).join(", ")} 공개 사양 검색을 시작했습니다(1~2분). 끝나면 요약 팝업이 뜹니다 — `
+      + "그동안 크기·무게 등 검색으로 채울 칸은 막아 두고, 다른 질문은 계속 답하시면 됩니다.");
+    for (const x of items) {
+      setSpecJobs((js) => [...js.filter((j) => j.tool !== x.index), { tool: x.index, name: x.name, product: x.product, status: "running" }]);
+      post<SpecSearch>("/atc/spec-search", { product: x.product })
+        .then((spec) => setSpecJobs((js) => js.map((j) => (j.tool === x.index && j.status === "running" ? { ...j, status: "done", spec } : j))))
+        .catch((e: Error) => setSpecJobs((js) => js.map((j) => (j.tool === x.index && j.status === "running"
+          ? { ...j, status: "failed", error: e.message || "외부 AI 오류" } : j))));
+    }
+  }
+
+  const closeSpecJob = (tool: number) => setSpecJobs((js) => js.map((j) => (j.tool === tool ? { ...j, popped: true } : j)));
+  // 검색 중인 툴의 '검색으로 채울 수 있는 칸'은 막는다(사용자 2026-10-12 — 결과와 직접 입력이 엇갈리지 않게)
+  const specLock = (scope: string, index: number, path: string) =>
+    scope === "tool" && SPEC_FILL_PATHS.has(path) && specJobs.some((j) => j.tool === index && j.status === "running");
+  // 끝났는데 아직 고르지도 닫지도 않은 검색 — 한 번에 하나씩 팝업
+  const popupJob = specJobs.find((j) => j.status !== "running" && !j.state && !j.popped);
+
+  function applySpecJob(tool: number, apply: boolean) {
+    const job = specJobs.find((j) => j.tool === tool);
+    if (!job || job.state) return;
+    if (apply && job.spec) setIntake(fillFromSpec(intakeRef.current, tool, job.spec).next);
+    setSpecJobs((js) => js.map((j) => (j.tool === tool ? { ...j, state: apply ? "applied" : "skipped", popped: true } : j)));
   }
 
   // ── 자유 입력 — 단계에 따라 질문의 답 / 조건 보탬 / 대화·학습 요청 ──
@@ -1381,7 +1559,7 @@ export function ProductRecommend({ initial, initialTab, startManual }: {
         case "text": return [{ role: "assistant", text: m.text }];
         case "agent": return m.answer ? [{ role: "assistant", text: m.steps.length
           ? `${m.answer.trim()}\n${m.steps.map((x) => `${x.ok ? "✓" : "✗"} ${x.text}`).join("\n")}` : m.answer.trim() }] : [];
-        case "atcq": return [{ role: "assistant", text: `[질문] ${m.qs[0].question_ko}${m.qs[0].scope !== "project" ? ` (${m.qs.map((q) => q.entity_label).join(", ")})` : ""}` }];
+        case "atcq": return [{ role: "assistant", text: `[질문] ${questionTitle(m.qs[0])}${m.qs[0].scope !== "project" ? ` (${m.qs.map((q) => q.entity_label).join(", ")})` : ""}` }];
         case "qnaq": return [{ role: "assistant", text: `[질문] ${QNA.find((x) => x.key === m.key)?.q ?? ""}` }];
         case "confirm": return [{ role: "assistant", text: `[조건 확인]\n${m.lines.join("\n")}` }];
         case "offer": {
@@ -1501,7 +1679,7 @@ export function ProductRecommend({ initial, initialTab, startManual }: {
       const m: AtcMeeting = { meeting: ex.meeting, summary: ex.summary, notes: ex.notes, filename: file?.name };
       setIntake({ ...ex.intake, project: { ...ex.intake.project,
         customer_name: ex.intake.project.customer_name ?? ex.meeting.customer ?? undefined,
-        writer: ex.intake.project.writer ?? ex.meeting.writer ?? undefined,
+        writer: ex.intake.project.writer ?? ex.meeting.writer ?? (writer || undefined),   // 질문지에 없으면 로그인 계정 이름
         meeting_date: ex.intake.project.meeting_date ?? ex.meeting.date ?? undefined } });
       setMeeting(m);
       setShowUpload(false);
@@ -1526,7 +1704,9 @@ export function ProductRecommend({ initial, initialTab, startManual }: {
   function resetAll() {
     setAnswers({});
     answersRef.current = {};
-    setIntake(emptyIntake());
+    setIntake(emptyIntake(writer));
+    wizardOffered.current = new Set();
+    setSpecJobs([]);
     setAtcStep(0);
     setShowUpload(false);
     setMeeting(null);
@@ -1571,6 +1751,8 @@ export function ProductRecommend({ initial, initialTab, startManual }: {
       : "조건에 더할 내용을 적어 주세요 (Enter 보내기)";
 
   return (
+    <SpecLockContext.Provider value={specLock}>
+    <SpecAskContext.Provider value={() => void askSpec()}>
     <div className="scroll-thin h-full overflow-y-auto">
     <div className={cn("mx-auto flex w-full flex-col gap-4 px-4 py-6", session || tab === "quote" || tab === "order" || tab === "deals" ? "max-w-[1440px]" : "max-w-4xl")}>
       <header>
@@ -1630,6 +1812,7 @@ export function ProductRecommend({ initial, initialTab, startManual }: {
           ) : (
             <>
               <AtcWizard intake={atcIntake} setIntake={(f) => setIntake(f(intakeRef.current))} step={atcStep} setStep={setAtcStep}
+                         specGate={specGate}
                          busy={!!busy} onSubmit={() => { setMeeting(null); void startSession(null); }} />
               <div className="flex flex-wrap items-center gap-2 text-[12.5px] text-foreground-subtle">
                 <span>미팅 때 채운 질문지 파일이 있나요?</span>
@@ -1783,7 +1966,7 @@ export function ProductRecommend({ initial, initialTab, startManual }: {
                             {m.qs[0].kind === "followup" ? "앞 답에 따른 추가 질문" : "비워 둔 질문"}
                             {m.qs[0].scope !== "project" ? ` · ${m.qs.map((q) => q.entity_label).join(", ")}` : ""}
                           </span>
-                          <p className="font-semibold">{m.qs[0].question_ko}</p>
+                          <p className="font-semibold">{questionTitle(m.qs[0])}</p>
                           <p className="text-[12px] text-foreground-subtle">{m.qs[0].help_text_ko}</p>
                         </div>
                         {m.state ? (
@@ -1983,9 +2166,15 @@ export function ProductRecommend({ initial, initialTab, startManual }: {
       {tab === "deals" && <DealsTab onMeeting={setMeetingId} onOrder={(id) => { setOrderId(id); setTab("order"); }}
                                      onQuote={(id) => { setQuoteId(id); setTab("quote"); }} />}
       {meetingId && <MeetingInfo id={meetingId} onClose={() => setMeetingId(null)} />}
+      {/* 공개 사양 검색이 끝나면 어느 질문을 작성 중이든 요약 팝업(사용자 2026-10-12) */}
+      {specAsk ? <SpecAskPopup items={specAsk.items} onAnswer={answerSpecAsk} />
+        : popupJob && <SpecDonePopup job={popupJob} intake={atcIntake} onApply={applySpecJob} onClose={closeSpecJob} />}
+      {specNotice && !specAsk && !popupJob && <SpecNotice text={specNotice} onClose={() => setSpecNotice(null)} />}
       {tab === "memory" && <MemoryTab list={list} onReview={(id, a) => void review(id, a)} />}
       <ErrorBox error={error} />
     </div>
     </div>
+    </SpecAskContext.Provider>
+    </SpecLockContext.Provider>
   );
 }

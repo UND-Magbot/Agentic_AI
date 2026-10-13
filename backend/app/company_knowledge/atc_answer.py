@@ -12,7 +12,7 @@ import json
 import re
 from typing import Any
 
-from .atc_selection import _local
+from .atc_selection import CABLE_STD, _local
 from .product_recommend import _extract_json
 
 _UNKNOWN_RE = re.compile(r"^\s*(모름|몰라|모르겠|확인\s*필요|아직\s*몰|잘\s*모르)")
@@ -28,6 +28,24 @@ _SYSTEM = """너는 툴체인저 선정 질문에 대한 영업 담당자의 [�
 - 답이 '모름·확인 필요'이면 unknown 에 그 칸 path 를 넣는다.
 - 답이 질문과 상관없는 말(질문·잡담 등)이면 understood=false.
 {"values": {"<path>": 값}, "unknown": ["<path>"], "understood": true}"""
+
+
+# F07 케이블 — 화면은 '기본에서 연장할 길이'를 받는다(사용자 2026-10-12). 대화로 "2m 더 필요"·"2m 연장"이라고 하면
+# 기본 길이(C15: 4m·1m)를 더해 필요한 전체 길이로 저장한다(선정 규칙은 전체 길이로 판단).
+_CABLE_BASE = {"robots[].cables.master_to_controller_required_m": CABLE_STD["master_to_controlbox"]["length_m"],
+               "robots[].cables.controller_to_system_required_m": CABLE_STD["controlbox_to_robot_cabinet_or_plc"]["length_m"]}
+_EXTEND_RE = re.compile(r"연장|추가|더\s*(필요|길|늘)|늘려|\+\s*\d")
+
+
+def extension_to_total(values: dict[str, Any], text: str) -> dict[str, Any]:
+    """답에 '연장·추가·더'가 있으면 케이블 칸 숫자를 기본 길이 + 그 숫자로. 다른 칸은 그대로."""
+    if not _EXTEND_RE.search(text or ""):
+        return values
+    out = dict(values)
+    for path, base in _CABLE_BASE.items():
+        if isinstance(out.get(path), (int, float)) and not isinstance(out.get(path), bool):
+            out[path] = round(base + out[path], 2)
+    return out
 
 
 class AnswerError(Exception):
@@ -166,7 +184,7 @@ async def read_answer(question: dict[str, Any], text: str, *, chat) -> dict[str,
         raise AnswerError("답을 적어 주세요.")
     quick = _quick(fields, text)
     if quick is not None:
-        return quick
+        return {**quick, "values": extension_to_total(quick.get("values") or {}, text)}
     spec = [{"path": f["path"], "type": f["type"], "label": f.get("label_ko"), "unit": f.get("unit"),
              **({"options": _options(f)} if f.get("options") else {})} for f in fields]
     user = (f"[질문]\n{question.get('question_ko', '')}\n대상: {question.get('entity_label') or '프로젝트'}\n\n"
@@ -175,4 +193,5 @@ async def read_answer(question: dict[str, Any], text: str, *, chat) -> dict[str,
                                     num_predict=600))
     if not isinstance(data, dict):
         return {"values": {}, "unknown": [], "understood": False}
-    return clean(fields, data, text)
+    res = clean(fields, data, text)
+    return {**res, "values": extension_to_total(res.get("values") or {}, text)}
