@@ -267,8 +267,34 @@ class QuoteLineIn(BaseModel):
     commodity: str | None = Field(default=None, max_length=60)   # 품목(Commodity) — 예: Magbot ATC. 없으면 그대로 둠
     qty: int | None = Field(default=None, ge=0, le=100000)
     unit_price: float | None = Field(default=None, ge=0, lt=1e10)
+    usd: float | None = Field(default=None, ge=0, lt=1e8)          # 해외 견적 달러 단가(비우면 원화 ÷ 환율, 사용자 2026-10-13)
     remark: str = Field(default="", max_length=100)
     confirmed: bool | None = None                                # 조건부 수량(액세서리 v1.2)을 담당자가 확인
+    unit: str | None = Field(default=None, max_length=10)          # 수량 단위(MD·식·개월 …, 비우면 ea)
+    kind: Literal["extra", "note"] | None = None                  # note = 서술형 줄(항목명 commodity / 내용 name, 가격 없음)
+    block: str | None = Field(default=None, max_length=20)        # 묶음 id(B0·B1… 또는 화면의 새 묶음 임시 id, 사용자 2026-10-13)
+
+
+class QuoteSpecRowIn(BaseModel):
+    label: str = Field(default="", max_length=40)
+    value: str = Field(default="", max_length=300)
+
+
+class QuoteBlockIn(BaseModel):
+    """견적 본문 묶음 — items(소제목·소계) · option(합계 제외) · spec(항목명/내용) · text(서술형)."""
+    id: str = Field(default="", max_length=20)
+    type: Literal["items", "option", "spec", "text"]
+    title: str = Field(default="", max_length=60)
+    subtotal: bool = False
+    rows: list[QuoteSpecRowIn] = Field(default_factory=list, max_length=20)
+    text: str = Field(default="", max_length=300)
+
+
+class QuoteNegoIn(BaseModel):
+    """NEGO(할인) — 금액 또는 %. value 가 없으면 NEGO 를 뺀다."""
+    mode: Literal["amount", "percent"] = "amount"
+    value: float | None = Field(default=None, gt=0, lt=1e10)
+    label: str = Field(default="", max_length=40)
 
 
 class QuoteWorkIn(BaseModel):
@@ -282,6 +308,7 @@ class QuoteDeliveryIn(BaseModel):
     """납품 방식 1 택배 · 2 화물 직납(물류비) · 3 UND 인원 설치 납품(인건비) · 4 화물 + 설치(물류비+인건비)."""
     case: int | None = Field(default=None, ge=1, le=5)
     freight: float | None = Field(default=None, ge=0, lt=1e9)
+    block: str | None = Field(default=None, max_length=20)        # 물류비·인건비 줄을 넣을 묶음(기본 B0, 사용자 2026-10-13)
 
 
 class QuoteEditIn(BaseModel):
@@ -291,6 +318,8 @@ class QuoteEditIn(BaseModel):
     delivery: QuoteDeliveryIn | None = None
     work: QuoteWorkIn | None = None
     include_options: list[str] = Field(default_factory=list, max_length=10)
+    blocks: list[QuoteBlockIn] | None = Field(default=None, max_length=12)
+    nego: QuoteNegoIn | None = None
 
 
 @router.post("/quotes/draft", status_code=status.HTTP_201_CREATED)
@@ -347,6 +376,8 @@ async def quote_edit(qid: int, body: QuoteEditIn, current_user: User = Depends(g
     payload = body.model_dump(exclude_none=True)
     if body.lines is not None:
         payload["lines"] = [x.model_dump() for x in body.lines]
+    if "nego" in body.model_fields_set:                       # 보냈으면 비운 것(없음)도 'NEGO 빼기'로
+        payload["nego"] = body.nego.model_dump() if body.nego else None
     try:
         return await pr.quote_edit(qid, user_id=current_user.id, payload=payload)
     except pr.RecommendError as e:

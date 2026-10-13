@@ -23,6 +23,8 @@ import {
   markUnknown, updateEntity, type RecState,
 } from "./atc-recommend";
 import { ErrorBox, inputCls, primaryBtn, secondaryBtn } from "./proposal-actions";
+import { OPEN_APPROVALS_EVENT } from "./approval-alert";
+import { ApprovalRequests } from "./approval-requests";
 import { DealsTab } from "./deals-tab";
 import { InitialsPrompt } from "./initials-prompt";
 import { QuoteTab, savedContact } from "./quote-workspace";
@@ -918,12 +920,30 @@ function MeetRows({ rows }: { rows: [string, string][] }) {
 
 export type RecommendTab = "recommend" | "quote" | "order" | "deals" | "memory";
 
-export function ProductRecommend({ initial, initialTab, startManual, writer = "" }: {
-  initial: CorrectionList; initialTab?: RecommendTab; startManual?: boolean;
+export function ProductRecommend({ initial, initialTab, startManual, writer = "", initialSub }: {
+  initial: CorrectionList; initialTab?: RecommendTab; startManual?: boolean; initialSub?: "approvals";
   /** 로그인 계정의 영문 이름 — 질문지 고객 정보의 작성자(영업 담당) 기본값 */
   writer?: string;
 }) {
   const [tab, setTab] = useState<RecommendTab>(initialTab ?? "recommend");
+  // [검토·승인] 탭(사용자 2026-10-13, 처음 이름 [관리]) — 하위 탭 AI 학습 내용 관리 / 승인 요청. 관리자에게 온 대기 승인 요청 수는 1분마다 다시 본다
+  const [mgmtTab, setMgmtTab] = useState<"memory" | "approvals">(initialSub ?? "memory");
+  // 승인 요청 알림 팝업에서 [검토·승인에서 확인하기] — 이 화면에 이미 있으면 탭만 바꾼다
+  useEffect(() => {
+    const open = () => { setTab("memory"); setMgmtTab("approvals"); };
+    window.addEventListener(OPEN_APPROVALS_EVENT, open);
+    return () => window.removeEventListener(OPEN_APPROVALS_EVENT, open);
+  }, []);
+  const [appr, setAppr] = useState<{ admin: boolean; pending: number }>({ admin: false, pending: 0 });
+  useEffect(() => {
+    let alive = true;
+    const poll = () => fetch("/api/sales-deals/approvals/count", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null)).then((d) => { if (alive && d) setAppr({ admin: !!d.admin, pending: Number(d.pending) || 0 }); })
+      .catch(() => {});
+    poll();
+    const t = window.setInterval(poll, 60_000);
+    return () => { alive = false; window.clearInterval(t); };
+  }, []);
   const [quoteId, setQuoteId] = useState<number | null>(null);
   const [testSamples, setTestSamples] = useState<AtcTestSample[] | null>(null);
   const [showTest, setShowTest] = useState(false);
@@ -1765,7 +1785,7 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
 
       {/* 탭: 제품 추천 / AI 학습 내용 관리 */}
       <div role="tablist" aria-label="회사 제품 추천 화면" className="flex gap-1 border-b border-border">
-        {([["recommend", "제품 추천"], ["quote", "견적서"], ["order", "수주 진행"], ["deals", "제품 영업 건 관리"], ["memory", "AI 학습 내용 관리"]] as const).map(([key, label]) => {
+        {([["recommend", "제품 추천"], ["quote", "견적서"], ["order", "수주 진행"], ["deals", "제품 영업 건 관리"], ["memory", "검토·승인"]] as const).map(([key, label]) => {
           const pending = list.items.filter((c) => c.review_status === "pending").length;
           return (
             <button key={key} type="button" role="tab" aria-selected={tab === key} onClick={() => setTab(key)}
@@ -1779,7 +1799,10 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
                 </span>
               )}
               {key === "memory" && list.approver && pending > 0 && (
-                <span className="ml-1 rounded-full bg-amber-500 px-1.5 py-0.5 text-[11px] font-semibold text-white" title="승인 대기">{pending}</span>
+                <span className="ml-1 rounded-full bg-amber-500 px-1.5 py-0.5 text-[11px] font-semibold text-white" title="AI 학습 승인 대기">{pending}</span>
+              )}
+              {key === "memory" && appr.admin && appr.pending > 0 && (
+                <span className="ml-1 rounded-full bg-red-500 px-1.5 py-0.5 text-[11px] font-semibold text-white" title="나에게 온 승인 요청">+{appr.pending}</span>
               )}
             </button>
           );
@@ -2170,7 +2193,26 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
       {specAsk ? <SpecAskPopup items={specAsk.items} onAnswer={answerSpecAsk} />
         : popupJob && <SpecDonePopup job={popupJob} intake={atcIntake} onApply={applySpecJob} onClose={closeSpecJob} />}
       {specNotice && !specAsk && !popupJob && <SpecNotice text={specNotice} onClose={() => setSpecNotice(null)} />}
-      {tab === "memory" && <MemoryTab list={list} onReview={(id, a) => void review(id, a)} />}
+      {tab === "memory" && (
+        <>
+          {/* [검토·승인] 하위 탭 — 승인 요청은 관리자에게만 */}
+          <div role="tablist" aria-label="검토·승인" className="flex flex-wrap gap-1.5">
+            {([["memory", "AI 학습 내용 관리"], ...(appr.admin ? [["approvals", "승인 요청"] as const] : [])] as const).map(([k, label]) => (
+              <button key={k} type="button" role="tab" aria-selected={mgmtTab === k} onClick={() => setMgmtTab(k)}
+                      className={cn("rounded-full border px-3 py-1 text-[12.5px] font-semibold transition-colors",
+                        mgmtTab === k ? "border-accent bg-accent text-white" : "border-border text-foreground-muted hover:text-foreground")}>
+                {label}
+                {k === "approvals" && appr.pending > 0 && (
+                  <span className={cn("ml-1.5 rounded-full px-1.5 text-[11px]", mgmtTab === k ? "bg-white/25" : "bg-red-500 text-white")}>+{appr.pending}</span>
+                )}
+              </button>
+            ))}
+          </div>
+          {mgmtTab === "approvals" && appr.admin
+            ? <ApprovalRequests onCount={(n) => setAppr((a) => ({ ...a, pending: n }))} />
+            : <MemoryTab list={list} onReview={(id, a) => void review(id, a)} />}
+        </>
+      )}
       <ErrorBox error={error} />
     </div>
     </div>

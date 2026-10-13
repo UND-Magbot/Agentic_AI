@@ -188,7 +188,10 @@ async def get_deal(db: AsyncSession, deal_id: int, today: dt.date) -> dict:
     rec_id = (await db.execute(text("SELECT recommendation_id FROM product_proposals WHERE id = :p"),
                                {"p": r["proposal_id"]})).scalar() if r["proposal_id"] else None
     row = view(_row(r), today)
+    from .approvals import deal_requests              # 입금 예정일 연장 요청(회차별 최근, 사용자 2026-10-13)
+
     return {**row, "events": events, "quotes": await deal_quotes(db, r["proposal_id"], r["id"]),
+            "due_requests": await deal_requests(db, r["id"]),
             "recommendation_id": rec_id, "history": _mark_updated(row, (await _history(db, r["id"])).get(r["id"], []))}
 
 
@@ -304,7 +307,10 @@ def _quote_from_items(items: list[dict], quote_date: dt.date, vat_included: bool
     for it in items:
         amount = it["unit_price"] * it["qty"] if it.get("unit_price") is not None and it.get("qty") is not None else None
         lines.append({"name": it["name"], "unit_price": it.get("unit_price"), "qty": it.get("qty"),
-                      "qty_text": None, "amount": amount})
+                      "qty_text": None, "amount": amount,
+                      **({"commodity": str(it["commodity"])[:60]} if it.get("commodity") else {}),
+                      **({"unit": str(it["unit"])[:8]} if it.get("unit") else {}),
+                      **({"statement": bool(it["statement"])} if "statement" in it else {})})
     amounts = [x["amount"] for x in lines if x["amount"] is not None]
     return {"revision": 1, "date": quote_date.isoformat(), "sent_date": None,
             "amount": sum(amounts) if amounts else None, "vat_included": vat_included,
@@ -414,12 +420,52 @@ async def quote_replaced(db: AsyncSession, deal_id: int, user_id: int | None, p:
                                                        "file": p["file"], "latest": latest})
 
 
-async def set_won(db: AsyncSession, deal_id: int, user_id: int | None, won: bool | None, day: dt.date | None) -> None:
+def for_statement(ln: dict) -> bool:
+    """거래명세서에 넣을 줄인지 — 기본 품목 묶음의 제품 줄만(사용자 2026-10-13). 사용자 지정 묶음·옵션·물류비·설치 인건비·
+    서술형·NEGO 는 빼고, 묶음·종류 표시가 없는 예전 견적 줄은 품목 줄이면 넣는다."""
+    return ln.get("row") is None and ln.get("block", "B0") == "B0" and ln.get("kind") not in ("work", "freight", "note")
+
+
+def snapshot_items(lines: list[dict]) -> list[dict]:
+    """발행 기록의 줄 → 영업 건 품목 — 합계에 들어가는 줄(품목·NEGO)만. AI 견적은 desc, 첨부 견적은 name."""
+    return [{"name": ln.get("name") or ln.get("desc") or "", "unit_price": ln.get("unit_price"), "qty": ln.get("qty"),
+             **({"commodity": ln["commodity"]} if ln.get("commodity") else {}), **({"unit": ln["unit"]} if ln.get("unit") else {}),
+             **({"statement": for_statement(ln)} if "block" in ln or ln.get("row") == "nego" else {})}
+            for ln in lines or [] if ln.get("row") in (None, "nego")]
+
+
+async def set_won(db: AsyncSession, deal_id: int, user_id: int | None, won: bool | None, day: dt.date | None,
+                  pick: dict | None = None) -> None:
+    """수주 상태. 수주 확정 때 pick = {quote_id, revision} 이면 그 판으로 수주(사용자 2026-10-13, 영업팀 요청 15번 —
+    2차를 냈어도 고객이 1차로 발주하면 1차): 영업 건 견적(품목·금액·번호)을 그 판으로 바꾸고, 그 판이 '수주 중'으로 보인다."""
     d = await _lock(db, deal_id)
     if d["kind"] == "shipment_only":
         raise DealError("견적 없는 출하 건은 수주 상태가 없습니다.")
-    await _save(db, deal_id, won=won, won_date=(day or dt.date.today()) if won else None)
-    await _log(db, deal_id, user_id, "won", {"from": d["won"], "to": won, "date": _iso(day)})
+    fields: dict[str, Any] = {"won": won, "won_date": (day or dt.date.today()) if won else None}
+    picked = None
+    if won and pick and pick.get("quote_id") is not None:
+        docs = await deal_quotes(db, d.get("proposal_id"), deal_id)
+        doc = next((q for q in docs if q["id"] == pick["quote_id"]), None)
+        if not doc:
+            raise DealError("이 영업 건의 견적서가 아닙니다.")
+        raw = (await db.execute(text("SELECT history FROM product_quotes WHERE id = :i"), {"i": doc["id"]})).scalar()
+        hist = json.loads(raw) if isinstance(raw, str) else (raw or [])
+        h = next((x for x in hist if x.get("revision") == pick.get("revision")), None)
+        if not h:
+            raise DealError("고른 견적서 판을 찾을 수 없습니다.")
+        picked = _issue_no(h)
+        cur = d.get("quote") or {}
+        if picked and picked != cur.get("no"):
+            items = snapshot_items(h.get("lines") or [])
+            if not items:
+                raise DealError("고른 견적서 판에 품목이 없습니다.")
+            issued = str(h.get("issued_at") or "")[:10]
+            q = _quote_from_items(items, dt.date.fromisoformat(issued) if issued else dt.date.today(), False,
+                                  h.get("currency") or cur.get("currency") or "KRW", picked)
+            fields["quote"] = {**q, "revision": int(h.get("revision") or 0) + 1, "sent_date": cur.get("sent_date")}
+    await _save(db, deal_id, **fields)
+    await _log(db, deal_id, user_id, "won", {"from": d["won"], "to": won, "date": _iso(day),
+                                              **({"no": picked} if picked else {})})
     await db.commit()
 
 
@@ -488,6 +534,19 @@ async def statement_draft(db: AsyncSession, deal_id: int, initials: str | None =
     return {**st, "initials": typed or dn.clean_initials(initials) or dn.clean_initials(st.get("initials")) or ""}
 
 
+def statement_name(it: dict) -> tuple[str, str]:
+    """영업 건 견적 품목 → 거래명세서 (품명, 규격). 견적서 품목 칸(commodity)이 있으면 품명 = 품목, 규격 = 견적서 규격
+    (사용자 2026-10-13: 방역 로봇 등 수기 견적이 명세서에서 '교육 포함'처럼 나오던 것). 툴체인저 기본 품목(Magbot ATC 등)이거나
+    품목이 없으면(예전 견적·첨부 견적) 지금 명세서 양식대로 규격 글에서 나눈다('TCV1 MASTER T.C' / 'Payload 10Kg')."""
+    from ..company_knowledge.quote_xlsx import ATC_ACC_COMMODITY, ATC_COMMODITY, SERVICE_COMMODITY
+
+    com = str(it.get("commodity") or "").strip()
+    if not com or com in (ATC_COMMODITY, ATC_ACC_COMMODITY, SERVICE_COMMODITY):
+        return sx.split_name(it.get("name") or "")
+    spec = " ".join(x.strip().lstrip("-").strip() for x in sx.tidy_name(it.get("name") or "").splitlines() if x.strip())
+    return com, spec
+
+
 async def _statement_draft(db: AsyncSession, deal_id: int) -> dict:
     d = _row((await db.execute(text(f"SELECT {COLS} FROM sales_deals WHERE id = :i"), {"i": deal_id})).mappings().first()
              or _missing())
@@ -498,8 +557,10 @@ async def _statement_draft(db: AsyncSession, deal_id: int) -> dict:
         return {**saved["draft"], "_typed": True}
     items = []
     for it in (d.get("quote") or {}).get("items") or []:
-        name, spec = sx.split_name(it.get("name") or "")
-        items.append({"name": name, "spec": spec, "qty": it.get("qty"), "unit_price": it.get("unit_price"), "note": ""})
+        if it.get("statement") is False:                  # 기본 품목 묶음의 제품 줄만(사용자 2026-10-13)
+            continue
+        name, spec = statement_name(it)
+        items.append({"name": name, "spec": spec, "qty": it.get("qty"), "unit_price": it.get("unit_price"), "note": ""})   # 단위는 명세서에 안 넣음(사용자 2026-10-13)
     buyer = await statement_buyer(db, d.get("customer")) or {"reg_no": "", "name": d.get("customer") or "", "ceo": "", "address": ""}
     return {"no": "", "date": kst_today().isoformat(), "buyer": buyer, "items": items}
 
@@ -622,8 +683,9 @@ async def reset_to_quote(db: AsyncSession, deal_id: int, user_id: int | None) ->
     return keys
 
 
-async def set_terms(db: AsyncSession, deal_id: int, user_id: int | None, raw: list[dict]) -> None:
-    """결제 조건(선금·중도금·잔금 %·시점·예정 입금일) 저장 — 사용자 2026-10-08. 이미 확인한 회차의 % 는 바꾸지 않는다."""
+async def set_terms(db: AsyncSession, deal_id: int, user_id: int | None, raw: list[dict], *, admin: bool = True) -> None:
+    """결제 조건(선금·중도금·잔금 %·시점·예정 입금일) 저장 — 사용자 2026-10-08. 이미 확인한 회차의 % 는 바꾸지 않는다.
+    입금 예정일이 지난 회차의 예정일은 관리자만 바꾼다(admin=False 면 거절 — 일반 직원은 연장 요청, 사용자 2026-10-13)."""
     d = await _lock(db, deal_id)
     if not d.get("statement"):
         raise DealError("거래명세서를 먼저 발급해 주세요.")
@@ -633,6 +695,12 @@ async def set_terms(db: AsyncSession, deal_id: int, user_id: int | None, raw: li
         raise DealError(str(e)) from e
     done = {p.get("term") for p in d["payments"] if p.get("term") is not None}
     old = d.get("pay_terms") or []
+    if not admin:
+        for t in flow.overdue(d, kst_today()):
+            i = t["index"]
+            if i >= len(ts) or ts[i].get("expected_date") != t.get("expected_date"):
+                raise DealError(f"{t['label']} 회차는 입금 예정일({t['expected_date']})이 지나 관리자만 바꿀 수 있습니다. "
+                                "[기한 연장 요청]으로 관리자에게 요청해 주세요.", 403)
     for i in done:
         if i >= len(ts) or i >= len(old) or ts[i]["pct"] != old[i].get("pct") or ts[i]["label"] != old[i].get("label"):
             raise DealError("입금 확인한 회차의 구분·비율은 바꿀 수 없습니다(예정일만 바꿀 수 있음). 확인을 먼저 취소해 주세요.")

@@ -88,6 +88,9 @@ class DealIn(BaseModel):
 class WonIn(BaseModel):
     won: bool | None
     date: dt.date | None = None
+    # 수주할 견적서 판(사용자 2026-10-13, 영업팀 요청 15번) — 비우면 지금(최근) 견적 그대로
+    quote_id: int | None = None
+    revision: int | None = Field(default=None, ge=0)
 
 
 class InvoiceIn(BaseModel):
@@ -132,7 +135,7 @@ class OrderItemIn(BaseModel):
     name: str = Field(default="", max_length=80)
     spec: str = Field(default="", max_length=80)
     qty: float | None = Field(default=None, ge=0, le=1_000_000)
-    unit_price: float | None = Field(default=None, ge=0, le=MONEY_MAX)
+    unit_price: float | None = Field(default=None, ge=-MONEY_MAX, le=MONEY_MAX)   # 음수 = NEGO(할인) 줄(사용자 2026-10-13)
     note: str = Field(default="", max_length=60)
     unit: str = Field(default="", max_length=10)
 
@@ -141,7 +144,7 @@ class StatementItemIn(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     spec: str = Field(default="", max_length=80)
     qty: float = Field(gt=0, le=1_000_000)
-    unit_price: float = Field(ge=0, le=MONEY_MAX)
+    unit_price: float = Field(ge=-MONEY_MAX, le=MONEY_MAX)  # 음수 = 견적서 NEGO(할인) 줄(사용자 2026-10-13)
     note: str = Field(default="", max_length=60)
     unit: str = Field(default="", max_length=10)            # 'SET' — 세트로 묶어서 발급할 때(수량 칸에 '1 SET')
 
@@ -187,6 +190,73 @@ def require_admin(user: User = Depends(require_sales)) -> User:
     if is_admin(user):
         return user
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="관리자만 할 수 있습니다.")
+
+
+class DueExtendIn(BaseModel):
+    """입금 예정일 연장 — 관리자는 바로(extend), 일반 직원은 받을 관리자를 골라 요청(request)."""
+    index: int = Field(ge=0, le=10)
+    date: dt.date
+    reason: str = Field(default="", max_length=500)
+    recipients: list[int] = Field(default_factory=list, max_length=20)
+
+
+class DecideIn(BaseModel):
+    approve: bool
+    date: dt.date | None = None                 # 승인 때 고친 날짜(비우면 요청한 날짜)
+    note: str = Field(default="", max_length=500)
+
+
+@router.get("/approvals/admins")
+async def approval_admins(_: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    """연장 요청을 받을 수 있는 관리자 목록(요청 창의 체크 목록)."""
+    from .sales_deals import approvals as ap
+
+    return {"admins": await ap.admins(db)}
+
+
+@router.get("/approvals/count")
+async def approval_count(user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    """나에게 온 대기 요청 수 — [검토·승인] 탭 빨간 숫자. 관리자가 아니면 0."""
+    from .sales_deals import approvals as ap
+
+    if not is_admin(user):
+        return {"admin": False, "pending": 0, "me": user.id, "items": []}
+    # items = 나에게 온 대기 요청 요약 — 관리자 화면 팝업이 아직 안 본 요청을 한 번 띄운다
+    return {"admin": True, "pending": await ap.pending_count(db, user.id), "me": user.id, "items": await ap.pending_brief(db, user.id)}
+
+
+class SeenIn(BaseModel):
+    ids: list[int] = Field(default_factory=list, max_length=100)
+
+
+@router.post("/approvals/seen")
+async def approval_seen(body: SeenIn, user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
+    """승인 요청 팝업을 봤음 — 다음부터 이 요청은 팝업에 안 뜬다(DB 기록, 사용자 2026-10-13)."""
+    from .sales_deals import approvals as ap
+
+    return {"marked": await ap.mark_alerted(db, user.id, body.ids)}
+
+
+@router.get("/approvals")
+async def approval_list(user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
+    """[검토·승인 > 승인 요청] — 대기 중(나에게 온 것 먼저) + 최근 처리 내역. 관리자만."""
+    from .sales_deals import approvals as ap
+
+    return await ap.list_requests(db, user.id)
+
+
+@router.post("/approvals/{request_id}/decide")
+async def approval_decide(request_id: int, body: DecideIn, user: User = Depends(require_admin),
+                          db: AsyncSession = Depends(get_db)) -> dict:
+    """승인(날짜 조정 가능)·거절(사유) — 승인하면 그 회차 입금 예정일이 바로 바뀐다."""
+    from .sales_deals import approvals as ap
+
+    try:
+        await ap.decide(db, request_id, user.id, body.approve, body.date, body.note)
+    except svc.DealError as e:
+        await db.rollback()
+        raise _fail(e) from e
+    return await ap.list_requests(db, user.id)
 
 
 @router.get("")
@@ -284,7 +354,8 @@ async def set_won(deal_id: int, body: WonIn, user: User = Depends(require_sales)
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="수주까지 못 간 건은 [드랍]으로 처리해 주세요.")
     if body.won is None and not is_admin(user):                  # 수주를 미확인으로 되돌리기는 관리자만
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="미확인으로 되돌리기는 관리자만 할 수 있습니다.")
-    return await _act(db, deal_id, svc.set_won(db, deal_id, user.id, body.won, body.date))
+    pick = {"quote_id": body.quote_id, "revision": body.revision} if body.quote_id is not None else None
+    return await _act(db, deal_id, svc.set_won(db, deal_id, user.id, body.won, body.date, pick))
 
 
 class TermIn(BaseModel):
@@ -323,7 +394,25 @@ class DropIn(BaseModel):
 async def set_terms(deal_id: int, body: TermsIn, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
     """결제 조건 — 선금·중도금·잔금 %(합 100)·시점·예정 입금일(사용자 2026-10-08)."""
     raw = [{**t.model_dump(), "expected_date": t.expected_date.isoformat() if t.expected_date else None} for t in body.terms]
-    return await _act(db, deal_id, svc.set_terms(db, deal_id, user.id, raw))
+    return await _act(db, deal_id, svc.set_terms(db, deal_id, user.id, raw, admin=is_admin(user)))
+
+
+@router.post("/{deal_id}/due-extend")
+async def due_extend(deal_id: int, body: DueExtendIn, user: User = Depends(require_admin),
+                     db: AsyncSession = Depends(get_db)) -> dict:
+    """입금 예정일이 지난 회차의 예정일 연장 — 관리자만(고객사와 협의한 날짜)."""
+    from .sales_deals import approvals as ap
+
+    return await _act(db, deal_id, ap.extend_due(db, deal_id, user.id, body.index, body.date, body.reason))
+
+
+@router.post("/{deal_id}/due-request")
+async def due_request(deal_id: int, body: DueExtendIn, user: User = Depends(require_sales),
+                      db: AsyncSession = Depends(get_db)) -> dict:
+    """입금 예정일 연장 요청 — 받을 관리자(recipients)를 골라 보낸다. 관리자는 [기한 연장]으로 바로 바꾸면 된다."""
+    from .sales_deals import approvals as ap
+
+    return await _act(db, deal_id, ap.request_extend(db, deal_id, user.id, body.index, body.date, body.reason, body.recipients))
 
 
 @router.post("/{deal_id}/confirm-term")
@@ -785,7 +874,7 @@ async def order_agent_turn(deal_id: int, body: OrderAgentIn, user: User = Depend
         async with SessionLocal() as sdb:
             async def set_case(terms: list) -> None:     # 대화에서 받은 결제 조건 저장(사용자 2026-10-08)
                 try:
-                    await svc.set_terms(sdb, deal_id, user.id, terms)
+                    await svc.set_terms(sdb, deal_id, user.id, terms, admin=is_admin(user))
                 except svc.DealError:
                     await sdb.rollback()
                     raise

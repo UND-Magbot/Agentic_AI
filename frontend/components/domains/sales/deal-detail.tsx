@@ -3,13 +3,13 @@
 // 삭제·되돌리기·취소(기록을 지우는 일)는 관리자만 — 버튼을 관리자에게만 보이고, 실제 막는 것은 backend(사용자 2026-10-08).
 "use client";
 
-import { createContext, useContext, useEffect, useState } from "react";
+import { Fragment, createContext, useContext, useEffect, useState } from "react";
 import { DealMeetingDialog, hasMeeting } from "@/components/domains/sales/deal-meeting";
 import { DownloadDialog, PreviewDialog, savedContact } from "@/components/domains/sales/quote-workspace";
 import { Icon } from "@/components/shared/ui/icon";
 import { QuoteUploadDialog } from "@/components/domains/sales/quote-upload-dialog";
 import { ACTION_LABEL, Field, INPUT, Muted, StageChip, dealRequest, eventDetail, quoteVer, shortDate, stamp, todayIso, won } from "@/components/domains/sales/deal-format";
-import type { DealEvent, DealRow, DealShipment, PoCompare } from "@/lib/shared/sales-deals";
+import type { ApprovalAdmin, ApprovalRequest, DealEvent, DealRow, DealShipment, PoCompare } from "@/lib/shared/sales-deals";
 import { cn } from "@/lib/shared/utils";
 
 const STEPS = ["제품 추천 확정", "견적", "수주", "거래명세서", "출하", "입금 완료"] as const;
@@ -213,7 +213,7 @@ export function DealDetail({ row, admin = false, onClose, onChanged, onMeeting, 
           )}
           {deal.statement && <StatementDoc deal={deal} />}
 
-          {!isShipOnly && deal.flow?.terms.length ? <TermsView deal={deal} /> : !isShipOnly && (
+          {!isShipOnly && deal.flow?.terms.length ? <TermsView deal={deal} busy={busy} act={act} /> : !isShipOnly && (
             <Section title="결제 회차">
               {deal.pay_terms.length ? (
                 <ul className="flex flex-wrap gap-2">
@@ -306,23 +306,136 @@ function dueText(iso: string): string {
   return `${y}년 ${m}월 ${d}일까지`;
 }
 
+/** 입금기한 조정 칸 — 지난 회차: 관리자 [기한 연장] / 일반 직원 [기한 연장 요청], 요청 상태(대기·승인·거절) 표시(사용자 2026-10-13) */
+function DueStatus({ late, req, busy, open, onOpen }: {
+  late: boolean; req?: ApprovalRequest; busy: boolean; open: boolean; onOpen: () => void;
+}) {
+  const admin = useContext(AdminCtx);
+  const pending = req?.status === "pending";
+  return (
+    <div className="flex flex-col items-start gap-1 text-[11.5px]">
+      {pending && (
+        <span className="rounded bg-amber-500/12 px-1.5 py-0.5 font-semibold text-amber-700 dark:text-amber-300"
+              title={`요청 ${req.requested_by ?? ""} · 사유: ${req.reason}`}>
+          연장 요청 중 · 희망 {shortDate(req.requested_due)} · {req.recipients.join(", ")}
+        </span>
+      )}
+      {req?.status === "approved" && !late && (
+        <span className="text-emerald-700 dark:text-emerald-300">승인됨 → {shortDate(req.decided_due)}{req.decided_by ? ` (${req.decided_by})` : ""}</span>
+      )}
+      {req?.status === "rejected" && (
+        <span className="text-red-600 dark:text-red-400" title={req.decision_note}>거절됨{req.decided_by ? ` (${req.decided_by})` : ""} · {req.decision_note}</span>
+      )}
+      {late && (admin || !pending) && (
+        <button type="button" disabled={busy} onClick={onOpen}
+                className={cn("rounded-md border px-2 py-0.5 font-semibold disabled:opacity-40",
+                  admin ? "border-accent/60 text-accent hover:bg-accent/5" : "border-red-500/50 text-red-700 hover:bg-red-500/5 dark:text-red-300")}>
+          {open ? "닫기" : admin ? "기한 연장" : "기한 연장 요청"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** 기한 연장 창 — 관리자는 새 예정일·사유로 바로 바꾸고, 일반 직원은 받을 관리자를 체크해 요청을 보낸다 */
+function DueForm({ due, label, index, busy, act, onDone }: {
+  due: string; label: string; index: number; busy: boolean; act: Act; onDone: () => void;
+}) {
+  const admin = useContext(AdminCtx);
+  const plus14 = () => { const d = new Date(); d.setDate(d.getDate() + 14); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+  const [date, setDate] = useState(plus14());
+  const [reason, setReason] = useState("");
+  const [admins, setAdmins] = useState<ApprovalAdmin[] | null>(null);
+  const [to, setTo] = useState<Set<number>>(new Set());
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (admin) return;
+    let alive = true;
+    fetch("/api/sales-deals/approvals/admins", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error())))
+      .then((d) => { if (alive) setAdmins(d.admins as ApprovalAdmin[]); })
+      .catch(() => { if (alive) setLoadErr("관리자 목록을 불러오지 못했습니다. 잠시 뒤 다시 열어 주세요."); });
+    return () => { alive = false; };
+  }, [admin]);
+
+  const today = todayIso();
+  const dateOk = !!date && date > today && (!due || date > due);
+  const canSend = dateOk && !busy && (admin || (reason.trim().length > 0 && to.size > 0));
+  const send = async () => {
+    const ok = admin
+      ? await act("due-extend", { index, date, reason: reason.trim() })
+      : await act("due-request", { index, date, reason: reason.trim(), recipients: [...to] });
+    if (ok) onDone();
+  };
+
+  return (
+    <div className="flex flex-col gap-2 rounded-xl border border-border bg-surface p-3 text-[12.5px]">
+      <p className="font-semibold text-foreground">
+        {label} 입금기한 {admin ? "연장" : "연장 요청"}
+        <span className="ml-1.5 font-normal text-foreground-muted">지금 {due ? dueText(due) : "미정"}</span>
+      </p>
+      <div className="grid gap-2 md:grid-cols-[170px_1fr]">
+        <Field label={admin ? "새 입금 예정일" : "희망 입금 예정일"}>
+          <input type="date" value={date} min={today} onChange={(e) => setDate(e.target.value)} className={INPUT} />
+        </Field>
+        <Field label={admin ? "사유 (선택)" : "사유 *"}>
+          <input value={reason} maxLength={500} onChange={(e) => setReason(e.target.value)} className={INPUT}
+                 placeholder="예: 고객사와 협의 — 11월 말 일괄 입금 예정" />
+        </Field>
+      </div>
+      {!dateOk && date && <p className="text-[11.5px] text-red-600 dark:text-red-400">새 예정일은 오늘과 지금 예정일보다 뒤여야 합니다.</p>}
+      {!admin && (
+        <div className="flex flex-col gap-1">
+          <span className="text-[12px] font-semibold text-foreground">받을 관리자 * <span className="font-normal text-foreground-subtle">(여러 명 고를 수 있음)</span></span>
+          {loadErr ? <span className="text-[11.5px] text-red-600 dark:text-red-400">{loadErr}</span> : !admins ? <Muted>불러오는 중…</Muted> : (
+            <div className="flex flex-wrap gap-1.5">
+              {admins.map((a) => (
+                <label key={a.id} className={cn("inline-flex cursor-pointer items-center gap-1.5 rounded-lg border px-2.5 py-1",
+                  to.has(a.id) ? "border-accent bg-accent/[0.07] text-accent" : "border-border text-foreground-muted hover:bg-foreground/[0.03]")}>
+                  <input type="checkbox" checked={to.has(a.id)}
+                         onChange={(e) => setTo((s) => { const n = new Set(s); if (e.target.checked) n.add(a.id); else n.delete(a.id); return n; })} />
+                  {a.name}
+                  <span className="text-[11px] text-foreground-subtle">{a.role === "superadmin" ? "최고 관리자" : "영업 관리자"}</span>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <PrimaryBtn disabled={!canSend} onClick={() => void send()}>{admin ? "기한 연장" : "요청 보내기"}</PrimaryBtn>
+        <GhostBtn disabled={busy} onClick={onDone}>취소</GhostBtn>
+        <span className="text-[11.5px] text-foreground-subtle">
+          {admin ? "바로 바뀌고 변경 이력에 남습니다. 이 회차에 온 연장 요청이 있으면 이 날짜로 승인 처리됩니다."
+            : "관리자가 [검토·승인 > 승인 요청]에서 승인하면 예정일이 바뀝니다."}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 /** 결제 조건 회차 — 선금·중도금·잔금마다 비율·시점·금액(공급가액)·입금기한·확인 여부(사용자 2026-10-08: 몇 월까지 입금인지 보이게).
  *  입금 확인은 수주 진행 화면에서 버튼으로. */
-function TermsView({ deal }: { deal: DealRow }) {
+function TermsView({ deal, busy, act }: { deal: DealRow; busy: boolean; act: Act }) {
   const late = new Map((deal.flow?.overdue ?? []).map((t) => [t.index, t.days]));
+  const reqs = new Map((deal.due_requests ?? []).map((r) => [r.term_index, r]));
+  const [open, setOpen] = useState<number | null>(null);
+  const showCol = late.size > 0 || reqs.size > 0;
   return (
     <Section title="결제 조건 · 입금기한 (공급가액)">
       <table className="w-full border-collapse text-[12.5px]">
         <thead>
           <tr className="border-b border-border text-left text-[11.5px] text-foreground-muted">
-            {["회차", "시점", "금액", "입금기한", "입금"].map((h) => (
+            {["회차", "시점", "금액", "입금기한", "입금", ...(showCol ? ["기한 조정"] : [])].map((h) => (
               <th key={h} className={cn("whitespace-nowrap px-3 py-1.5 font-semibold", h === "금액" && "text-right")}>{h}</th>
             ))}
           </tr>
         </thead>
         <tbody>
           {deal.flow!.terms.map((t) => (
-            <tr key={t.index} className={cn("border-b border-border/60 last:border-0",
+            <Fragment key={t.index}>
+            <tr className={cn("border-b border-border/60 last:border-0",
               t.confirmed ? "bg-emerald-500/[0.06]" : late.has(t.index) && "bg-red-500/[0.07]")}>
               <td className="whitespace-nowrap px-3 py-1.5"><b>{t.label} {t.pct}%</b></td>
               <td className="px-3 py-1.5 text-foreground-muted">{t.when || <Muted>-</Muted>}</td>
@@ -334,7 +447,20 @@ function TermsView({ deal }: { deal: DealRow }) {
               <td className={cn("whitespace-nowrap px-3 py-1.5", t.confirmed ? "text-emerald-700 dark:text-emerald-300" : "text-foreground-subtle")}>
                 {t.confirmed ? `✓ ${shortDate(t.paid_date)} 입금` : "입금 전"}
               </td>
+              {showCol && (
+                <td className="px-3 py-1.5">
+                  <DueStatus late={late.has(t.index)} req={reqs.get(t.index)} busy={busy} open={open === t.index}
+                             onOpen={() => setOpen(open === t.index ? null : t.index)} />
+                </td>
+              )}
             </tr>
+            {open === t.index && late.has(t.index) && (
+              <tr><td colSpan={6} className="px-3 pb-2.5">
+                <DueForm due={t.expected_date ?? ""} label={`${t.label} ${t.pct}%`} busy={busy} act={act} index={t.index}
+                         onDone={() => setOpen(null)} />
+              </td></tr>
+            )}
+            </Fragment>
           ))}
         </tbody>
       </table>
@@ -361,6 +487,14 @@ function fileSize(n: number): string {
   return n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)}MB` : `${Math.max(1, Math.round(n / 1024))}KB`;
 }
 
+/** 이 건에서 발행한 견적서 판 전부(최근 먼저) — 수주할 판 고르기용 */
+function issuedVersions(deal: DealRow) {
+  return (deal.quotes ?? []).flatMap((q) => q.issues.map((h) => ({
+    key: `${q.id}:${h.revision}`, quote_id: q.id, revision: h.revision, no: h.issue_no ?? h.quote_no ?? null,
+    issued_at: h.issued_at, total: h.total, currency: h.currency, uploaded: !!h.uploaded,
+  }))).sort((a, b) => b.issued_at.localeCompare(a.issued_at));
+}
+
 function WonBlock({ deal, busy, act, uploadPo, comparing, comparePo }: {
   deal: DealRow; busy: boolean; act: Act; uploadPo: (f: File) => Promise<boolean>;
   comparing: number | null; comparePo: (index: number) => Promise<void>;
@@ -374,6 +508,11 @@ function WonBlock({ deal, busy, act, uploadPo, comparing, comparePo }: {
   const [dropping, setDropping] = useState(false);
   const admin = useContext(AdminCtx);
   const files = deal.po_files ?? [];
+  // 수주할 견적서 판(사용자 2026-10-13, 영업팀 요청 15번) — 2차를 냈어도 고객이 1차로 발주하면 1차를 고른다. 기본 = 지금(최근) 견적
+  const versions = issuedVersions(deal);
+  const [verKey, setVerKey] = useState<string>("");
+  const current = versions.find((v) => v.no && v.no === deal.display_no) ?? versions[0];
+  const chosen = versions.find((v) => v.key === verKey) ?? current;
 
   const pick = (f: File | null) => {
     setFileError(f && f.size > PO_MAX_MB * 1024 * 1024 ? `발주서 파일은 ${PO_MAX_MB}MB 까지 올릴 수 있습니다.` : null);
@@ -381,7 +520,7 @@ function WonBlock({ deal, busy, act, uploadPo, comparing, comparePo }: {
   };
   // 수주 확정 → (발주서가 있으면) 이어서 올린다. 올리기에 실패해도 수주는 확정된 상태로 두고 아래에서 다시 첨부할 수 있다.
   const confirm = async () => {
-    if (!(await act("won", { won: true, date }))) return;
+    if (!(await act("won", { won: true, date, ...(chosen ? { quote_id: chosen.quote_id, revision: chosen.revision } : {}) }))) return;
     if (file) await uploadPo(file);
     setOpen(false);
     setFile(null);
@@ -393,7 +532,7 @@ function WonBlock({ deal, busy, act, uploadPo, comparing, comparePo }: {
         {deal.won === null && !open && !deal.dropped && !dropping && (
           <>
             <span className="mr-1 text-foreground-muted">수주 결과 미확인</span>
-            <PrimaryBtn disabled={busy} onClick={() => { setDate(todayIso()); pick(null); setOpen(true); }}>✓ 수주 확정</PrimaryBtn>
+            <PrimaryBtn disabled={busy} onClick={() => { setDate(todayIso()); pick(null); setVerKey(""); setOpen(true); }}>✓ 수주 확정</PrimaryBtn>
             <GhostBtn disabled={busy} onClick={() => setDropping(true)}>드랍</GhostBtn>
           </>
         )}
@@ -402,6 +541,9 @@ function WonBlock({ deal, busy, act, uploadPo, comparing, comparePo }: {
             <span className="rounded-lg bg-blue-500/12 px-3 py-1.5 font-semibold text-blue-700 dark:text-blue-300">
               ✓ 수주 확정{deal.won_date ? ` · ${deal.won_date}` : ""}
             </span>
+            {deal.display_no && versions.length > 1 && (
+              <span className="text-[12px] text-foreground-muted">수주 견적서 <b className="font-mono">{deal.display_no}</b></span>
+            )}
             {admin && <GhostBtn disabled={busy} onClick={() => setReset(true)}>미확인으로 되돌리기</GhostBtn>}
           </>
         )}
@@ -444,6 +586,26 @@ function WonBlock({ deal, busy, act, uploadPo, comparing, comparePo }: {
           <p className={cn("mt-1 text-[11.5px]", fileError ? "text-red-600 dark:text-red-400" : "text-foreground-subtle")}>
             {fileError ?? `PDF·사진·엑셀·워드·한글 파일, ${PO_MAX_MB}MB 까지. 발주서가 아직 없으면 비워 두고 나중에 첨부할 수 있습니다.`}
           </p>
+          {versions.length > 1 && (
+            <div className="mt-2.5">
+              <span className="text-[12.5px] font-semibold text-foreground">수주할 견적서</span>
+              <span className="ml-1.5 text-[11.5px] text-foreground-subtle">고객이 발주한 판을 고르세요 — 영업 건 금액·거래명세서 품목이 그 판으로 바뀝니다</span>
+              <div className="mt-1.5 flex flex-col gap-1">
+                {versions.map((v) => (
+                  <label key={v.key} className={cn("flex cursor-pointer flex-wrap items-center gap-2 rounded-lg border px-2.5 py-1.5 text-[12.5px]",
+                    chosen?.key === v.key ? "border-accent bg-accent/[0.06]" : "border-border hover:bg-foreground/[0.03]")}>
+                    <input type="radio" name="won-version" checked={chosen?.key === v.key} onChange={() => setVerKey(v.key)} />
+                    <span className="font-mono font-medium">{v.no ?? `v${v.revision + 1}`}</span>
+                    <span className="text-[11.5px] text-foreground-muted">v{v.revision + 1}</span>
+                    {v.uploaded && <span className="rounded bg-amber-500/12 px-1.5 text-[11px] font-semibold text-amber-700 dark:text-amber-300">외부 수정본</span>}
+                    {v.key === current?.key && <span className="text-[11.5px] text-foreground-subtle">(최근 견적)</span>}
+                    <span className="text-foreground-subtle">{v.issued_at.slice(0, 10)}</span>
+                    <span className="ml-auto">{v.currency === "USD" ? `$${v.total.toLocaleString("en-US")}` : `${won(v.total)}원`}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
         </FormBox>
       )}
 
@@ -802,6 +964,9 @@ function QuoteDocs({ deal, onQuote, onUploaded }: {
                   <span className="text-[11.5px] text-foreground-muted">v{h.revision + 1}</span>
                   {!h.revision && <span className="text-foreground-subtle">(최초 발행)</span>}
                   {h.uploaded && <span className="rounded bg-amber-500/12 px-1.5 text-[11px] font-semibold text-amber-700 dark:text-amber-300">외부 수정본</span>}
+                  {deal.won === true && (h.issue_no ?? h.quote_no) && (h.issue_no ?? h.quote_no) === deal.display_no && (
+                    <span className="rounded bg-blue-500/12 px-1.5 text-[11px] font-semibold text-blue-700 dark:text-blue-300">수주 중</span>
+                  )}
                   {h.replaced_at && <span className="text-[11.5px] text-amber-700 dark:text-amber-300">파일 교체 {h.replaced_at.slice(0, 16).replace("T", " ")}</span>}
                   <span className="text-foreground-subtle">{h.issued_at.slice(0, 16).replace("T", " ")}</span>
                   <span>{h.currency === "USD" ? `$${h.total.toLocaleString("en-US")}` : `${won(h.total)}원`}</span>
@@ -870,7 +1035,10 @@ function StartQuote({ recommendationId, onQuote }: { recommendationId: number; o
 function StatementDoc({ deal }: { deal: DealRow }) {
   const st = deal.statement!;
   const [view, setView] = useState<"preview" | "save" | null>(null);
-  const fileName = `(주)유엔디로보틱스_거래명세서_${st.buyer.name}_${st.no}`;
+  // 공급받는자·품목이 빠진 기록(이관·테스트 데이터 등)도 화면이 깨지지 않게
+  const buyer = st.buyer ?? { name: "", ceo: "", reg_no: "", address: "" };
+  const items = st.items ?? [];
+  const fileName = `(주)유엔디로보틱스_거래명세서_${buyer.name || deal.customer || ""}_${st.no}`;
   return (
     <Section title="거래명세서">
       <div className="rounded-xl border border-border p-3">
@@ -887,9 +1055,9 @@ function StatementDoc({ deal }: { deal: DealRow }) {
           </span>
         </div>
         <Grid rows={[
-          ["공급받는자", `${st.buyer.name}${st.buyer.ceo ? ` (대표 ${st.buyer.ceo})` : ""} · ${st.buyer.reg_no}`],
-          ["주소", st.buyer.address],
-          ["품목", st.items.map((it) => `${it.name} × ${it.qty ?? "-"}`).join(", ")],
+          ["공급받는자", buyer.name ? `${buyer.name}${buyer.ceo ? ` (대표 ${buyer.ceo})` : ""}${buyer.reg_no ? ` · ${buyer.reg_no}` : ""}` : null],
+          ["주소", buyer.address || null],
+          ["품목", items.length ? items.map((it) => `${it.name} × ${it.qty ?? "-"}`).join(", ") : null],
           ["합계", st.totals ? `${won(st.totals.total)}원 (공급가액 ${won(st.totals.supply)} + 부가세 ${won(st.totals.vat)})` : null],
         ]} />
       </div>

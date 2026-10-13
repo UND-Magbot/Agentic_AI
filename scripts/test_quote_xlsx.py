@@ -89,6 +89,15 @@ ml = qs.render_lines(mine, "ko", None)
 check(ml[0]["commodity"] == "Magbot Tool Changer" and ml[1]["commodity"] == "Magbot ATC"
       and next(x for x in ml if x["desc"] == "MG10")["commodity"] == "Magbot Gripper",
       "품목 칸은 화면에서 고칠 수 있음(안 고친 줄은 기본값, 새 항목은 적은 값)", str([x["commodity"] for x in ml]))
+# Comments 줄바꿈(사용자 2026-10-13) — 화면에서 띄운 줄이 저장·견적서에 그대로, 가운데 정렬(국내·해외 모두)
+cm = qs.draft_state({"applicable": True, "items": items}, model=model, payload_kg=10)
+cm, _ = qs.apply_ops(cm, qs.edit_ops(cm, {"form": {"comments": "www.magbot.kr\n\n  - 그리퍼   공급 건 \n맥봇\n4\n5\n6\n7"}}), None)
+check(cm["form"]["comments"] == "www.magbot.kr\n- 그리퍼 공급 건\n맥봇\n4\n5\n6", "Comments 줄바꿈 저장(줄마다 공백 정리·빈 줄 제거, 6줄까지)", repr(cm["form"]["comments"]))
+for lg in ("ko", "en"):
+    hc = qx.quote_header({**form, "fx_rate": 1380, "comments": cm["form"]["comments"]}, lang=lg, quote_no="x", day=day, pogo=False)
+    wc = openpyxl.load_workbook(io.BytesIO(qx.build_xlsx(hc, lines))).active
+    check(wc["E9"].value == cm["form"]["comments"] and wc["E9"].alignment.horizontal == "center" and wc["E9"].alignment.wrap_text,
+          f"견적서 Comments 칸에 줄바꿈 그대로·가운데 정렬({lg})", repr(wc["E9"].value))
 # 품목 사진(사용자 2026-10-12) — Remark 칸에 작게, 행 높이 늘림
 from PIL import Image as _Img  # noqa: E402
 _buf = io.BytesIO()
@@ -112,6 +121,34 @@ check({"Delivery Schedule", "Payment Terms", "Total Amount", "Purchase Order Con
       and we["E17"].number_format == '"$"#,##0.00' and he["currency"] == "USD" and he["fx_rate"] == 1380
       and "이사 홍길동" in we["A4"].value,
       "영문 양식: 같은 구성, 문구 영어, 달러 서식, 영문 계좌·예금주, 직함 앞")
+
+# 묶음·NEGO 줄(사용자 2026-10-13) — 소제목·소계·옵션(공급가액 빈칸·합계 제외)·사양·문구·NEGO, Total 아래는 적은 문구만
+bl_lines = [lines[0],
+            {"row": "section", "text": "주요 사양"}, {"row": "spec", "label": "무게", "value": "55kg"},
+            {"row": "gap"}, {"row": "section", "text": "설치 및 시운전"},
+            {**lines[1], "row": None}, {"row": "subtotal", "text": "Sub total", "amount": lines[1]["amount"]},
+            {"row": "gap"}, {"row": "section", "text": "< OPTION >"}, {**lines[2], "row": "option"},
+            {"row": "text", "text": "렌탈 조건은 별도 계약서"},
+            {"row": "nego", "key": "nego", "commodity": "", "desc": "NEGO (특별 할인)", "qty": 1, "unit_price": -100_000, "amount": -100_000, "remark": ""}]
+hb = qx.quote_header({**form, "total_note": "월 995,000원", "foot_notes": ["본 견적은 1개월 유효", "※ 중도 해지 시 위약금\n일시불 납부"]}, lang="ko",
+                     quote_no="QT-X", day=day, pogo=False)
+wb_ = openpyxl.load_workbook(io.BytesIO(qx.build_xlsx(hb, bl_lines))).active
+cv = {c.coordinate: c.value for row in wb_.iter_rows() for c in row if c.value is not None}
+tot = next(k for k, v in cv.items() if isinstance(v, str) and v.startswith("Total"))
+tot_row = int(tot[1:])
+check(cv["A18"] == "주요 사양" and cv["A19"] == "무게" and cv["C19"] == "55kg" and "A19:B19" in {str(m) for m in wb_.merged_cells.ranges} and "G19" not in cv and cv["A21"] == "설치 및 시운전"
+      and cv["F23"] == "=SUM(F22)" and cv["A23"] == "Sub total" and cv["A25"] == "< OPTION >" and "F26" not in cv and cv["E26"] == lines[2]["unit_price"]
+      and cv["A27"] == "렌탈 조건은 별도 계약서" and cv["A28"] == "NEGO (특별 할인)" and cv["F28"] == -100_000,
+      "엑셀 줄: 소제목·사양·구분·소계(그 묶음 SUM)·< OPTION >(공급가액 빈칸)·문구·NEGO", str({k: cv.get(k) for k in ("A18", "F23", "F26", "A28")}))
+check(cv[f"G{tot_row}"] == "=SUM(F17,F22,F28)" and cv[tot] == "Total (부가세 별도)\n월 995,000원"
+      and wb_["A23"].fill.fgColor.rgb == "FFFFC000" and wb_["A28"].font.color.rgb == "FFFF0000" and wb_["F28"].font.color.rgb == "FFFF0000",
+      "Total = 품목·NEGO 칸만 SUM(옵션·소계 제외), Total 아래는 직접 적은 문구만(옵션 미포함 자동 문구 없음), 소계는 주황", str((cv.get(f"G{tot_row}"), cv.get(tot))))
+foot_ref = next(k for k, v in cv.items() if isinstance(v, str) and v.startswith("* 견적 외"))
+fr = int(foot_ref[1:])
+check(cv.get(f"A{fr + 1}") == "* 본 견적은 1개월 유효" and cv.get(f"A{fr + 2}") == "※ 중도 해지 시 위약금\n일시불 납부"
+      and f"A{fr + 1}:G{fr + 1}" in {str(m) for m in wb_.merged_cells.ranges} and wb_.row_dimensions[fr + 2].height >= 34,
+      "표 아래 주석: 고정 문구 다음에 칸마다 한 줄씩('*' 없으면 붙임, 칸 안 줄바꿈이면 높이 늘림)", str((cv.get(f"A{fr + 1}"), cv.get(f"A{fr + 2}"))))
+check(qx.total(bl_lines) == lines[0]["amount"] + lines[1]["amount"] - 100_000, "견적 합계(영업 건 금액)도 품목·NEGO 만")
 
 print(f"PASS {len(PASS)} / FAIL {len(FAIL)}")
 for label, detail in FAIL:

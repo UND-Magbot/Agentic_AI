@@ -225,6 +225,8 @@ export interface DealRow {
   statement?: DealStatement | null;
   /** 이 건으로 만든 견적서(한 건 상세에서만) — 발행한 판 목록. 발행본 관리는 영업 건에서(견적서 탭은 작성 중인 것만). */
   quotes?: DealQuoteDoc[];
+  /** 입금 예정일 연장 요청(회차별 최근 것, 한 건 상세에서만) */
+  due_requests?: ApprovalRequest[];
   pay_case?: PayCase | null;
   flow?: DealFlow;
   po_files?: { filename: string; mime: string; size: number; uploaded_at: string; uploaded_by: string | null; compare?: PoCompare | null }[];
@@ -283,3 +285,14 @@ export async function getDeals(): Promise<DealListData | { error: string }> {
     return { error: "서버에 연결하지 못했습니다." };
   }
 }
+
+/** 관리자 승인 요청(사용자 2026-10-13, 영업팀 요청 8번) — 지금은 입금 예정일 연장(pay_due_extend) */
+export type ApprovalRequest = {
+  id: number; kind: string; status: "pending" | "approved" | "rejected"; deal_id: number; term_index: number | null; term_label: string | null;
+  deal_no: string | null; customer: string | null; title: string | null;
+  current_due: string | null; requested_due: string | null; decided_due: string | null;
+  reason: string; decision_note: string; requested_by: string | null; decided_by: string | null; recipients: string[];
+  /** 나에게 온 요청(받는 관리자로 골라짐) */
+  to_me: boolean; created_at: string; decided_at: string | null;
+};
+export type ApprovalAdmin = { id: number; name: string; role: string };

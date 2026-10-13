@@ -961,6 +961,33 @@ _SALES_DEALS_STMTS = [
         );
         """
     ),
+    # 관리자 승인 요청(사용자 2026-10-13 승인, 영업팀 요청 8번) — 지금은 입금 예정일 연장(kind = pay_due_extend).
+    # 일반 직원이 받을 관리자(recipients)를 골라 보내고, 관리자가 [관리 > 승인 요청]에서 승인(날짜 조정 가능)·거절.
+    text(
+        """
+        CREATE TABLE IF NOT EXISTS approval_requests (
+            id            BIGSERIAL PRIMARY KEY,
+            kind          VARCHAR(30) NOT NULL,
+            deal_id       BIGINT      NOT NULL REFERENCES sales_deals(id) ON DELETE CASCADE,
+            term_index    INT,
+            current_due   DATE,
+            requested_due DATE,
+            reason        TEXT        NOT NULL DEFAULT '',
+            recipients    BIGINT[]    NOT NULL DEFAULT '{}',
+            status        VARCHAR(10) NOT NULL DEFAULT 'pending',
+            requested_by  BIGINT      REFERENCES users(id) ON DELETE SET NULL,
+            decided_by    BIGINT      REFERENCES users(id) ON DELETE SET NULL,
+            decided_due   DATE,
+            decision_note TEXT        NOT NULL DEFAULT '',
+            created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            decided_at    TIMESTAMPTZ
+        );
+        """
+    ),
+    text("CREATE INDEX IF NOT EXISTS ix_approval_requests_status ON approval_requests(status, created_at DESC)"),
+    text("CREATE INDEX IF NOT EXISTS ix_approval_requests_deal ON approval_requests(deal_id)"),
+    # 승인 요청 팝업을 이미 본 관리자(사용자 2026-10-13 승인) — 어느 기기에서든 요청마다 한 번만 띄운다
+    text("ALTER TABLE approval_requests ADD COLUMN IF NOT EXISTS alerted_to BIGINT[] NOT NULL DEFAULT '{}'"),
 ]
 
 async def run_migrations(db: AsyncSession) -> None:

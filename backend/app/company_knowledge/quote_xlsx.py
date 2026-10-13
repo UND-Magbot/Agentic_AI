@@ -34,6 +34,8 @@ _THIN = Side(style="thin", color="FF000000")
 BOX = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
 GREY = PatternFill("solid", fgColor="FFD9D9D9")
 YELLOW = PatternFill("solid", fgColor="FFFFFF00")
+ORANGE = PatternFill("solid", fgColor="FFFFC000")       # 소계(Sub total) — 방역 로봇 견적서
+NEGO_RED = "FFFF0000"                                     # NEGO 줄 글씨·금액
 
 
 class QuoteError(ValueError):
@@ -95,6 +97,12 @@ def commodity_of(ln: dict[str, Any]) -> str:
     return ln["commodity"] if isinstance(ln.get("commodity"), str) else default_commodity(ln)
 
 
+def _notes(v: Any) -> list[str]:
+    """표 아래 주석 — 칸마다 하나(목록). 예전 값(줄바꿈으로 이은 글)은 줄마다 한 칸."""
+    raw = v if isinstance(v, list) else str(v or "").splitlines()
+    return [str(x).strip() for x in raw if str(x or "").strip()]
+
+
 def quote_header(form: dict[str, Any], *, lang: str, quote_no: str, day: date, pogo: bool) -> dict[str, Any]:
     """화면 입력(고객·담당자·조건) + 회사 양식 → 견적서 머리. 필수 값이 비면 QuoteError."""
     f = pp.quote_form(lang)
@@ -119,7 +127,10 @@ def quote_header(form: dict[str, Any], *, lang: str, quote_no: str, day: date, p
             "delivery": str(form.get("delivery") or "").strip() or d["delivery"],
             "place": str(form.get("place") or "").strip() or d["place"],
             "payment": str(form.get("payment") or "").strip() or d["payment"],
-            "notes": notes}
+            "notes": notes,
+            # Total 아래 보조 문구·표 아래 주석(사용자 2026-10-13, 영업팀 요청 14번)
+            "total_note": str(form.get("total_note") or "").strip(),
+            "foot_notes": _notes(form.get("foot_notes"))}
 
 
 # ── 엑셀 ─────────────────────────────────────────────────────────────────────
@@ -263,26 +274,81 @@ def build_xlsx(header: dict[str, Any], lines: list[dict[str, Any]], photos: dict
     for col, key in (("D", "qty"), ("E", "price"), ("F", "amount"), ("G", "remark")):
         _cell(ws, f"{col}16", lab[key], size=9)
 
-    # 품목
+    # 품목 — 줄 종류(row)별: 없음=품목, gap 묶음 구분, section 소제목, subtotal 소계, option 옵션(단가만·합계 제외),
+    # spec 사양(항목명 / 내용), text 서술형 한 칸, nego 할인(음수). 합계는 품목·NEGO 칸만 더한다(사용자 2026-10-13).
     r = 17
+    billed: list[str] = []
+    block_cells: list[str] = []
     for ln in lines:
+        kind = ln.get("row")
+        if kind == "gap":
+            ws.row_dimensions[r].height = 13                  # 방역 로봇 견적서의 회색 구분줄 두께
+            _cell(ws, f"A{r}", None, fill=GREY, merge=f"G{r}")
+            r += 1
+            continue
+        if kind == "section":
+            ws.row_dimensions[r].height = 22
+            _cell(ws, f"A{r}", ln.get("text") or "", size=9, merge=f"G{r}")
+            block_cells = []
+            r += 1
+            continue
+        if kind == "subtotal":
+            ws.row_dimensions[r].height = 22
+            _cell(ws, f"A{r}", ln.get("text") or "Sub total", size=9, fill=ORANGE, merge=f"E{r}")
+            _cell(ws, f"F{r}", f"=SUM({','.join(block_cells)})" if block_cells else 0, size=9, fmt=money, fill=ORANGE)
+            _cell(ws, f"G{r}", None, fill=ORANGE)
+            block_cells = []
+            r += 1
+            continue
+        if kind == "spec":
+            # 방역 로봇 견적서처럼 항목명은 넓게(품목+규격 칸 A:B), 내용은 가운데(C:F), 비고(G)는 비움
+            n_lines = max(str(ln.get("value") or "").count("\n") + 1, -(-len(str(ln.get("label") or "")) // 22))
+            ws.row_dimensions[r].height = max(20, 13 * n_lines + 6)
+            _cell(ws, f"A{r}", ln.get("label") or "", size=9, merge=f"B{r}")
+            _cell(ws, f"C{r}", ln.get("value") or "", size=9, merge=f"F{r}")
+            _cell(ws, f"G{r}", None, size=9)
+            r += 1
+            continue
+        if kind == "text":
+            ws.row_dimensions[r].height = max(22, 14 * (str(ln.get("text") or "").count("\n") + 1) + 8)
+            _cell(ws, f"A{r}", ln.get("text") or "", size=9, h="left", merge=f"G{r}")
+            r += 1
+            continue
+        if kind == "nego":
+            ws.row_dimensions[r].height = 22
+            _cell(ws, f"A{r}", ln["desc"], size=9, merge=f"E{r}")
+            _cell(ws, f"F{r}", ln["amount"], size=9, fmt=money)
+            _cell(ws, f"G{r}", ln.get("remark") or "", size=9)
+            for ref in (f"A{r}", f"F{r}"):                     # NEGO 글씨·금액은 빨간색(사용자 2026-10-13)
+                ws[ref].font = Font(name=FONT, size=9, bold=True, color=NEGO_RED)
+            billed.append(f"F{r}")
+            r += 1
+            continue
         pic = (photos or {}).get(str(ln.get("photo") or ""))
         ws.row_dimensions[r].height = max(31, 13 * (str(ln["desc"]).count("\n") + 1) + 5, 48 if pic else 0)
         _cell(ws, f"A{r}", ln.get("commodity") or "", size=9)
         _cell(ws, f"B{r}", ln["desc"], size=9, merge=f"C{r}")
         _cell(ws, f"D{r}", ln["qty"], size=9, fmt=f'0" {ln["unit"]}"' if ln.get("unit") else EA)
         _cell(ws, f"E{r}", ln["unit_price"], size=9, fmt=money)
-        _cell(ws, f"F{r}", f"=D{r}*E{r}", size=9, fmt=money)
+        if kind == "option":                               # 옵션 — 공급가액 칸은 비우고 합계에서 뺀다(LG CNS 견적서)
+            _cell(ws, f"F{r}", None, size=9)
+        else:
+            _cell(ws, f"F{r}", f"=D{r}*E{r}", size=9, fmt=money)
+            billed.append(f"F{r}")
+            block_cells.append(f"F{r}")
         _cell(ws, f"G{r}", ln["remark"], size=9, h="left" if pic else "center")
         if pic:
             if ln["remark"]:                               # 사진 자리만큼 글 오른쪽을 비운다
                 ws[f"G{r}"].alignment = Alignment(horizontal="left", vertical="center", wrap_text=True, indent=0)
             _photo_at(ws, pic, row=r, has_text=bool(ln["remark"]))
         r += 1
-    last = r - 1
-    ws.row_dimensions[r].height = 24
-    _cell(ws, f"A{r}", lab["total"], fill=YELLOW, merge=f"F{r}")
-    _cell(ws, f"G{r}", f"=SUM(F17:F{last})", fmt=money, h="right", fill=YELLOW)
+    # Total 아래 문구는 담당자가 적은 것만('* Option 미포함'도 자동으로 넣지 않음 — 사용자 2026-10-13)
+    tot_lab = "\n".join(x for x in (lab["total"], header.get("total_note") or "") if x)
+    ws.row_dimensions[r].height = 24 if tot_lab == lab["total"] else 16 * (tot_lab.count("\n") + 1) + 6
+    _cell(ws, f"A{r}", tot_lab, fill=YELLOW, merge=f"F{r}")
+    plain = billed == [f"F{i}" for i in range(17, 17 + len(billed))]      # 묶음 없는 견적 — 예전처럼 범위 SUM
+    _cell(ws, f"G{r}", (f"=SUM(F17:F{16 + len(billed)})" if plain else f"=SUM({','.join(billed)})") if billed else 0,
+          fmt=money, h="right", fill=YELLOW)
     r += 1
 
     # 조건 · 비고 · 발주 확인
@@ -309,9 +375,11 @@ def build_xlsx(header: dict[str, Any], lines: list[dict[str, Any]], photos: dict
                  "이 견적서를 귀사에 대한 공식 발주서로 대신하고자 합니다.\n\n\n" + " " * 120 + "발주자명 :  _______________________ (서명)")
     _cell(ws, f"B{r}", order, h="left", v="top", merge=f"G{r}")
     r += 1
-    ws.row_dimensions[r].height = 20
-    _cell(ws, f"A{r}", terms["option_note"], size=9, merge=f"G{r}")
-    r += 1
+    # 표 아래 주석 — 회사 고정 문구 다음에 담당자가 추가한 주석을 칸마다 한 줄씩(방역 로봇 견적서처럼, 사용자 2026-10-13)
+    for note in [terms["option_note"], *[x if x.startswith(("*", "※")) else f"* {x}" for x in _notes(header.get("foot_notes"))]]:
+        ws.row_dimensions[r].height = max(20, 14 * (note.count("\n") + 1) + 6)
+        _cell(ws, f"A{r}", note, size=9, merge=f"G{r}")
+        r += 1
 
     # 서명란 — 아래쪽 회사 표기는 UND Robotics Co., Ltd(사용자 2026-10-06)
     _cell(ws, f"E{r}", f"  {iss['signed_by']}", size=9, h="left", merge=f"G{r}", border=False)
@@ -348,7 +416,8 @@ def build_xlsx(header: dict[str, Any], lines: list[dict[str, Any]], photos: dict
 
 
 def total(lines: list[dict[str, Any]]) -> float:
-    return round(sum(ln["amount"] for ln in lines), 2)
+    """견적 합계 — 품목·NEGO 줄만(소계·옵션·사양·문구 줄 제외). 예전 기록(row 없음)은 모두 품목."""
+    return round(sum(ln["amount"] for ln in lines if ln.get("row") in (None, "nego")), 2)
 
 
 # ── PDF(미리보기·PDF 내려받기) ────────────────────────────────────────────────

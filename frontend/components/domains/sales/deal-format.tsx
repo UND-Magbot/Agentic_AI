@@ -59,13 +59,17 @@ export const ACTION_LABEL: Record<string, string> = {
   reset_to_quote: "견적 상태로 되돌림(테스트)",
   statement: "거래명세서 발급", pay_case: "결제 방식 선택", pay_terms: "결제 조건 저장", drop: "드랍", undrop: "드랍 되살리기", recommend: "제품 추천 확정", quote: "견적서 발행", quote_revision: "견적서 재발행", quote_upload: "견적서 첨부(외부 수정본)", quote_replace: "견적서 파일 교체",
   meeting: "미팅 정보 입력",
+  due_extend: "입금기한 연장", due_request: "입금기한 연장 요청", due_reject: "입금기한 연장 거절",
 };
 const PAY_CASE_KO: Record<string, string> = { after: "납품 후 입금", split: "선금 50% → 납품 → 잔금", prepay: "전액 입금 → 납품" };
 
 /** 이력 한 줄의 덧붙임 글 */
 export function eventDetail(e: DealEvent): string {
   const d = e.detail as Record<string, unknown>;
-  if (e.action === "won") return d.to === true ? "→ 수주" : d.to === false ? "→ 드랍" : "→ 미확인";
+  if (e.action === "won") return d.to === true ? `→ 수주${d.no ? ` (${d.no} 견적서)` : ""}` : d.to === false ? "→ 드랍" : "→ 미확인";
+  if (e.action === "due_extend" || e.action === "due_request")
+    return `${d.label ?? ""} ${d.from ?? "-"} → ${d.to}${d.reason ? ` · ${d.reason}` : ""}`;
+  if (e.action === "due_reject") return `${d.reason ?? ""}`;
   if (e.action === "invoice") return `${d.date} · 공급가 ${won(d.supply as number)}`;
   if (e.action === "payment") return `${d.date} · ${won(d.amount as number)}원${d.full ? " · 완납" : ""}`;
   if (e.action === "shipment") return `${d.date} · ${d.carrier ?? ""}${d.forced ? " · 입금 확인 전" : ""}`;

@@ -24,7 +24,9 @@ export const runtime = "nodejs";
 const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:8002";
 const TOKEN_COOKIE = "und_cortex_token";
 const BASE = "/v1/sales-deals";
-const ACTIONS = new Set(["won", "invoices", "payments", "paid-full", "shipments", "shipment-edit", "remove", "review", "statement", "terms", "confirm-term", "unconfirm-term", "drop", "meeting", "reset-to-quote"]);
+const ACTIONS = new Set(["won", "invoices", "payments", "paid-full", "shipments", "shipment-edit", "remove", "review", "statement", "terms", "confirm-term", "unconfirm-term", "drop", "meeting", "reset-to-quote",
+  // 입금 예정일 연장 — 관리자 바로 · 일반 직원 요청(사용자 2026-10-13)
+  "due-extend", "due-request"]);
 // 파일을 올리는 동작 — 본문·경계를 그대로 넘긴다
 const UPLOADS = new Set(["po", "ship-photos", "quote-upload"]);
 
@@ -58,6 +60,11 @@ export async function GET(req: NextRequest, { params }: Params) {
     return NextResponse.json(await r.json().catch(() => ({})), { status: r.status });
   }
   if (path.length === 1 && path[0] === "export") return passFile(`${BACKEND_URL}${BASE}/export`, tok);
+  // 관리자 승인 요청(사용자 2026-10-13) — 목록 · 받을 관리자 · 나에게 온 대기 수
+  if ((path.length === 1 && path[0] === "approvals") || (path.length === 2 && path[0] === "approvals" && ["admins", "count"].includes(path[1]))) {
+    const r = await fetch(`${BACKEND_URL}${BASE}/${path.join("/")}`, { headers: { Authorization: `Bearer ${tok}` }, cache: "no-store" });
+    return NextResponse.json(await r.json().catch(() => ({})), { status: r.status });
+  }
   if (path.length === 1 && path[0] === "initials") {
     const r = await fetch(`${BACKEND_URL}${BASE}/initials`, { headers: { Authorization: `Bearer ${tok}` }, cache: "no-store" });
     return NextResponse.json(await r.json().catch(() => ({})), { status: r.status });
@@ -120,7 +127,11 @@ export async function POST(req: NextRequest, { params }: Params) {
   const isPoCompare = path.length === 4 && /^\d+$/.test(path[0]) && path[1] === "po" && /^\d+$/.test(path[2]) && path[3] === "compare";
   // 밖에서 고친 견적서 — 확인한 품목으로 발행(JSON, 사용자 2026-10-12)
   const isQuoteConfirm = path.length === 3 && /^\d+$/.test(path[0]) && path[1] === "quote-upload" && path[2] === "confirm";
-  const ok = path.length === 0 || isUpload || isOrder || isBatch || isPoCompare || isQuoteConfirm || (path.length === 2 && /^\d+$/.test(path[0]) && ACTIONS.has(path[1]));
+  // 승인 요청 처리 — approvals/{id}/decide (관리자)
+  const isDecide = (path.length === 3 && path[0] === "approvals" && /^\d+$/.test(path[1]) && path[2] === "decide")
+    || (path.length === 2 && path[0] === "approvals" && path[1] === "seen");     // 팝업을 봤음(DB 기록)
+  const ok = path.length === 0 || isUpload || isOrder || isBatch || isPoCompare || isQuoteConfirm || isDecide
+    || (path.length === 2 && /^\d+$/.test(path[0]) && ACTIONS.has(path[1]));
   if (!ok) return notFound();
   const tok = await token();
   if (!tok) return NextResponse.json({ detail: "인증이 필요합니다." }, { status: 401 });

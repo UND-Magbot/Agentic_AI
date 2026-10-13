@@ -284,7 +284,8 @@ export type ProductProposal = {
 
 /** 견적서 작성(quote_session) — 대화·직접 수정으로 채우는 견적 초안·발행본. 금액은 원화(해외는 발행 때 환율로 달러). */
 export type QuoteLine = {
-  id: string; kind: "product" | "option" | "freight" | "work" | "extra"; key: string;
+  /** note = 서술형 줄(항목명 commodity / 내용 name, 가격 없음 — 사용자 2026-10-13) */
+  id: string; kind: "product" | "option" | "freight" | "work" | "extra" | "note"; key: string;
   /** 규격(Specifications) — 모델·세부 사양 */
   name: string;
   /** 품목(Commodity) — 예: Magbot ATC · Magbot ATC Accessory(견적서 A열) */
@@ -292,6 +293,10 @@ export type QuoteLine = {
   /** 품목 사진(저장소 키) — 견적서 Remark 칸에 작게 들어간다(사용자 2026-10-12) */
   photo?: string;
   qty: number | null; unit_price: number | null; remark?: string; unit?: string; price_status?: string | null;
+  /** 해외 견적 달러 단가 — 비우면 원화 단가 ÷ 환율(환율은 선택, 사용자 2026-10-13) */
+  usd?: number | null;
+  /** 묶음 id(없으면 기본 묶음 B0, 사용자 2026-10-13) */
+  block?: string | null;
   /** 액세서리 조건부 수량(v1.2) — 담당자가 확인(confirmed)해야 발행 가능. basis = 계산 근거 */
   conditional?: boolean; confirmed?: boolean; basis?: string;
 };
@@ -301,18 +306,30 @@ export type QuoteForm = {
   lang: "ko" | "en"; fx_rate: number | null;
   /** 고객사가 입금할 계좌(기본 = 회사 계좌, 견적마다 바꿀 수 있음) — 예전 초안엔 없을 수 있음 */
   bank?: string; account_no?: string; account_holder?: string;
+  /** 견적서 Total 옆 보조 문구 · 표 아래 주석(여러 줄) — 영업팀 요청 14번 */
+  /** foot_notes — 칸마다 주석 하나(예전 값은 줄바꿈으로 이은 글) */
+  total_note?: string; foot_notes?: string[] | string;
 };
+/** 견적 본문 묶음 — items(소제목·소계) · option(합계 제외, 단가만) · spec(항목명/내용) · text(서술형). B0 = 기본 품목 묶음 */
+export type QuoteBlock = {
+  id: string; type: "items" | "option" | "spec" | "text"; title: string; subtotal?: boolean;
+  rows?: { label: string; value: string }[]; text?: string;
+};
+/** NEGO(할인) — 금액(견적 통화) 또는 %(옵션 뺀 합계 기준) */
+export type QuoteNego = { mode: "amount" | "percent"; value: number | null; label: string };
 export type QuoteWork = { needed: boolean | null; people: number | null; days: number | null; rate: number | null };
 /** 납품 방식 — 1 택배(품목 그대로) · 2 화물 직납(물류비) · 3 UND 인원 설치 납품(인건비) · 4 화물 + 설치(물류비+인건비) · 5 별도 협의(품목 그대로). */
-export type QuoteDelivery = { case: 1 | 2 | 3 | 4 | 5 | null; freight: number | null };
+export type QuoteDelivery = { case: 1 | 2 | 3 | 4 | 5 | null; freight: number | null; /** 물류비·인건비 줄을 넣을 묶음(기본 B0) */ block?: string | null };
 export type QuoteSession = {
   id: number; recommendation_id: number | null; status: "draft" | "issued"; quote_no: string | null; revision: number;
   /** 견적서 수기 작성(AI 추천 없이, 사용자 2026-10-08) · 발행 뒤 이어진 영업 건 */
   manual?: boolean; deal_id?: number | null;
   file_name: string | null; customer: string | null;
   state: { model: string; payload_kg: number | null; applicable: boolean; form: QuoteForm; lines: QuoteLine[];
-           options: Omit<QuoteLine, "id">[]; work: QuoteWork; delivery?: QuoteDelivery };
+           options: Omit<QuoteLine, "id">[]; work: QuoteWork; delivery?: QuoteDelivery; blocks?: QuoteBlock[]; nego?: QuoteNego | null };
   subtotal: number; question: { id: string; text: string; choices?: string[] } | null; problems: string[];
+  /** 해외 견적 달러 합계 — 달러 단가가 없는 줄이 있으면 null */
+  subtotal_usd?: number | null;
   chat: { role: "user" | "assistant"; text: string }[];
   history: { revision: number; quote_no?: string | null; uploaded?: boolean; issued_at: string; total: number; currency: "KRW" | "USD"; file_name: string }[];
   created_at: string; updated_at: string;

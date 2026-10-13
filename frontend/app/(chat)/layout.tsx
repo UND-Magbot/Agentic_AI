@@ -1,3 +1,4 @@
+import { ApprovalAlert } from "@/components/domains/sales/approval-alert";
 import { Sidebar } from "@/components/shared/layout/sidebar";
 import { listDomainMetas } from "@/lib/agents/registry";
 import { displayName, getAllowedDomains, getCurrentUser } from "@/lib/shared/auth";
@@ -37,6 +38,8 @@ export default async function ChatLayout({ children }: { children: React.ReactNo
         }
       />
       <main className="flex flex-1 flex-col bg-background">{children}</main>
+      {/* 승인 요청 알림(사용자 2026-10-13) — 최고 관리자·영업(전체) 관리자 */}
+      {user && (user.role === "superadmin" || (user.role === "domain_admin" && (user.domain === "sales" || user.domain === "all"))) && <ApprovalAlert />}
     </div>
   );
 }

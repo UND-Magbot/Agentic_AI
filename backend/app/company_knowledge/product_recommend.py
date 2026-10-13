@@ -898,8 +898,10 @@ def _quote_view(r: dict[str, Any]) -> dict[str, Any]:
     return {"id": r["id"], "recommendation_id": r["recommendation_id"], "deal_id": r.get("deal_id"), "manual": bool(st.get("manual")),
             "status": r["status"], "quote_no": r["quote_no"],
             "revision": r["revision"], "file_name": r["file_name"], "customer": r["customer"],
-            "state": {k: st.get(k) for k in ("model", "payload_kg", "applicable", "form", "lines", "options", "work", "delivery")},
-            "subtotal": qs.subtotal(st) if st else 0, "question": qs.next_question(st) if st else None,
+            "state": {**{k: st.get(k) for k in ("model", "payload_kg", "applicable", "form", "lines", "options", "work", "delivery", "nego")},
+                      "blocks": qs.blocks(st) if st else []},
+            "subtotal": qs.subtotal(st) if st else 0, "subtotal_usd": qs.subtotal_usd(st) if st else None,
+            "question": qs.next_question(st) if st else None,
             "problems": qs.problems(st) if st else [], "chat": (st.get("chat") or [])[-QUOTE_CHAT_MAX:],
             "history": [{**{k: h.get(k) for k in ("revision", "issued_at", "total", "currency")},
                          "quote_no": h.get("quote_no") or (h.get("header") or {}).get("quote_no"), "uploaded": bool(h.get("upload")),
@@ -1037,6 +1039,9 @@ async def quote_list(*, user_id: int | None, limit: int = 100) -> list[dict[str,
             for r in rows]
 
 
+_CLAIMS_CHANGE = re.compile(r"(추가|반영|변경|수정|바꾸|바꿨|바뀌|삭제|빼|넣|적용)\S{0,4}\s*(했|하였|됐|되었|드렸|두었|뒀)")
+
+
 async def quote_chat(qid: int, *, user_id: int | None, message: str, chat=None) -> dict[str, Any]:
     """견적 대화 한 번 — 확실한 꼴의 답은 코드로, 나머지는 사내 AI 가 변경(ops)으로 옮기고 코드가 검증·적용한다.
     답 = 반영 목록 + 다음 질문(코드가 정한 순서)."""
@@ -1061,10 +1066,14 @@ async def quote_chat(qid: int, *, user_id: int | None, message: str, chat=None) 
         data = data if isinstance(data, dict) else {}
         ops, answer = data.get("ops"), ai_lines(data.get("answer"), 900)
     new, done = qs.apply_ops(st, ops, message)
+    if not done and answer and _CLAIMS_CHANGE.search(answer):
+        answer = ""                     # 바뀐 게 없는데 '추가했습니다'라고 하지 않게(2026-10-13) — 아래 '옮기지 못했습니다'로
     q = qs.next_question(new)
     parts = []
     if done:
-        parts.append("반영했습니다.\n" + "\n".join(f"- {x}" for x in done) + f"\n\n합계 **{qs.subtotal(new):,}원**(VAT 별도)")
+        tot = qs.subtotal_usd(new) if new["form"].get("lang") == "en" else None
+        parts.append("반영했습니다.\n" + "\n".join(f"- {x}" for x in done)
+                     + (f"\n\n합계 **${tot:,.2f}**(VAT 별도)" if tot is not None else f"\n\n합계 **{qs.subtotal(new):,}원**(VAT 별도)"))
     elif answer:
         parts.append(answer)
     else:
@@ -1114,12 +1123,13 @@ def _issue_parts(r: dict[str, Any], day) -> dict[str, Any]:
         lines = qs.render_lines(st, lang, f.get("fx_rate"))
     except (qx.QuoteError, ValueError, TypeError) as e:
         raise RecommendError(str(e)) from e
-    return {"st": st, "form": f, "lang": lang, "lines": lines, "pogo": any(ln["key"] in ("PPM", "PPF") for ln in lines),
+    items = [ln for ln in lines if not ln.get("row")]                # 품목 줄(소제목·소계·옵션·사양·NEGO 제외)
+    return {"st": st, "form": f, "lang": lang, "lines": lines, "pogo": any(ln.get("key") in ("PPM", "PPF") for ln in items),
             "customer": _FILE_BAD.sub(" ", str(f["customer"]).strip()).strip(),
             # 파일명 내용 — 견적서 머리 칸은 없앴다(사용자 2026-10-12). 예전에 적어 둔 값이 있으면 그것, 수기 견적은 첫 품목 이름,
             # AI 추천(툴체인저) 견적은 'magbot툴체인저'
             "subject": _FILE_BAD.sub(" ", str(f.get("subject") or "").strip()).strip()
-                       or (_FILE_BAD.sub(" ", str(lines[0]["desc"]).split("\n")[0]).strip()[:30] if st.get("manual") and lines else "")
+                       or (_FILE_BAD.sub(" ", str(items[0]["desc"]).split("\n")[0]).strip()[:30] if st.get("manual") and items else "")
                        or ("견적" if st.get("manual") else "magbot툴체인저"),
             # 발행자 = 폼의 담당자 이니셜(기본은 로그인 계정, 고칠 수 있음) — 재발행하면 그때 낸 사람(사용자 2026-10-12)
             "ini": str(f.get("initials") or "").strip().upper()}
@@ -1169,7 +1179,12 @@ async def quote_issue(qid: int, *, user_id: int | None) -> dict[str, Any]:
     deal = {"quote_date": day, "customer": str(f["customer"]).strip(), "contact": str(f.get("to") or "").strip() or None,
             "owner": str(f.get("contact_name") or "").strip() or None, "vat_included": False, "initials": parts["ini"],
             "currency": qx.CURRENCY[lang], "title": "", "note": "",
-            "items": [{"name": ln["desc"], "unit_price": ln["unit_price"], "qty": ln["qty"]} for ln in lines]}
+            # 품목(commodity)·단위도 넘긴다 — 거래명세서 초안의 품명·단위(사용자 2026-10-13: 명세서가 견적서와 같게)
+            "items": [{"name": ln["desc"], "unit_price": ln["unit_price"], "qty": ln["qty"],
+                       **({"commodity": ln["commodity"]} if ln.get("commodity") else {}),
+                       **({"unit": ln["unit"]} if ln.get("unit") else {}),
+                       "statement": deals.for_statement(ln)} for ln in lines
+                      if ln.get("row") in (None, "nego")]}
     async with SessionLocal() as db:
         pid = (await db.execute(text("SELECT id FROM product_proposals WHERE recommendation_id = :r"),
                                 {"r": r["recommendation_id"]})).scalar() if r["recommendation_id"] else None
