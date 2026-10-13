@@ -55,6 +55,15 @@ class DuplicateDocNo(RecommendError):
     """이미 발행한 발행번호로 다시 발행하려 함 — 화면은 팝업으로 알린다(409)."""
 
 
+class OverwriteNeeded(DuplicateDocNo):
+    """같은 영업 건에 같은 발행번호의 판이 있음 — 덮어쓸지 묻는다(409 + overwrite, 사용자 2026-10-13).
+    덮어쓰면 그 판의 파일·품목·금액만 바뀌고 번호·판은 그대로, 원래 파일은 보관."""
+
+    def __init__(self, message: str, doc_no: str, revision: int | None):
+        super().__init__(message)
+        self.doc_no, self.revision = doc_no, revision
+
+
 def _clean(s: Any, limit: int) -> str:
     return re.sub(r"\s+", " ", str(s or "")).strip()[:limit]
 
@@ -1292,14 +1301,65 @@ async def quote_photo_file(qid: int, name: str, *, user_id: int | None) -> bytes
     return next(iter(got.values()))
 
 
+def _printed_no(h: dict[str, Any]) -> str:
+    """판의 발행번호 — 새 체계 판은 quote_no, 예전 판은 견적서에 찍힌 번호(header.quote_no, 'VT20261008 (Rev.1)' 표기는 번호만)."""
+    no = str(h.get("quote_no") or (h.get("header") or {}).get("quote_no") or "")
+    return re.sub(r"\s*\(Rev\.\d+\)$", "", no).strip()
+
+
+async def _issue_with_no(db, deal_id: int, doc_no: str) -> dict[str, Any] | None:
+    """이 영업 건의 발행 판 중 이 번호(대소문자 무시)인 가장 최근 판. latest = 그 판이 이 건의 가장 최근 발행인지."""
+    rs = (await db.execute(text("SELECT id, history FROM product_quotes WHERE deal_id = :d ORDER BY id"),
+                           {"d": deal_id})).mappings().all()
+    best, newest = None, ""
+    for q in rs:
+        hist = q["history"] if isinstance(q["history"], list) else json.loads(q["history"] or "[]")
+        for i, h in enumerate(hist or []):
+            at = str(h.get("issued_at") or "")
+            newest = max(newest, at)
+            if _printed_no(h).upper() == doc_no.upper() and (best is None or at >= best["issued_at"]):
+                best = {"quote_id": q["id"], "index": i, "snap": h, "revision": h.get("revision"), "issued_at": at}
+    if best:
+        best["latest"] = best["issued_at"] == newest
+    return best
+
+
+async def _replace_issue(db, target: dict[str, Any], *, deal_id: int, user_id: int | None, upload_ref: dict[str, Any],
+                         lines: list[dict[str, Any]], total: float, currency: str, file_name: str) -> None:
+    """발행한 판을 밖에서 고친 파일로 교체(사용자 2026-10-13) — 번호·판·발행 시각은 그대로, 파일·품목·금액만 바꾼다.
+    원래 내용은 replaced 목록에 보관(지우지 않음). 가장 최근 판이면 영업 건 견적 금액·품목도. 커밋하지 않는다."""
+    from datetime import datetime, timezone
+
+    from ..sales_deals import service as deals
+
+    await db.execute(text("SELECT id FROM product_quotes WHERE id = :i FOR UPDATE"), {"i": target["quote_id"]})
+    old = target["snap"]
+    keep = {k: old[k] for k in ("upload", "lines", "total", "currency", "file_name", "replaced_at", "replaced_by") if k in old}
+    new = {**old, "lines": lines, "total": total, "currency": currency, "file_name": file_name, "upload": upload_ref,
+           "replaced_at": datetime.now(timezone.utc).isoformat(), "replaced_by": user_id,
+           "replaced": [*(old.get("replaced") or []), keep]}
+    last = (await db.execute(text("SELECT jsonb_array_length(history) - 1 FROM product_quotes WHERE id = :i"),
+                             {"i": target["quote_id"]})).scalar()
+    await db.execute(text(
+        "UPDATE product_quotes SET history = jsonb_set(history, CAST(:p AS text[]), CAST(:snap AS jsonb)), updated_at = NOW()"
+        + (", total = :t, file_name = :f" if target["index"] == last else "") + " WHERE id = :i"),
+        {"p": [str(target["index"])], "snap": json.dumps(new, ensure_ascii=False), "t": total, "f": file_name,
+         "i": target["quote_id"]})
+    await deals.quote_replaced(db, deal_id, user_id, {
+        "doc_no": _printed_no(old), "revision": (target["revision"] or 0) + 1, "items": lines, "total": total, "currency": currency,
+        "file": str(upload_ref.get("filename") or "")}, latest=target["latest"])
+
+
 async def quote_issue_upload(*, qid: int | None, deal_id: int | None, user_id: int | None, owner_check: bool,
                              upload: dict[str, Any], items: list[dict[str, Any]], initials: str,
-                             doc_no: str = "") -> dict[str, Any]:
+                             doc_no: str = "", overwrite: bool = False) -> dict[str, Any]:
     """밖에서 고친 견적서 파일로 발행(사용자 2026-10-12) — 견적서 발행 한 번으로 본다: 새 발행번호(QT-이니셜+발행일-NN)·판 +1·
     영업 건 견적(담당자가 확인한 품목·금액) 갱신, 발행 이력에 올린 파일을 남긴다(다시 받으면 그 파일 그대로).
     발행번호는 견적서에 적힌 번호(doc_no)를 따른다 — 담당자가 고치면서 정한 번호. 비어 있을 때만 이니셜로 새 번호.
     qid = 견적서 탭에서(작성 중인 견적), deal_id = 영업 건 상세에서(그 건의 최근 견적 기록, 없으면 새로 만든다).
-    upload = {key, filename, mime, size} — 이 견적·건 폴더에 올린 파일만."""
+    upload = {key, filename, mime, size} — 이 견적·건 폴더에 올린 파일만.
+    적힌 번호가 같은 영업 건에 이미 있으면(사용자 2026-10-13) 덮어쓸지 묻고(OverwriteNeeded), overwrite=True 면 그 판을 교체한다.
+    다른 영업 건의 번호는 거절."""
     from datetime import datetime, timezone
 
     from ..database import SessionLocal
@@ -1357,7 +1417,21 @@ async def quote_issue_upload(*, qid: int | None, deal_id: int | None, user_id: i
         subject = _FILE_BAD.sub(" ", str(f.get("subject") or "").strip()).strip() or "견적"
         try:
             link = r.get("deal_id") or deal_id
-            if given:                                   # 견적서에 적힌 번호 — 이미 발행한 번호면(어느 건이든) 거절, 우리 형식이면 기록
+            target = await _issue_with_no(db, link, given) if given and link else None
+            if target and not overwrite:                # 같은 영업 건의 같은 번호 — 덮어쓸지 묻는다(사용자 2026-10-13)
+                raise OverwriteNeeded(
+                    f"이 영업 건에 같은 발행번호({given})의 견적서가 있습니다(v{(target['revision'] or 0) + 1}). "
+                    "올린 파일로 덮어쓸까요? 번호·판은 그대로이고 원래 파일은 보관됩니다.", given, target["revision"])
+            if target:
+                fname = f"(주)유엔디로보틱스_견적서_{_FILE_BAD.sub(' ', customer).strip()}_{subject}_{given}{ext}"
+                upload_ref = {"key": key, "mime": qu.TYPES[ext], "filename": str(upload.get("filename") or "")[:200],
+                              "size": int(upload.get("size") or 0), "by": user_id}
+                await _replace_issue(db, target, deal_id=link, user_id=user_id, upload_ref=upload_ref, lines=lines,
+                                     total=total, currency=qx.CURRENCY[lang], file_name=fname)
+                await db.commit()
+                return {"quote": _quote_view(await _quote_row(db, r["id"], None)), "deal_id": link, "quote_no": given,
+                        "replaced": True}
+            if given:                                   # 견적서에 적힌 번호 — 다른 건에서 이미 발행한 번호면 거절, 우리 형식이면 기록
                 hit = await dn.issued_where(db, given)
                 if hit:
                     where = " · ".join(x for x in (hit["deal_no"], hit["customer"]) if x)

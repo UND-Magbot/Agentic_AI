@@ -799,8 +799,10 @@ function QuoteDocs({ deal, onQuote, onUploaded }: {
               {[...q.issues].reverse().map((h) => (
                 <li key={h.revision} className="flex flex-wrap items-center gap-2">
                   <span className="font-mono font-medium">{h.issue_no ?? h.quote_no ?? `v${h.revision + 1}`}</span>
+                  <span className="text-[11.5px] text-foreground-muted">v{h.revision + 1}</span>
                   {!h.revision && <span className="text-foreground-subtle">(최초 발행)</span>}
                   {h.uploaded && <span className="rounded bg-amber-500/12 px-1.5 text-[11px] font-semibold text-amber-700 dark:text-amber-300">외부 수정본</span>}
+                  {h.replaced_at && <span className="text-[11.5px] text-amber-700 dark:text-amber-300">파일 교체 {h.replaced_at.slice(0, 16).replace("T", " ")}</span>}
                   <span className="text-foreground-subtle">{h.issued_at.slice(0, 16).replace("T", " ")}</span>
                   <span>{h.currency === "USD" ? `$${h.total.toLocaleString("en-US")}` : `${won(h.total)}원`}</span>
                   <button type="button" className="ml-auto inline-flex items-center gap-1 font-semibold text-accent hover:underline"

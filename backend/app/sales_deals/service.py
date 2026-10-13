@@ -27,7 +27,7 @@ COLS = ("id, deal_no, meeting, kind, customer, contact, owner, title, base_date,
         "legacy, proposal_id, po_files, statement, pay_case, version, cur_no, dropped, drop_reason, created_at, updated_at")
 KST = ZoneInfo("Asia/Seoul")
 # 히스토리에서 문서 발행 줄 — 발행번호를 보여 주고, 같은 문서가 다시 발행되면 예전 줄은 '버전 업데이트됨'(사용자 2026-10-12)
-QUOTE_ACTIONS = ("create", "quote", "quote_revision", "quote_upload")
+QUOTE_ACTIONS = ("create", "quote", "quote_revision", "quote_upload", "quote_replace")
 JSON_COLS = ("quote", "pay_terms", "invoices", "payments", "shipments", "review_alerts", "legacy", "po_files", "statement",
              "meeting")
 ENTRY_KINDS = ("invoices", "payments", "shipments", "po_files")
@@ -68,8 +68,9 @@ def view(d: dict, today: dt.date) -> dict:
           "total": flow.expected_total(d), "paid": flow.paid(d), "due": flow.next_due(d),
           "overdue": flow.overdue(d, today)}
     # 표시 번호(사용자 2026-10-12) = 최근 견적서 발행번호(QT-LU20261012-01), 거래명세서를 발행했으면 최근 명세서 번호도(statement_no).
-    # 새 체계 전 건은 예전 번호 그대로(AL20261008-05·S26-…). 견적서 발행 전(제품 추천 확정)은 None.
-    d = {**d, "display_no": (d.get("quote") or {}).get("no") or d.get("cur_no") or d["deal_no"],
+    # 새 체계 전 건은 그때 견적서에 찍힌 번호 = 건 번호(AL20261008·S26-…). cur_no(AL20261012-02 …)는 예전 히스토리 번호라
+    # 보이지 않는다(사용자 2026-10-13). 견적서 발행 전(제품 추천 확정)은 None.
+    d = {**d, "display_no": (d.get("quote") or {}).get("no") or d["deal_no"],
          "statement_no": (d.get("statement") or {}).get("no") or None}
     return {**d, "po_files": po, "flow": fl, "stage": v["stage"], "shipped": v["shipped"], "invoice_status": v["invoice_status"],
             "alerts": reviews + v["alerts"], "legacy_no": legacy.get("legacy_no")}
@@ -83,21 +84,29 @@ def _hist_row(e: Any) -> dict:
     snap = e["snap"] if isinstance(e["snap"], dict) else json.loads(e["snap"] or "null") or {}
     detail = json.loads(e["detail"]) if isinstance(e["detail"], str) else e["detail"]
     doc = detail.get("no") if e["action"] in (*QUOTE_ACTIONS, "statement") else None
-    # 새 체계(10-13) 전 줄은 그때 발행번호가 ver_no 에 있다(그땐 히스토리 번호 = 발행번호). 새 코드는 ver_no 를 쓰지 않는다.
-    legacy = not doc and bool(e["ver_no"])
+    # 새 체계(10-13) 전 견적 줄은 번호가 detail 에 없다 — 그때 견적서에 찍힌 발행번호(printed)를 보인다(사용자 2026-10-13).
+    # 예전 히스토리 번호(ver_no, AL20261008-01 …)는 발행번호가 아니라 보이지 않는다.
+    legacy = not doc and bool(e["printed"])
     return {"id": e["id"], "action": e["action"], "detail": detail, "created_at": _iso(e["created_at"]),
             "user_name": e["user_name"], "stage": snap.get("stage"), "quote_rev": snap.get("quote_rev"), "amount": snap.get("amount"),
-            "doc_no": e["ver_no"] if legacy else doc, "doc_legacy": legacy}
+            "doc_no": e["printed"] if legacy else doc, "doc_legacy": legacy}
 
 
 async def _history(db: AsyncSession, deal_id: int | None = None) -> dict[int, list[dict]]:
     """건(프로젝트)별 히스토리 — 시간순 순번 1, 2, 3 …(사용자 2026-10-12: 발행번호로 나열하지 않음), 숨긴 줄·엑셀 이관 줄 빼고,
     최신 먼저. 되돌리기는 없앴다(문제는 고쳐서 재발행) — 기록은 쌓이기만 한다."""
+    # 예전 견적 줄(ver_no 가 있는 줄) ↔ 같은 순간(2분 안)에 남은 견적서 판 — 그 판의 견적서에 찍힌 번호
     rs = (await db.execute(text(
-        "SELECT e.id, e.deal_id, e.action, e.detail, e.ver_no, e.snap, e.created_at, COALESCE(u.alias, u.username) AS user_name "
+        "SELECT e.id, e.deal_id, e.action, e.detail, e.snap, e.created_at, COALESCE(u.alias, u.username) AS user_name, "
+        "  CASE WHEN e.ver_no IS NOT NULL AND e.action = ANY(:qa) THEN ("
+        "    SELECT regexp_replace(COALESCE(h->>'quote_no', h->'header'->>'quote_no'), '\\s*\\(Rev\\.\\d+\\)$', '') "
+        "    FROM product_quotes q, jsonb_array_elements(q.history) h "
+        "    WHERE q.deal_id = e.deal_id AND jsonb_typeof(q.history) = 'array' "
+        "      AND abs(extract(epoch FROM (CAST(h->>'issued_at' AS timestamptz) - e.created_at))) <= 120 "
+        "    ORDER BY abs(extract(epoch FROM (CAST(h->>'issued_at' AS timestamptz) - e.created_at))) LIMIT 1) END AS printed "
         "FROM sales_deal_events e LEFT JOIN users u ON u.id = e.user_id "
         "WHERE e.hidden_at IS NULL AND e.action <> 'import' AND (CAST(:d AS BIGINT) IS NULL OR e.deal_id = :d) "
-        "ORDER BY e.id"), {"d": deal_id})).mappings().all()
+        "ORDER BY e.id"), {"d": deal_id, "qa": list(QUOTE_ACTIONS)})).mappings().all()
     out: dict[int, list[dict]] = {}
     for e in rs:
         rows = out.setdefault(e["deal_id"], [])
@@ -194,45 +203,24 @@ async def deal_quotes(db: AsyncSession, proposal_id: int | None, deal_id: int | 
         "FROM product_quotes q LEFT JOIN product_proposals p ON p.recommendation_id = q.recommendation_id "
         "LEFT JOIN users u ON u.id = q.user_id WHERE (CAST(:p AS BIGINT) IS NOT NULL AND p.id = :p) OR q.deal_id = :d "
         "ORDER BY q.id"), {"p": proposal_id, "d": deal_id})).mappings().all()
-    legacy = await _legacy_quote_nos(db, deal_id) if deal_id else []
     out = []
     for q in rs:
         hist = json.loads(q["history"]) if isinstance(q["history"], str) else (q["history"] or [])
         out.append({"id": q["id"], "status": q["status"], "quote_no": q["quote_no"], "revision": q["revision"],
                     "writer": q["writer"], "updated_at": _iso(q["updated_at"]),
-                    "issues": [{**{k: h.get(k) for k in ("revision", "quote_no", "issued_at", "total", "currency")},
-                                "issue_no": _issue_no(h, legacy),
+                    "issues": [{**{k: h.get(k) for k in ("revision", "quote_no", "issued_at", "total", "currency", "replaced_at")},
+                                "issue_no": _issue_no(h),
                                 "uploaded": bool(h.get("upload")),
                                 # 예전 발행본 파일명('_Revn'·이니셜·날짜 중복)은 지금 이름 규칙으로(사용자 2026-10-08)
                                 "file_name": clean_quote_file_name(str(h.get("file_name") or ""))} for h in hist]})
     return out
 
 
-# 예전 판 ↔ 그때 히스토리 줄은 같은 순간에 기록됐다(운영 데이터 11건 모두 1초 이내) — 이 안이면 같은 발행으로 본다.
-_LEGACY_MATCH = dt.timedelta(minutes=2)
-
-
-async def _legacy_quote_nos(db: AsyncSession, deal_id: int) -> list[dict]:
-    """새 체계(10-13) 전 견적 발행 줄의 그때 발행번호(ver_no)·시각 — 예전 판에 번호를 붙일 때 쓴다(한 줄은 한 판에만)."""
-    rs = (await db.execute(text(
-        "SELECT ver_no, created_at FROM sales_deal_events WHERE deal_id = :d AND ver_no IS NOT NULL AND hidden_at IS NULL "
-        "AND action = ANY(:a) ORDER BY id"), {"d": deal_id, "a": list(QUOTE_ACTIONS)})).mappings().all()
-    return [{"no": r["ver_no"], "at": r["created_at"], "used": False} for r in rs]
-
-
-def _issue_no(h: dict, legacy: list[dict]) -> str | None:
-    """판의 발행번호 — 새 체계 번호(QT-…)는 그대로, 예전 판은 같은 순간의 히스토리 줄 번호(AL20261008-01 등).
-    못 찾으면 견적서에 찍힌 번호. 파일은 그때 그대로 내려준다(사용자 2026-10-13)."""
-    no = h.get("quote_no") or (h.get("header") or {}).get("quote_no")   # 예전 판은 header 안에만 있다
-    if dn.DOC_NO_RE.match(str(no or "")) or not h.get("issued_at"):
-        return no
-    at = dt.datetime.fromisoformat(str(h["issued_at"]))
-    near = [x for x in legacy if not x["used"] and abs(x["at"] - at) <= _LEGACY_MATCH]
-    if not near:
-        return no
-    best = min(near, key=lambda x: abs(x["at"] - at))
-    best["used"] = True
-    return best["no"]
+def _issue_no(h: dict) -> str | None:
+    """판의 발행번호 — 새 체계 판은 quote_no(QT-…), 예전 판은 그때 견적서에 찍힌 번호(header, 사용자 2026-10-13).
+    'VT20261008 (Rev.1)' 같은 예전 표기는 번호만."""
+    no = h.get("quote_no") or (h.get("header") or {}).get("quote_no")
+    return re.sub(r"\s*\(Rev\.\d+\)$", "", str(no)).strip() if no else None
 
 
 async def _lock(db: AsyncSession, deal_id: int) -> dict:
@@ -410,6 +398,20 @@ async def quote_deal(db: AsyncSession, user_id: int | None, proposal_id: int | N
                 **({"file": p["file"]} if p.get("file") else {}),
                 **({"deal_no": deal_no} if not r.deal_no else {})})
     return r.id, deal_no
+
+
+async def quote_replaced(db: AsyncSession, deal_id: int, user_id: int | None, p: dict, *, latest: bool) -> None:
+    """견적서 파일 교체(사용자 2026-10-13) — 같은 발행번호의 판을 밖에서 고친 파일로 바꿨다. 번호·판·견적일은 그대로.
+    가장 최근 판이면 건 견적의 품목·금액도 그 파일 기준으로(예전 판이면 건의 현재 견적은 그대로). 이력 'quote_replace'.
+    p = {doc_no, revision(사내 판 1·2 …), items, total, currency, file}. 커밋하지 않는다."""
+    d = await _lock(db, deal_id)
+    if latest:
+        q = d.get("quote") or {}
+        day = dt.date.fromisoformat(q["date"]) if q.get("date") else kst_today()
+        new = _quote_from_items(p["items"], day, bool(q.get("vat_included")), p["currency"])
+        await _save(db, deal_id, quote={**q, "items": new["items"], "amount": new["amount"], "currency": p["currency"]})
+    await _log(db, deal_id, user_id, "quote_replace", {"no": p["doc_no"], "revision": p["revision"], "amount": p["total"],
+                                                       "file": p["file"], "latest": latest})
 
 
 async def set_won(db: AsyncSession, deal_id: int, user_id: int | None, won: bool | None, day: dt.date | None) -> None:

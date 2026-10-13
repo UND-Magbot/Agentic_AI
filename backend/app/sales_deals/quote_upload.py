@@ -144,6 +144,8 @@ class UploadConfirmIn(BaseModel):
     doc_no: str = Field(default="", max_length=40)
     initials: str = Field(default="", max_length=4)
     items: list[UploadItem] = Field(min_length=1, max_length=MAX_ITEMS)
+    # 같은 영업 건에 같은 번호의 판이 있을 때, 덮어쓰기 확인을 받고 다시 보낸 요청(사용자 2026-10-13)
+    overwrite: bool = False
 
 
 async def store_and_read(file, folder: str) -> dict[str, Any]:

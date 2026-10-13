@@ -665,9 +665,12 @@ async def quote_upload_confirm(deal_id: int, body: "QuoteUploadConfirm", user: U
     try:
         await pr.quote_issue_upload(qid=None, deal_id=deal_id, user_id=user.id, owner_check=False,
                                     upload=body.upload.model_dump(), items=[x.model_dump() for x in body.items],
-                                    initials=body.initials, doc_no=body.doc_no)
+                                    initials=body.initials, doc_no=body.doc_no, overwrite=body.overwrite)
     except svc.DealError as e:
         raise _fail(e) from e
+    except pr.OverwriteNeeded as e:                       # 같은 건의 같은 번호 — 화면이 덮어쓸지 묻는다
+        raise HTTPException(status.HTTP_409_CONFLICT, detail={"message": str(e), "overwrite": True,
+                                                               "doc_no": e.doc_no, "revision": e.revision}) from e
     except pr.DuplicateDocNo as e:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(e)) from e
     except pr.RecommendError as e:

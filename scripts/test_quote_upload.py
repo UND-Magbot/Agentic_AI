@@ -5,7 +5,8 @@
         python /scripts/test_quote_upload.py
 
 확인: 품목 검사 / 견적서 탭에서 올린 파일로 발행 → 견적서에 적힌 발행번호 그대로·판 +1·영업 건 금액·히스토리(외부 수정본) /
-적힌 번호가 우리 형식이면 기록돼 그날 다음 번호와 안 겹침 / 다른 건이 쓰는 번호 거절 / 번호가 없으면 새 번호 /
+적힌 번호가 우리 형식이면 기록돼 그날 다음 번호와 안 겹침 / 같은 건의 같은 번호는 덮어쓸지 묻고 덮어쓰면 그 판만 교체
+(원래 파일 보관·히스토리 '견적서 파일 교체'·최신 판이면 건 금액도) / 다른 건이 쓰는 번호 거절 / 번호가 없으면 새 번호 /
 다시 받으면 올린 파일 그대로 / 영업 건 상세에서(견적 기록 없는 건) 올리면 기록을 만들어 발행 / 다른 폴더 파일 거절 / 읽을 수 없는 파일.
 AI 판독(read)은 사내 AI 를 부르므로 여기서는 '읽을 수 없는 파일' 경로만 본다.
 """
@@ -125,26 +126,72 @@ async def run() -> None:
     issued = [x for x in d["quotes"][0]["issues"] if x["uploaded"]]
     check(len(issued) == 1 and issued[0]["quote_no"] == no, "영업 건 상세 견적서 목록에도 외부 수정본 판(번호 포함)")
 
-    # ── 이미 있는 발행번호로 다시 발행 → 거절(사용자 2026-10-13: 같은 건이든 다른 건이든, 예전 형식 번호도) ──
-    async def dup(doc_no: str) -> str | None:
+    # ── 같은 영업 건의 같은 발행번호 → 덮어쓸지 묻고, 덮어쓰면 그 판만 교체(사용자 2026-10-13) ──
+    async def ask(doc_no: str) -> pr.OverwriteNeeded | None:
         try:
             await pr.quote_issue_upload(qid=q["id"], deal_id=None, user_id=uid, owner_check=True, upload=up, initials="",
                                         doc_no=doc_no, items=[{"name": "A", "spec": "", "qty": 1, "unit_price": 1}])
-        except pr.DuplicateDocNo as e:
-            return str(e)
+        except pr.OverwriteNeeded as e:
+            return e
         return None
-    msg = await dup(typed)
-    check(bool(msg) and "이미 존재하는 발행번호" in msg and typed in msg, "같은 영업 건에서 쓴 번호로 다시 발행 → 거절", str(msg))
-    check(bool(await dup(typed.lower())), "대소문자만 달라도 같은 번호로 봄")
-    check(bool(await dup(first_no)), "AI 견적서로 처음 발행한 번호(시스템이 매긴 번호)도 거절")
+    e1 = await ask(typed)
+    check(bool(e1) and "덮어쓸까요" in str(e1) and e1.doc_no == typed and e1.revision == 1,
+          "같은 영업 건에서 쓴 번호 → 덮어쓸지 묻는다(어느 판인지 함께)", str(e1))
+    check(bool(await ask(typed.lower())), "대소문자만 달라도 같은 번호로 봄")
+    check(bool(await ask(first_no)), "AI 견적서로 처음 발행한 번호(시스템이 매긴 번호)도 덮어쓰기 대상")
     old_no = f"S{TODAY:%y}-{uuid.uuid4().hex[:6].upper()}"          # 예전 형식 번호(doc_numbers 에 기록 안 됨)
     r_old = await pr.quote_issue_upload(qid=q["id"], deal_id=None, user_id=uid, owner_check=True, upload=up, initials="",
                                         doc_no=old_no, items=[{"name": "A", "spec": "", "qty": 1, "unit_price": 2_200_000}])
-    check(r_old["quote_no"] == old_no and bool(await dup(old_no)), "예전 형식 번호도 한 번 발행하면 다시는 못 씀", old_no)
+    check(r_old["quote_no"] == old_no and bool(await ask(old_no)), "예전 형식 번호도 같은 건이면 덮어쓰기 대상", old_no)
     async with SessionLocal() as db:
         cnt = (await db.execute(text("SELECT COUNT(*) FROM sales_deal_events WHERE deal_id = :d AND detail->>'no' = :n"),
                                 {"d": deal_id, "n": typed})).scalar()
-    check(cnt == 1, "거절된 발행은 영업 건 이력에 남지 않음", str(cnt))
+        hist_before = (await db.execute(text("SELECT history FROM product_quotes WHERE id = :i"), {"i": q["id"]})).scalar()
+    check(cnt == 1, "묻기만 한 요청은 영업 건 이력에 남지 않음", str(cnt))
+
+    # 예전 판(typed, v2)을 덮어쓰기 — 판 수·번호 그대로, 그 판의 파일·금액만, 건의 현재 금액(최신 판 old_no)은 그대로
+    wb2 = Workbook()                                             # 내용이 다른 파일
+    wb2.active.append(["교체본", 1])
+    buf2 = io.BytesIO()
+    wb2.save(buf2)
+    new_data = buf2.getvalue()
+    up_new = store(f"product-quotes/{q['id']}/", new_data)
+    rep = await pr.quote_issue_upload(qid=q["id"], deal_id=None, user_id=uid, owner_check=True, upload=up_new, initials="",
+                                      doc_no=typed, overwrite=True,
+                                      items=[{"name": "Magbot ATC", "spec": "교체", "qty": 2, "unit_price": 1_500_000}])
+    async with SessionLocal() as db:
+        hist_after = (await db.execute(text("SELECT history FROM product_quotes WHERE id = :i"), {"i": q["id"]})).scalar()
+        d3 = await svc.get_deal(db, deal_id, TODAY)
+    snap = hist_after[1]
+    check(rep.get("replaced") and rep["quote_no"] == typed and len(hist_after) == len(hist_before)
+          and snap["quote_no"] == typed and snap["revision"] == hist_before[1]["revision"]
+          and snap["issued_at"] == hist_before[1]["issued_at"] and snap["total"] == 3_000_000
+          and snap["upload"]["key"] == up_new["key"],
+          "덮어쓰기: 판 수·번호·판·발행 시각 그대로, 그 판의 파일·금액만 바뀜", str({k: snap.get(k) for k in ("quote_no", "total")}))
+    check(snap["replaced"] and snap["replaced"][0]["upload"]["key"] == up["key"] and snap["replaced"][0]["total"] == 2_200_000,
+          "원래 파일·금액은 보관(replaced)", str(snap.get("replaced")))
+    _, got_rep = await pr.quote_file(q["id"], user_id=uid, revision=snap["revision"], fmt="xlsx")
+    check(got_rep == new_data, "그 판을 다시 받으면 바뀐 파일")
+    check(d3["quote"]["amount"] == 2_200_000 and d3["display_no"] == old_no,
+          "예전 판을 바꾸면 건의 현재 견적(최신 판)은 그대로", str((d3["quote"]["amount"], d3["display_no"])))
+    top = d3["history"][0]
+    check(top["action"] == "quote_replace" and top["doc_no"] == typed and top["detail"]["revision"] == 2
+          and top["detail"]["latest"] is False,
+          "히스토리 맨 위 '견적서 파일 교체' + 그 번호", str({k: top.get(k) for k in ("action", "doc_no", "detail")}))
+    iss = {x["issue_no"]: x for x in d3["quotes"][0]["issues"]}
+    check(iss[typed]["replaced_at"] and iss[typed]["uploaded"] and len(d3["quotes"][0]["issues"]) == len(hist_before),
+          "영업 건 상세 견적서 목록: 그 판에 교체 표시, 판 수 그대로", str(iss.get(typed)))
+
+    # 최신 판(old_no)을 덮어쓰기 — 건의 견적 금액·품목도 바뀜
+    up_new2 = store(f"product-quotes/{q['id']}/", new_data)
+    await pr.quote_issue_upload(qid=q["id"], deal_id=None, user_id=uid, owner_check=True, upload=up_new2, initials="",
+                                doc_no=old_no, overwrite=True,
+                                items=[{"name": "TCV3", "spec": "", "qty": 1, "unit_price": 3_300_000}])
+    async with SessionLocal() as db:
+        d4 = await svc.get_deal(db, deal_id, TODAY)
+    check(d4["quote"]["amount"] == 3_300_000 and d4["quote"]["items"][0]["name"] == "TCV3" and d4["display_no"] == old_no
+          and d4["quote"].get("no") == old_no and d4["history"][0]["detail"]["latest"] is True,
+          "최신 판을 바꾸면 건의 견적 금액·품목도 바뀜(번호 그대로)", str((d4["quote"]["amount"], d4["display_no"])))
 
     # ── 품목 사진(사용자 2026-10-12) — 줄에 붙이고 견적서 Remark 칸에 ──
     from PIL import Image as _Img
@@ -201,7 +248,8 @@ async def run() -> None:
                                     doc_no=typed, items=[{"name": "TCV3", "spec": "", "qty": 1, "unit_price": 1}])
         check(False, "다른 영업 건이 쓰는 번호는 거절")
     except pr.DuplicateDocNo as e:
-        check("이미 존재하는 발행번호" in str(e) and CUSTOMER in str(e), "다른 영업 건이 쓰는 번호는 거절(어느 건에서 발행했는지 안내)", str(e))
+        check("이미 존재하는 발행번호" in str(e) and CUSTOMER in str(e) and not isinstance(e, pr.OverwriteNeeded),
+              "다른 영업 건이 쓰는 번호는 거절(덮어쓰기 아님, 어느 건에서 발행했는지 안내)", str(e))
     res2 = await pr.quote_issue_upload(qid=None, deal_id=manual_id, user_id=uid, owner_check=False, upload=up2, initials="VT",
                                        doc_no="", items=[{"name": "TCV3", "spec": "본체", "qty": 1, "unit_price": 2_900_000}])
     async with SessionLocal() as db:

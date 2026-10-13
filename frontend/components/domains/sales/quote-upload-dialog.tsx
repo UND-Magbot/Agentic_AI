@@ -37,6 +37,8 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
   const [error, setError] = useState<string | null>(null);
   // 이미 있는 발행번호로 발행하려 할 때 팝업(사용자 2026-10-13) — [확인]이면 발행번호 칸으로 돌아가 고친다
   const [dupMsg, setDupMsg] = useState<string | null>(null);
+  // 같은 영업 건에 같은 번호의 판이 있을 때 — 덮어쓸지 묻는 팝업(사용자 2026-10-13)
+  const [overMsg, setOverMsg] = useState<string | null>(null);
 
   // 발행자 이니셜 기본값 = 로그인 계정(내 정보) — 고칠 수 있음
   useEffect(() => {
@@ -46,10 +48,10 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
     return () => { alive = false; };
   }, []);
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !busy && !dupMsg) onClose(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !busy && !dupMsg && !overMsg) onClose(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [busy, dupMsg, onClose]);
+  }, [busy, dupMsg, overMsg, onClose]);
 
   function closeDup() {
     setDupMsg(null);
@@ -82,22 +84,25 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
     }
   }
 
-  async function issue() {
+  async function issue(overwrite = false) {
     if (!upload) return;
     if (!docNo.trim() && !/^[A-Za-z]{2,4}$/.test(initials.trim())) {
       setError("견적서에 발행번호가 없으면 발행자 이니셜을 영문 2~4자로 적어 주세요(예: LU) — 새 번호를 매깁니다.");
       return;
     }
-    setBusy("발행하는 중…");
+    setOverMsg(null);
+    setBusy(overwrite ? "덮어쓰는 중…" : "발행하는 중…");
     setError(null);
     try {
       const r = await fetch(confirmUrl, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ upload, doc_no: docNo.trim(), initials: initials.trim().toUpperCase(), items }),
+        body: JSON.stringify({ upload, doc_no: docNo.trim(), initials: initials.trim().toUpperCase(), items, overwrite }),
       });
       const d = await r.json().catch(() => ({}));
       if (r.status === 409) {
-        setDupMsg(detail(d, "이미 존재하는 발행번호입니다. 견적서의 발행번호를 새 번호로 고쳐 주세요."));
+        const x = (d as { detail?: { overwrite?: boolean; message?: string } })?.detail;
+        if (x && typeof x === "object" && x.overwrite) setOverMsg(x.message ?? "같은 발행번호의 견적서가 있습니다. 덮어쓸까요?");
+        else setDupMsg(detail(d, "이미 존재하는 발행번호입니다. 견적서의 발행번호를 새 번호로 고쳐 주세요."));
         setBusy(null);
         return;
       }
@@ -119,7 +124,7 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
   return (
     <div role="dialog" aria-modal="true" aria-labelledby="qup-title"
          className="anim-fade-in fixed inset-0 z-50 grid place-items-center bg-black/40 px-4"
-         onMouseDown={(e) => { if (e.target === e.currentTarget && !busy && !dupMsg) onClose(); }}>
+         onMouseDown={(e) => { if (e.target === e.currentTarget && !busy && !dupMsg && !overMsg) onClose(); }}>
       <div className="anim-fade-in-up max-h-[90vh] w-full max-w-[760px] overflow-y-auto rounded-2xl border border-border bg-surface-raised p-5 text-[13px] shadow-[0_30px_70px_-30px_rgba(15,30,70,0.55)]">
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -247,10 +252,26 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
           <div className="anim-fade-in-up w-full max-w-[420px] rounded-2xl border border-border bg-surface-raised p-5 text-[13px] shadow-[0_30px_70px_-30px_rgba(15,30,70,0.55)]">
             <h3 id="qup-dup-title" className="text-[15px] font-semibold text-red-600">이미 존재하는 발행번호</h3>
             <p id="qup-dup-msg" className="mt-2 text-[13px] leading-relaxed text-foreground">{dupMsg}</p>
-            <p className="mt-1 text-[12px] text-foreground-muted">같은 번호로는 다시 발행할 수 없습니다. 고친 견적서는 새 발행번호로 발행해 주세요(비워 두면 이니셜로 새 번호를 매깁니다).</p>
+            <p className="mt-1 text-[12px] text-foreground-muted">다른 영업 건에서 쓴 번호로는 발행할 수 없습니다. 견적서의 발행번호를 고쳐 주세요(비워 두면 이니셜로 새 번호를 매깁니다).</p>
             <div className="mt-4 flex justify-end">
               <button type="button" autoFocus onClick={closeDup}
                       className="h-9 rounded-lg bg-accent px-5 text-[13px] font-semibold text-white hover:brightness-105">확인</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {overMsg && (
+        <div role="alertdialog" aria-modal="true" aria-labelledby="qup-over-title" aria-describedby="qup-over-msg"
+             className="anim-fade-in fixed inset-0 z-[60] grid place-items-center bg-black/30 px-4">
+          <div className="anim-fade-in-up w-full max-w-[440px] rounded-2xl border border-border bg-surface-raised p-5 text-[13px] shadow-[0_30px_70px_-30px_rgba(15,30,70,0.55)]">
+            <h3 id="qup-over-title" className="text-[15px] font-semibold text-amber-700 dark:text-amber-300">같은 발행번호의 견적서가 있습니다</h3>
+            <p id="qup-over-msg" className="mt-2 text-[13px] leading-relaxed text-foreground">{overMsg}</p>
+            <p className="mt-1 text-[12px] text-foreground-muted">덮어쓰면 그 판을 다시 받을 때 올린 파일이 나가고, 품목·금액도 올린 파일 기준으로 바뀝니다. 히스토리에 &lsquo;견적서 파일 교체&rsquo;가 남습니다. 번호를 바꿔 새 판으로 내려면 [취소] 후 발행번호를 고쳐 주세요.</p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" onClick={() => { setOverMsg(null); closeDup(); }}
+                      className="h-9 rounded-lg border border-border px-4 text-[13px] font-semibold hover:bg-foreground/5">취소</button>
+              <button type="button" autoFocus onClick={() => void issue(true)}
+                      className="h-9 rounded-lg bg-amber-600 px-5 text-[13px] font-semibold text-white hover:brightness-105">덮어쓰기</button>
             </div>
           </div>
         </div>
