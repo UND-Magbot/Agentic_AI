@@ -75,8 +75,9 @@ export interface DealQuoteDoc {
   revision: number;
   writer: string | null;
   updated_at: string | null;
-  /** quote_no = 그 판의 발행번호, uploaded = 밖에서 고친 파일을 올려 발행한 판 */
-  issues: { revision: number; quote_no?: string | null; uploaded?: boolean; issued_at: string; total: number;
+  /** quote_no = 견적서에 찍힌 번호, issue_no = 그 판의 발행번호(새 체계 QT-…, 예전 판은 그때 번호 AL20261008-01 등),
+   *  uploaded = 밖에서 고친 파일을 올려 발행한 판 */
+  issues: { revision: number; quote_no?: string | null; issue_no?: string | null; uploaded?: boolean; issued_at: string; total: number;
             currency: "KRW" | "USD"; file_name: string }[];
 }
 
@@ -149,8 +150,10 @@ export interface DealHistory extends DealEvent {
   id: number;
   /** 시간순 순번(처음 일 = 1) */
   seq: number;
-  /** 견적서·거래명세서 발행 줄의 발행번호(QT-LU20261012-01 · TS-…) */
+  /** 견적서·거래명세서 발행 줄의 발행번호(QT-LU20261012-01 · TS-…). 새 체계 전 줄은 그때 번호(AL20261008-01 등) */
   doc_no: string | null;
+  /** doc_no 가 새 체계(10-13) 전 형식의 번호인지 */
+  doc_legacy?: boolean;
   /** 그때 단계·견적서 판·공급가액 */
   stage: DealStage | null;
   quote_rev: number | null;

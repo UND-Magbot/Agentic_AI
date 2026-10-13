@@ -526,6 +526,7 @@ function HistoryPanel({ row }: { row: DealRow }) {
               </td>
               <td className="whitespace-nowrap px-3 py-1.5 font-mono text-[12px]">
                 {h.doc_no ?? <Muted>-</Muted>}
+                {h.doc_legacy && <span className="ml-1.5 rounded bg-foreground/5 px-1 font-sans text-[10.5px] text-foreground-muted">이전 형식</span>}
                 {h.superseded && <div className="font-sans text-[10.5px] font-semibold text-amber-700 dark:text-amber-300">└ 버전 업데이트됨</div>}
               </td>
               <td className="whitespace-nowrap px-3 py-1.5">

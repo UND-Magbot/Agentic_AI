@@ -798,14 +798,14 @@ function QuoteDocs({ deal, onQuote, onUploaded }: {
             <ul className="flex flex-col gap-1 text-[12.5px]">
               {[...q.issues].reverse().map((h) => (
                 <li key={h.revision} className="flex flex-wrap items-center gap-2">
-                  <span className="font-mono font-medium">{h.quote_no ?? `v${h.revision + 1}`}</span>
+                  <span className="font-mono font-medium">{h.issue_no ?? h.quote_no ?? `v${h.revision + 1}`}</span>
                   {!h.revision && <span className="text-foreground-subtle">(최초 발행)</span>}
                   {h.uploaded && <span className="rounded bg-amber-500/12 px-1.5 text-[11px] font-semibold text-amber-700 dark:text-amber-300">외부 수정본</span>}
                   <span className="text-foreground-subtle">{h.issued_at.slice(0, 16).replace("T", " ")}</span>
                   <span>{h.currency === "USD" ? `$${h.total.toLocaleString("en-US")}` : `${won(h.total)}원`}</span>
                   <button type="button" className="ml-auto inline-flex items-center gap-1 font-semibold text-accent hover:underline"
                           onClick={() => setSaving({ quote: q.id, revision: h.revision, fileName: h.file_name,
-                                                     title: `${h.quote_no ?? q.quote_no ?? "견적서"} 다시 다운로드` })}>
+                                                     title: `${h.issue_no ?? h.quote_no ?? q.quote_no ?? "견적서"} 다시 다운로드` })}>
                     <Icon name="download" className="h-3.5 w-3.5" /> 다시 다운로드
                   </button>
                 </li>

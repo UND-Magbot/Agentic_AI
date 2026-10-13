@@ -83,16 +83,18 @@ def _hist_row(e: Any) -> dict:
     snap = e["snap"] if isinstance(e["snap"], dict) else json.loads(e["snap"] or "null") or {}
     detail = json.loads(e["detail"]) if isinstance(e["detail"], str) else e["detail"]
     doc = detail.get("no") if e["action"] in (*QUOTE_ACTIONS, "statement") else None
+    # 새 체계(10-13) 전 줄은 그때 발행번호가 ver_no 에 있다(그땐 히스토리 번호 = 발행번호). 새 코드는 ver_no 를 쓰지 않는다.
+    legacy = not doc and bool(e["ver_no"])
     return {"id": e["id"], "action": e["action"], "detail": detail, "created_at": _iso(e["created_at"]),
             "user_name": e["user_name"], "stage": snap.get("stage"), "quote_rev": snap.get("quote_rev"), "amount": snap.get("amount"),
-            "doc_no": doc}
+            "doc_no": e["ver_no"] if legacy else doc, "doc_legacy": legacy}
 
 
 async def _history(db: AsyncSession, deal_id: int | None = None) -> dict[int, list[dict]]:
     """건(프로젝트)별 히스토리 — 시간순 순번 1, 2, 3 …(사용자 2026-10-12: 발행번호로 나열하지 않음), 숨긴 줄·엑셀 이관 줄 빼고,
     최신 먼저. 되돌리기는 없앴다(문제는 고쳐서 재발행) — 기록은 쌓이기만 한다."""
     rs = (await db.execute(text(
-        "SELECT e.id, e.deal_id, e.action, e.detail, e.snap, e.created_at, COALESCE(u.alias, u.username) AS user_name "
+        "SELECT e.id, e.deal_id, e.action, e.detail, e.ver_no, e.snap, e.created_at, COALESCE(u.alias, u.username) AS user_name "
         "FROM sales_deal_events e LEFT JOIN users u ON u.id = e.user_id "
         "WHERE e.hidden_at IS NULL AND e.action <> 'import' AND (CAST(:d AS BIGINT) IS NULL OR e.deal_id = :d) "
         "ORDER BY e.id"), {"d": deal_id})).mappings().all()
@@ -192,16 +194,45 @@ async def deal_quotes(db: AsyncSession, proposal_id: int | None, deal_id: int | 
         "FROM product_quotes q LEFT JOIN product_proposals p ON p.recommendation_id = q.recommendation_id "
         "LEFT JOIN users u ON u.id = q.user_id WHERE (CAST(:p AS BIGINT) IS NOT NULL AND p.id = :p) OR q.deal_id = :d "
         "ORDER BY q.id"), {"p": proposal_id, "d": deal_id})).mappings().all()
+    legacy = await _legacy_quote_nos(db, deal_id) if deal_id else []
     out = []
     for q in rs:
         hist = json.loads(q["history"]) if isinstance(q["history"], str) else (q["history"] or [])
         out.append({"id": q["id"], "status": q["status"], "quote_no": q["quote_no"], "revision": q["revision"],
                     "writer": q["writer"], "updated_at": _iso(q["updated_at"]),
                     "issues": [{**{k: h.get(k) for k in ("revision", "quote_no", "issued_at", "total", "currency")},
+                                "issue_no": _issue_no(h, legacy),
                                 "uploaded": bool(h.get("upload")),
                                 # 예전 발행본 파일명('_Revn'·이니셜·날짜 중복)은 지금 이름 규칙으로(사용자 2026-10-08)
                                 "file_name": clean_quote_file_name(str(h.get("file_name") or ""))} for h in hist]})
     return out
+
+
+# 예전 판 ↔ 그때 히스토리 줄은 같은 순간에 기록됐다(운영 데이터 11건 모두 1초 이내) — 이 안이면 같은 발행으로 본다.
+_LEGACY_MATCH = dt.timedelta(minutes=2)
+
+
+async def _legacy_quote_nos(db: AsyncSession, deal_id: int) -> list[dict]:
+    """새 체계(10-13) 전 견적 발행 줄의 그때 발행번호(ver_no)·시각 — 예전 판에 번호를 붙일 때 쓴다(한 줄은 한 판에만)."""
+    rs = (await db.execute(text(
+        "SELECT ver_no, created_at FROM sales_deal_events WHERE deal_id = :d AND ver_no IS NOT NULL AND hidden_at IS NULL "
+        "AND action = ANY(:a) ORDER BY id"), {"d": deal_id, "a": list(QUOTE_ACTIONS)})).mappings().all()
+    return [{"no": r["ver_no"], "at": r["created_at"], "used": False} for r in rs]
+
+
+def _issue_no(h: dict, legacy: list[dict]) -> str | None:
+    """판의 발행번호 — 새 체계 번호(QT-…)는 그대로, 예전 판은 같은 순간의 히스토리 줄 번호(AL20261008-01 등).
+    못 찾으면 견적서에 찍힌 번호. 파일은 그때 그대로 내려준다(사용자 2026-10-13)."""
+    no = h.get("quote_no") or (h.get("header") or {}).get("quote_no")   # 예전 판은 header 안에만 있다
+    if dn.DOC_NO_RE.match(str(no or "")) or not h.get("issued_at"):
+        return no
+    at = dt.datetime.fromisoformat(str(h["issued_at"]))
+    near = [x for x in legacy if not x["used"] and abs(x["at"] - at) <= _LEGACY_MATCH]
+    if not near:
+        return no
+    best = min(near, key=lambda x: abs(x["at"] - at))
+    best["used"] = True
+    return best["no"]
 
 
 async def _lock(db: AsyncSession, deal_id: int) -> dict:

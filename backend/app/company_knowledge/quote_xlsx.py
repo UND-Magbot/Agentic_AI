@@ -201,7 +201,9 @@ def _photo_at(ws, data: bytes, *, row: int, has_text: bool) -> None:
 def build_xlsx(header: dict[str, Any], lines: list[dict[str, Any]], photos: dict[str, bytes] | None = None) -> bytes:
     """견적서 한 장(A4 세로, A~G열) → xlsx 바이트. photos = {사진 키: 바이트} — 줄의 photo 가 있으면 Remark 칸에 작게."""
     en = header["lang"] == "en"
-    lab, iss, terms, ct = header["labels"], header["issuer"], header["terms"], header["contact"]
+    # 예전에 발행한 판의 머리(header)엔 그때 항목명만 있다 — 나중에 생긴 항목명(품목·규격 등)은 지금 기본값으로 채운다.
+    lab = {**pp.QUOTE_LABELS["en" if en else "ko"], **header["labels"]}
+    iss, terms, ct = header["issuer"], header["terms"], header["contact"]
     money = USD if header.get("currency") == "USD" else WON
     wb = Workbook()
     ws = wb.active
