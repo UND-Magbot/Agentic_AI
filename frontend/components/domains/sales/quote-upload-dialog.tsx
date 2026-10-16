@@ -4,6 +4,7 @@
 // ① 파일(엑셀·PDF) + 발행자 이니셜(기본 = 로그인 계정) → 올리면 AI 가 품목·금액을 읽는다
 // ② 읽은 품목·발행번호를 확인·수정 → [이 내용으로 발행] = 견적서 발행 한 번(판 +1, 영업 건 금액 갱신).
 //    발행번호는 견적서에 적힌 번호를 따른다(담당자가 고치면서 정한 번호). 적힌 번호가 없을 때만 새 번호 QT-이니셜+오늘-NN.
+// ③ 발행하면 작성 상태도 올린 파일 내용으로 맞춘다(사용자 2026-10-15) — [견적서 고치기]·미리보기·AI 대화가 이어진다(끌 수 있음).
 import { useEffect, useState } from "react";
 
 import { Icon } from "@/components/shared/ui/icon";
@@ -12,7 +13,8 @@ import { cn } from "@/lib/shared/utils";
 type Item = { name: string; spec: string; qty: number | null; unit_price: number | null };
 type Upload = { key: string; filename: string; mime: string; size: number };
 type ReadResult = { status: "ok" | "unreadable" | "failed"; items: Item[]; supply_total?: number | null;
-                    vat_included?: boolean | null; doc_no?: string | null; summary: string };
+                    vat_included?: boolean | null; doc_no?: string | null; summary: string; template?: boolean };
+type SyncPreview = { applies: boolean; template: boolean; changes: string[]; warnings: string[]; message: string };
 
 const ACCEPT = ".xlsx,.pdf";
 const inputCls = "h-8 w-full min-w-0 rounded-md border border-border bg-surface px-2 text-[12.5px] outline-none focus:border-accent";
@@ -33,12 +35,22 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
   const [read, setRead] = useState<ReadResult | null>(null);
   const [items, setItems] = useState<Item[]>([]);
   const [docNo, setDocNo] = useState("");
+  const [sync, setSync] = useState<SyncPreview | null>(null);
+  const [doSync, setDoSync] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // 이미 있는 발행번호로 발행하려 할 때 팝업(사용자 2026-10-13) — [확인]이면 발행번호 칸으로 돌아가 고친다
   const [dupMsg, setDupMsg] = useState<string | null>(null);
   // 같은 영업 건에 같은 번호의 판이 있을 때 — 덮어쓸지 묻는 팝업(사용자 2026-10-13)
   const [overMsg, setOverMsg] = useState<string | null>(null);
+  // 파일을 끌어다 놓는 중(사용자 2026-10-16) — 끌어 놓으면 accept 가 안 걸러서 확장자를 직접 본다
+  const [over, setOver] = useState(false);
+  const pick = (f: File | undefined) => {
+    if (!f) return;
+    if (!/\.(xlsx|pdf)$/i.test(f.name)) { setError("엑셀(xlsx)이나 PDF 파일만 올릴 수 있습니다."); return; }
+    setFile(f);
+    setError(null);
+  };
 
   // 발행자 이니셜 기본값 = 로그인 계정(내 정보) — 고칠 수 있음
   useEffect(() => {
@@ -77,6 +89,7 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
       setRead(rd);
       setItems(rd.items.length ? rd.items : [{ name: "", spec: "", qty: 1, unit_price: null }]);
       setDocNo(rd.doc_no ?? "");
+      setSync((d.sync as SyncPreview | undefined) ?? null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "견적서를 올리지 못했습니다.");
     } finally {
@@ -86,8 +99,8 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
 
   async function issue(overwrite = false) {
     if (!upload) return;
-    if (!docNo.trim() && !/^[A-Za-z]{2,4}$/.test(initials.trim())) {
-      setError("견적서에 발행번호가 없으면 발행자 이니셜을 영문 2~4자로 적어 주세요(예: LU) — 새 번호를 매깁니다.");
+    if (!docNo.trim() && !/^[A-Za-z]{2}$/.test(initials.trim())) {
+      setError("견적서에 발행번호가 없으면 발행자 이니셜을 영문 2자로 적어 주세요(예: LU) — 새 번호를 매깁니다.");
       return;
     }
     setOverMsg(null);
@@ -96,7 +109,8 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
     try {
       const r = await fetch(confirmUrl, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ upload, doc_no: docNo.trim(), initials: initials.trim().toUpperCase(), items, overwrite }),
+        body: JSON.stringify({ upload, doc_no: docNo.trim(), initials: initials.trim().toUpperCase(), items, overwrite,
+                               sync: doSync }),
       });
       const d = await r.json().catch(() => ({}));
       if (r.status === 409) {
@@ -118,13 +132,15 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
   const num = (s: string) => (s.trim() === "" ? null : Number(s.replace(/,/g, "")));
   const total = items.reduce((a, x) => a + (x.qty ?? 0) * (x.unit_price ?? 0), 0);
   const filled = items.length > 0 && items.every((x) => x.name.trim() && x.qty && x.qty > 0 && x.unit_price != null);
+  const SHOWN = 8;
   const today = new Date();
   const ymd = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, "0")}${String(today.getDate()).padStart(2, "0")}`;
 
   return (
     <div role="dialog" aria-modal="true" aria-labelledby="qup-title"
          className="anim-fade-in fixed inset-0 z-50 grid place-items-center bg-black/40 px-4"
-         onMouseDown={(e) => { if (e.target === e.currentTarget && !busy && !dupMsg && !overMsg) onClose(); }}>
+         onMouseDown={(e) => { if (e.target === e.currentTarget && !busy && !dupMsg && !overMsg) onClose(); }}
+         onDragOver={(e) => e.preventDefault()} onDrop={(e) => e.preventDefault()}>
       <div className="anim-fade-in-up max-h-[90vh] w-full max-w-[760px] overflow-y-auto rounded-2xl border border-border bg-surface-raised p-5 text-[13px] shadow-[0_30px_70px_-30px_rgba(15,30,70,0.55)]">
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -141,17 +157,21 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
 
         {!upload ? (
           <div className="mt-4 flex flex-col gap-3">
-            <label className={cn("flex cursor-pointer flex-col items-center gap-1.5 rounded-xl border-2 border-dashed px-4 py-7 text-center",
-              file ? "border-accent/60 bg-accent/[0.04]" : "border-border hover:border-foreground/25")}>
+            <label
+              onDragOver={(e) => { e.preventDefault(); if (!busy) setOver(true); }}
+              onDragLeave={() => setOver(false)}
+              onDrop={(e) => { e.preventDefault(); setOver(false); if (!busy) pick(e.dataTransfer.files?.[0]); }}
+              className={cn("flex cursor-pointer flex-col items-center gap-1.5 rounded-xl border-2 border-dashed px-4 py-7 text-center transition-colors",
+              over ? "border-accent bg-accent/[0.06]" : file ? "border-accent/60 bg-accent/[0.04]" : "border-border hover:border-foreground/25")}>
               <input type="file" accept={ACCEPT} className="sr-only" disabled={!!busy}
-                     onChange={(e) => { setFile(e.target.files?.[0] ?? null); setError(null); }} />
+                     onChange={(e) => pick(e.target.files?.[0])} />
               <Icon name="paperclip" className="h-6 w-6 text-foreground-subtle" />
-              {file ? <><b className="text-[14px] text-foreground">{file.name}</b><span className="text-[12px] text-foreground-subtle">{(file.size / 1024).toFixed(0)}KB · 다른 파일을 고르면 바꿉니다</span></>
-                : <><b className="text-[14px] text-foreground">견적서 파일을 고르세요</b><span className="text-[12px] text-foreground-subtle">엑셀(xlsx) · PDF, 20MB 까지</span></>}
+              {file ? <><b className="text-[14px] text-foreground">{file.name}</b><span className="text-[12px] text-foreground-subtle">{(file.size / 1024).toFixed(0)}KB · 다른 파일을 고르거나 끌어 놓으면 바꿉니다</span></>
+                : <><b className="text-[14px] text-foreground">견적서 파일을 고르거나 여기에 끌어 놓으세요</b><span className="text-[12px] text-foreground-subtle">엑셀(xlsx) · PDF, 20MB 까지</span></>}
             </label>
             <label className="flex flex-col gap-1 text-[12.5px]">
               <span className="font-medium text-foreground">발행자 이니셜</span>
-              <input value={initials} maxLength={4} placeholder="예: LU" disabled={!!busy} id="qup-initials"
+              <input value={initials} maxLength={2} placeholder="예: LU" disabled={!!busy} id="qup-initials"
                      onChange={(e) => setInitials(e.target.value.toUpperCase())} className={cn(inputCls, "h-9 w-32 uppercase")} />
               <span className="text-[11.5px] text-foreground-subtle">
                 발행번호는 견적서에 적힌 번호를 그대로 씁니다. 견적서에 번호가 없을 때만 이 이니셜로 새 번호 QT-{(initials || "LU").toUpperCase()}{ymd}-NN 을 매깁니다.
@@ -207,6 +227,27 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
                 )}
               </span>
             </div>
+            {sync?.applies && (
+              <div className="flex flex-col gap-1 rounded-lg border border-border bg-surface px-3 py-2 text-[12.5px]">
+                <label className="flex items-center gap-2 font-medium">
+                  <input type="checkbox" checked={doSync} disabled={!!busy} onChange={(e) => setDoSync(e.target.checked)} />
+                  작성 상태도 이 파일 내용으로 바꾸기 (이어서 고칠 수 있게)
+                </label>
+                <span className="text-[11.5px] text-foreground-subtle">
+                  {doSync ? sync.message : "끄면 발행 기록만 바뀌고, [견적서 고치기]·미리보기는 지금 작성 상태 그대로입니다."}
+                </span>
+                {doSync && sync.changes.length > 0 && (
+                  <ul className="ml-4 list-disc text-[12px] text-foreground-muted">
+                    {sync.changes.slice(0, SHOWN).map((c, i) => <li key={i} className="whitespace-pre-line">{c}</li>)}
+                    {sync.changes.length > SHOWN && <li>외 {sync.changes.length - SHOWN}개</li>}
+                  </ul>
+                )}
+                {doSync && sync.changes.length === 0 && <span className="text-[12px] text-foreground-muted">작성 상태와 달라진 점이 없습니다.</span>}
+                {doSync && sync.warnings.map((w, i) => (
+                  <span key={i} className="text-[12px] text-amber-700 dark:text-amber-300">※ {w}</span>
+                ))}
+              </div>
+            )}
             <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-surface px-3 py-2 text-[12.5px]">
               <label className="flex flex-wrap items-center gap-2">
                 <span className="font-medium">발행번호</span>
@@ -219,7 +260,7 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
               {!docNo.trim() && (
                 <label className="flex flex-wrap items-center gap-2">
                   <span className="font-medium">발행자 이니셜 *</span>
-                  <input value={initials} maxLength={4} disabled={!!busy} onChange={(e) => setInitials(e.target.value.toUpperCase())}
+                  <input value={initials} maxLength={2} disabled={!!busy} onChange={(e) => setInitials(e.target.value.toUpperCase())}
                          className={cn(inputCls, "w-24 uppercase")} aria-label="발행자 이니셜" />
                   <span className="text-[11.5px] text-foreground-subtle">→ 새 번호 QT-{(initials || "??").toUpperCase()}{ymd}-NN</span>
                 </label>

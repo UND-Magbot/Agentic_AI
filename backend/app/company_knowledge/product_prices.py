@@ -247,8 +247,9 @@ QUOTE_LABELS = {
            "goods": "Goods Description & Details", "commodity": "Commodity", "spec": "Specifications", "qty": "Quantity", "price": "Price",
            "amount": "Supply amount", "remark": "Remark", "total": "Total (부가세 별도)", "delivery": "납기 일자",
            "place": "납품장소", "validity": "유효일자", "payment": "결제조건", "note": "비    고", "order": "발주 확인"},
+    # 해외 = 실제 해외 견적서 표기('Commodity & Description' — 같은 2칸 구성이라 Commodity / Description, 사용자 2026-10-14)
     "en": {"date": "Quotation Date", "no": "Quotation No.", "by": "Quotation by", "customer": "Customer", "comments": "Comments",
-           "goods": "Goods Description & Details", "commodity": "Commodity", "spec": "Specifications", "qty": "Quantity", "price": "Price",
+           "goods": "Goods Description & Details", "commodity": "Commodity", "spec": "Description", "qty": "Quantity", "price": "Price",
            "amount": "Supply amount", "remark": "Remark", "total": "Total Amount", "delivery": "Delivery Schedule",
            "place": "Delivery Place", "validity": "Validity", "payment": "Payment Terms", "note": "Remarks",
            "order": "Purchase Order Confirmation"},

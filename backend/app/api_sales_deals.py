@@ -35,7 +35,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .api_auth import get_current_user
@@ -58,12 +58,22 @@ PO_TYPES = {".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg"
             ".xls": "application/vnd.ms-excel", ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             ".doc": "application/msword", ".hwp": "application/x-hwp", ".hwpx": "application/haansofthwpx"}
 PO_INLINE = {"application/pdf", "image/png", "image/jpeg", "image/webp"}   # 브라우저에서 바로 볼 수 있는 형식
+# 확장자별 파일 첫머리 — 이름만 .pdf 로 바꾼 실행 파일이 통과하던 문제(검증 DL-010, 2026-10-15)
+_ZIP, _OLE = (b"PK\x03\x04",), (b"\xd0\xcf\x11\xe0",)
+PO_MAGIC = {".pdf": (b"%PDF",), ".png": (b"\x89PNG",), ".jpg": (b"\xff\xd8\xff",), ".jpeg": (b"\xff\xd8\xff",),
+            ".webp": (b"RIFF",), ".xlsx": _ZIP, ".docx": _ZIP, ".hwpx": _ZIP, ".xls": _OLE, ".doc": _OLE, ".hwp": _OLE}
 
 
 def require_sales(user: User = Depends(get_current_user)) -> User:
     if user.role == UserRole.superadmin or user.domain in (UserDomain.sales, UserDomain.all):
         return user
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="영업부만 볼 수 있습니다.")
+
+
+def _check_total(items: list) -> None:
+    """품목 합계(단가×수량)도 1,000억까지 — 칸마다 상한만 보면 단가×수량으로 넘었다(검증 DL-004, 2026-10-15)."""
+    if abs(sum((it.unit_price or 0) * (it.qty or 0) for it in items)) > MONEY_MAX:
+        raise ValueError("품목 합계가 1,000억을 넘습니다 — 단가·수량을 확인해 주세요.")
 
 
 class ItemIn(BaseModel):
@@ -83,6 +93,11 @@ class DealIn(BaseModel):
     currency: Literal["KRW", "USD"] = "KRW"
     pay_terms_text: str | None = Field(default=None, max_length=500)
     note: str | None = Field(default=None, max_length=2000)
+
+    @model_validator(mode="after")
+    def _total(self) -> "DealIn":
+        _check_total(self.items)
+        return self
 
 
 class WonIn(BaseModel):
@@ -162,6 +177,11 @@ class StatementIn(BaseModel):
     buyer: StatementBuyerIn
     items: list[StatementItemIn] = Field(min_length=1, max_length=30)
     parts: list[OrderItemIn] = Field(default_factory=list, max_length=30)   # 세트로 묶었을 때 원래 품목(참고·되돌리기용)
+
+    @model_validator(mode="after")
+    def _total(self) -> "StatementIn":
+        _check_total(self.items)
+        return self
 
 
 class RemoveIn(BaseModel):
@@ -534,6 +554,11 @@ async def upload_po(deal_id: int, file: UploadFile = File(...), user: User = Dep
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="빈 파일입니다.")
     if size > PO_MAX_BYTES:
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="발주서 파일은 20MB 까지 올릴 수 있습니다.")
+    head = file.file.read(16)
+    file.file.seek(0)
+    if not head.startswith(PO_MAGIC[ext]) or (ext == ".webp" and head[8:12] != b"WEBP"):
+        raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                            detail=f"파일 내용이 {ext} 형식이 아닙니다. 원본 파일을 올려 주세요.")
     key = f"sales-deals/{deal_id}/po/{uuid.uuid4().hex}{ext}"
     try:
         put_object(key=key, data=file.file, length=size, mime=PO_TYPES[ext])
@@ -739,8 +764,12 @@ async def quote_upload(deal_id: int, file: UploadFile = File(...), _: User = Dep
     except svc.DealError as e:
         raise _fail(e) from e
     await db.rollback()                                   # AI 판독 동안 트랜잭션을 잡아 두지 않는다
+    from .company_knowledge import product_recommend as pr
+
     try:
-        return await qu.store_and_read(file, f"sales-deals/{deal_id}/quote/")
+        res = await qu.store_and_read(file, f"sales-deals/{deal_id}/quote/")
+        res["sync"] = await pr.upload_sync_preview(qid=None, deal_id=deal_id, user_id=None, owner_check=False, read=res["read"])
+        return res
     except qu.UploadError as e:
         raise HTTPException(e.status, detail=str(e)) from e
 
@@ -754,7 +783,7 @@ async def quote_upload_confirm(deal_id: int, body: "QuoteUploadConfirm", user: U
     try:
         await pr.quote_issue_upload(qid=None, deal_id=deal_id, user_id=user.id, owner_check=False,
                                     upload=body.upload.model_dump(), items=[x.model_dump() for x in body.items],
-                                    initials=body.initials, doc_no=body.doc_no, overwrite=body.overwrite)
+                                    initials=body.initials, doc_no=body.doc_no, overwrite=body.overwrite, sync=body.sync)
     except svc.DealError as e:
         raise _fail(e) from e
     except pr.OverwriteNeeded as e:                       # 같은 건의 같은 번호 — 화면이 덮어쓸지 묻는다

@@ -30,6 +30,7 @@ from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field
 
 from .api_auth import get_current_user
+from .api_sales_deals import require_sales
 from .company_knowledge import product_recommend as pr
 from .company_knowledge.plain_text import scrub
 from .models import User
@@ -115,6 +116,17 @@ class AtcIn(BaseModel):
     intake: dict[str, Any]
 
 
+def _checked(intake: dict[str, Any]) -> dict[str, Any]:
+    """판정 전 입력 형식·범위 검사 — 틀리면 400(무엇이 틀렸는지). 검증 REC-012·013·014(2026-10-15)."""
+    from .company_knowledge import atc_selection as atc
+
+    try:
+        atc.check_intake(intake)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+    return intake
+
+
 @router.get("/atc/spec")
 async def atc_spec(current_user: User = Depends(get_current_user)):
     """화면 질문의 원본(질문지 JSON) — 질문 문구·도움말·선택지·후속 질문을 화면에 하드코딩하지 않는다."""
@@ -153,7 +165,7 @@ async def atc_test_sample(sid: str, current_user: User = Depends(get_current_use
 @router.post("/atc/evaluate")
 async def atc_evaluate(body: AtcIn, current_user: User = Depends(get_current_user)):
     """저장 없이 판정 — 답에 해당하는 후속 질문을 띄우는 데 쓴다."""
-    return await pr.atc_evaluate(body.intake)
+    return await pr.atc_evaluate(_checked(body.intake))
 
 
 class AtcAnswerIn(AtcIn):
@@ -389,10 +401,26 @@ class QuoteIssueIn(BaseModel):
 
 
 @router.post("/quotes/{qid}/issue")
-async def quote_issue(qid: int, body: QuoteIssueIn | None = None, current_user: User = Depends(get_current_user)):
-    """[견적서 발행] — 발행·재발행마다 새 발행번호 QT-{이니셜}{발행일}-NN. 미정 값이 있으면 400(이유)."""
+async def quote_issue(qid: int, body: QuoteIssueIn | None = None, current_user: User = Depends(require_sales)):
+    """[견적서 발행] — 발행·재발행마다 새 발행번호 QT-{이니셜}{발행일}-NN. 미정 값이 있으면 400(이유).
+    발행은 영업 건을 만들므로 영업부만(검증 QT-036, 2026-10-15) — 작성·미리보기는 그대로."""
     try:
         return await pr.quote_issue(qid, user_id=current_user.id)
+    except pr.RecommendError as e:
+        raise _bad(e) from e
+
+
+class EnCellIn(BaseModel):
+    path: str = Field(max_length=60)
+    en: str | None = Field(default=None, max_length=400)     # 담당자가 고친 영어('' = 다시 AI 번역)
+    keep: bool | None = None                                  # [한글 그대로]
+
+
+@router.post("/quotes/{qid}/en-cell")
+async def quote_en_cell(qid: int, body: EnCellIn, current_user: User = Depends(get_current_user)):
+    """해외 견적서 'AI 번역' 목록 — 칸 하나의 영어 고치기 · [한글 그대로] 켜고 끄기(사용자 2026-10-14)."""
+    try:
+        return await pr.quote_en_cell(qid, user_id=current_user.id, path=body.path, en=body.en, keep=body.keep)
     except pr.RecommendError as e:
         raise _bad(e) from e
 
@@ -407,7 +435,9 @@ async def quote_upload(qid: int, file: UploadFile = File(...), current_user: Use
 
     try:
         await pr.quote_get(qid, user_id=current_user.id)          # 내 견적서인지
-        return await qu.store_and_read(file, f"product-quotes/{qid}/")
+        res = await qu.store_and_read(file, f"product-quotes/{qid}/")
+        res["sync"] = await pr.upload_sync_preview(qid=qid, deal_id=None, user_id=current_user.id, owner_check=True, read=res["read"])
+        return res
     except pr.RecommendError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(e)) from e
     except qu.UploadError as e:
@@ -415,12 +445,13 @@ async def quote_upload(qid: int, file: UploadFile = File(...), current_user: Use
 
 
 @router.post("/quotes/{qid}/upload/confirm")
-async def quote_upload_confirm(qid: int, body: QuoteUploadConfirm, current_user: User = Depends(get_current_user)):
+async def quote_upload_confirm(qid: int, body: QuoteUploadConfirm, current_user: User = Depends(require_sales)):
     """확인한 품목으로 발행 — 새 발행번호·판 +1·영업 건 견적 갱신. 미정·오류는 400(이유)."""
     try:
         res = await pr.quote_issue_upload(qid=qid, deal_id=None, user_id=current_user.id, owner_check=True,
                                           upload=body.upload.model_dump(), items=[x.model_dump() for x in body.items],
-                                          initials=body.initials, doc_no=body.doc_no, overwrite=body.overwrite)
+                                          initials=body.initials, doc_no=body.doc_no, overwrite=body.overwrite,
+                                          sync=body.sync)
     except pr.OverwriteNeeded as e:                       # 같은 건의 같은 번호 — 화면이 덮어쓸지 묻는다
         raise HTTPException(status.HTTP_409_CONFLICT, detail={"message": str(e), "overwrite": True,
                                                                "doc_no": e.doc_no, "revision": e.revision}) from e
@@ -496,7 +527,7 @@ class FinalizeIn(BaseModel):
 
 
 @router.post("/recommendations/{rid}/finalize", status_code=status.HTTP_201_CREATED)
-async def finalize(rid: int, body: FinalizeIn, current_user: User = Depends(get_current_user)):
+async def finalize(rid: int, body: FinalizeIn, current_user: User = Depends(require_sales)):
     """[최종 제안 확정] — 미팅·입력·선정 결과·근거·구성품·대화 기록을 확정 제안 한 건으로 저장."""
     from .sales_deals.service import DealError
 
@@ -509,13 +540,13 @@ async def finalize(rid: int, body: FinalizeIn, current_user: User = Depends(get_
 
 
 @router.get("/proposals")
-async def proposals(current_user: User = Depends(get_current_user)):
-    """확정 제안 내역(목록)."""
+async def proposals(current_user: User = Depends(require_sales)):
+    """확정 제안 내역(목록). 영업 건과 같이 영업부 안에서 공유 — 영업부 밖은 403(검증 REC-037, 2026-10-15)."""
     return {"items": await pr.list_proposals()}
 
 
 @router.get("/proposals/{pid}")
-async def proposal(pid: int, current_user: User = Depends(get_current_user)):
+async def proposal(pid: int, current_user: User = Depends(require_sales)):
     try:
         return await pr.get_proposal(pid)
     except pr.RecommendError as e:
@@ -573,7 +604,7 @@ async def atc_extract(file: UploadFile | None = File(default=None), text: str | 
 async def atc_recommend(body: AtcRecommendIn, current_user: User = Depends(get_current_user)):
     """질문지 답 → 규칙 판정 + 기록. 결과는 일반 추천과 같은 모양(kind=recommendation)에 atc 판정을 더한다."""
     return {"kind": "recommendation",
-            "recommendation": await pr.atc_recommend(body.intake, user_id=current_user.id, meeting=body.meeting)}
+            "recommendation": await pr.atc_recommend(_checked(body.intake), user_id=current_user.id, meeting=body.meeting)}
 
 
 @router.post("/corrections/draft")

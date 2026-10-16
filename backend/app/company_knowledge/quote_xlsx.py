@@ -25,7 +25,9 @@ from .atc_selection import QUOTE_SCOPE_TEXT
 ASSETS = Path(__file__).with_name("data") / "quote"
 FONT = "맑은 고딕"
 WON = '"₩"#,##0'
-USD = '"$"#,##0.00'
+# 해외 금액 = 해외 기준 견적서의 회계 서식('$' 왼쪽, 숫자 오른쪽). 센트가 없으면 '$ 1,000', 있으면 '$ 1,234.50'
+_USD_ACC = '_-[$$-409]* #,##0{d}_ ;_-[$$-409]* \\-#,##0{d}\\ ;_-[$$-409]* "-"_ ;_-@_ '
+USD_WHOLE, USD_CENTS = _USD_ACC.format(d=""), _USD_ACC.format(d=".00")
 # 통화 — 국내 원화(단가표 그대로), 해외 달러(사용자 2026-10-06). 달러 단가표가 없어 원화 단가 ÷ 입력 환율, 센트 반올림.
 CURRENCY = {"ko": "KRW", "en": "USD"}
 EA = '0" ea"'
@@ -61,17 +63,33 @@ SERVICE_COMMODITY = "Service"
 _ACC_KEYS = ("PPM", "PPF", "PMM", "PMF", "Cable 0.3m", "IB")
 _DESC = {"PPM": "PPM\n-Pogo Pin Male", "PPF": "PPF\n-Pogo Pin Female", "PMM": "PMM\n-PneuMatic Male",
          "PMF": "PMF\n-PneuMatic Female", "Cable 0.3m": "Cable 0.3m(meter)\n- Pogo Pin Cable", "IB": "IB\n- Interface Bracket"}
+# 해외 = 해외 기준 견적서 표기('- Payload: 5 kg', '- 1 Master Tool Changer', '- 2 Tool Plates', 사용자 2026-10-14)
+_DESC_EN = {"PPM": "PPM\n- Pogo Pin Male", "PPF": "PPF\n- Pogo Pin Female", "PMM": "PMM\n- Pneumatic Male",
+            "PMF": "PMF\n- Pneumatic Female", "Cable 0.3m": "Cable 0.3m\n- Pogo Pin Cable", "IB": "IB\n- Interface Bracket"}
+ATC_DESC = {"ko": {"MASTER T.C": "- MASTER T.C", "T.P": "- Tool side T.C"},
+            "en": {"MASTER T.C": "- Master Tool Changer", "T.P": "- Tool Plate"}}
 # 자동 비고 — 포고핀을 공급하면 배선 범위 안내(v0.8 C17 quote_scope_text_ko)
 _SCOPE = {"ko": QUOTE_SCOPE_TEXT,
           "en": "Pogo pin extension wiring and gripper wiring are within the customer's scope. "
                 "Please contact us separately if UND is requested to perform them."}
+# 해외 기본 문구 = 실제 해외 견적서(docs/examples/quotes — git 제외) 표기(사용자 2026-10-14):
+# 공장 인도(Ex-work)·선금 100% 기준. 비고(note)는 언어를 바꿀 때 기본으로 채우고(quote_session), 비워 두면 비어 있다.
 DEFAULT_TERMS = {
     "ko": {"comments": "www.magbot.kr\n- Auto Tool Changer 공급 건\n맥봇 로봇 툴체인저", "delivery": "통상 3 ~ 4주",
-           "place": "직납 및 배차 비용 별도\n(화물 비용 별도)", "payment": "발주시 50%, 납품전 50%"},
-    "en": {"comments": "www.magbot.kr\n- Auto Tool Changer Supply\nMagbot Robot Tool Changer",
-           "delivery": "Usually 3 ~ 4 weeks", "place": "Direct delivery & dispatch costs excluded\n(Freight costs excluded)",
-           "payment": "50% upon order, 50% before delivery"},
+           "place": "직납 및 배차 비용 별도\n(화물 비용 별도)", "payment": "발주시 50%, 납품전 50%", "note": ""},
+    "en": {"comments": "www.magbot.kr\nMagbot Robot Automatic Tool Changer",
+           "delivery": "4 ~ 6 weeks after payment", "place": "UND Korea Factory",
+           "payment": "100% advance payment before delivery. Shipment will be arranged after payment confirmation.",
+           "note": "Ex-work UND Korea Factory"},
 }
+
+
+def intl_mobile(v: str) -> str:
+    """해외 견적서 전화번호 — 국가번호 형식(해외 기준 견적서 'Tel : 82-10-1234-5678'). 010-… → 82-10-…, 이미 +/82 로 시작하면 그대로."""
+    s = str(v or "").strip()
+    if not s or s.startswith(("+", "82")) or not s.startswith("0"):
+        return s
+    return "82-" + s[1:]
 
 
 def _key(it: dict[str, Any]) -> str:
@@ -110,8 +128,11 @@ def quote_header(form: dict[str, Any], *, lang: str, quote_no: str, day: date, p
         names = {"address": "영문 주소", "account_no": "해외 송금 계좌번호", "account_holder": "예금주(영문)"}
         raise QuoteError("영문 견적서에 필요한 회사 정보가 아직 등록되지 않았습니다: "
                          + ", ".join(names.get(m, m) for m in f["missing"]))
-    need = {"customer": "고객사", "contact_name": "담당자 이름", "contact_mobile": "담당자 휴대폰", "contact_email": "담당자 이메일"}
-    miss = [lab for k, lab in need.items() if not str(form.get(k) or "").strip()]
+    en = lang == "en"
+    # 해외 담당자 = 'Mr. Alex Jeon'(호칭 + 영문 이름, 직함 없음 — 해외 기준 견적서). 영문 이름이 비면 이름 칸
+    name = (str(form.get("contact_name_en") or "").strip() if en else "") or str(form.get("contact_name") or "").strip()
+    need = {"customer": "고객사", "contact_mobile": "담당자 휴대폰", "contact_email": "담당자 이메일"}
+    miss = ([] if name else ["담당자 이름"]) + [lab for k, lab in need.items() if not str(form.get(k) or "").strip()]
     if miss:
         raise QuoteError("견적서에 꼭 필요한 값이 비어 있습니다: " + ", ".join(miss))
     d = DEFAULT_TERMS[lang]
@@ -122,7 +143,9 @@ def quote_header(form: dict[str, Any], *, lang: str, quote_no: str, day: date, p
             "currency": CURRENCY[lang], "fx_rate": form.get("fx_rate") if lang == "en" else None,
             "labels": f["labels"], "customer": str(form["customer"]).strip(), "to": str(form.get("to") or "").strip(),
             "cc": str(form.get("cc") or "").strip(),
-            "contact": {k: str(form.get(f"contact_{k}") or "").strip() for k in ("name", "title", "mobile", "email")},
+            "contact": {"name": name, "email": str(form.get("contact_email") or "").strip(),
+                        "title": str(form.get("contact_honorific" if en else "contact_title") or "").strip(),
+                        "mobile": (intl_mobile if en else str.strip)(str(form.get("contact_mobile") or ""))},
             "comments": str(form.get("comments") or "").strip() or d["comments"],
             "delivery": str(form.get("delivery") or "").strip() or d["delivery"],
             "place": str(form.get("place") or "").strip() or d["place"],
@@ -186,6 +209,30 @@ def _spaced(name: str) -> str:
     return " ".join(name) if name and all("가" <= ch <= "힣" for ch in name) and len(name) <= 4 else name
 
 
+def who_text(header: dict[str, Any]) -> str:
+    """Quotation by 칸 — 회사·주소·담당자. 한글 '홍 길 동 이사'(이름 뒤 직함), 영문 'Mr. Gildong Hong'(호칭 앞) — 각 양식의 실제 견적 표기."""
+    iss, ct, en = header["issuer"], header["contact"], header["lang"] == "en"
+    name = (f"{ct['title']} {ct['name']}" if en else f"{_spaced(ct['name'])} {ct['title']}").strip()
+    if en:
+        # 해외 기준 견적서 배치 — 줄마다 앞에 한 칸, 주소는 국가명 앞에서 줄바꿈
+        addr = iss["address"].replace(", Republic of Korea", ",\nRepublic of Korea")
+        return "\n".join(f" {x}" for x in (iss["company"], *addr.split("\n"), f"Tel : {ct['mobile']}",
+                                           f"{name} ({ct['email']})") if x.strip())
+    return "\n".join((iss["company"], iss["address"], f"담당자 : {name}", f"Mobile : {ct['mobile']}", f"E-mail : {ct['email']}"))
+
+
+def customer_text(header: dict[str, Any]) -> str:
+    """Customer 칸 — 고객사 들여쓰기는 국내 최근 견적(가나테크) 8칸, 해외 기준 견적서 13칸."""
+    to = header["to"]
+    return f"{' ' * (13 if header['lang'] == 'en' else 8)}{header['customer']}\n  To : {to}{',' if to else ''}\n  CC : {header['cc']}"
+
+
+def foot_text(header: dict[str, Any]) -> list[str]:
+    """표 아래 주석 칸들 — 회사 고정 문구 다음에 담당자 주석('* ' 붙임, 방역 로봇 견적서처럼)."""
+    return [header["terms"]["option_note"],
+            *[x if x.startswith(("*", "※")) else f"* {x}" for x in _notes(header.get("foot_notes"))]]
+
+
 PHOTO_H_PX = 56          # Remark 칸 품목 사진 높이(작게, 사용자 2026-10-12)
 PHOTO_MAX_W_PX = 96
 REMARK_W_PX = round(COL_WIDTHS["G"] * 7 + 5)
@@ -215,11 +262,16 @@ def build_xlsx(header: dict[str, Any], lines: list[dict[str, Any]], photos: dict
     # 예전에 발행한 판의 머리(header)엔 그때 항목명만 있다 — 나중에 생긴 항목명(품목·규격 등)은 지금 기본값으로 채운다.
     lab = {**pp.QUOTE_LABELS["en" if en else "ko"], **header["labels"]}
     iss, terms, ct = header["issuer"], header["terms"], header["contact"]
-    money = USD if header.get("currency") == "USD" else WON
+    if header.get("currency") == "USD":
+        cents = any(round(float(ln.get(k) or 0) * 100) % 100 for ln in lines for k in ("unit_price", "amount"))
+        money = USD_CENTS if cents else USD_WHOLE
+    else:
+        money = WON
     wb = Workbook()
     ws = wb.active
     ws.title = "Quotation" if en else "견적서"
-    for col, w in COL_WIDTHS.items():
+    # 해외는 A열 15.0 — 해외 기준 견적서처럼 'Delivery Schedule' 을 한 줄로(서버 PDF 실측: 14.5 까지는 두 줄로 꺾임)
+    for col, w in {**COL_WIDTHS, **({"A": 15.0} if en else {})}.items():
         ws.column_dimensions[col].width = w
     ws.sheet_view.showGridLines = False
 
@@ -240,14 +292,7 @@ def build_xlsx(header: dict[str, Any], lines: list[dict[str, Any]], photos: dict
     # 3~7행: Quotation by(회사·담당자) / 은행
     _cell(ws, "A3", f" {lab['by']}", size=11, h="left", border=False, wrap=False)
     ws.row_dimensions[3].height = 22
-    # 한글: '홍 길 동 이사'(이름 뒤 직함), 영문: 'Mr. Gildong Hong'(직함·호칭 앞) — 각 양식의 실제 견적 표기
-    name = (f"{ct['title']} {ct['name']}" if en else f"{_spaced(ct['name'])} {ct['title']}").strip()
-    if en:
-        who = "\n".join(x for x in (iss["company"], iss["address"], f"Tel : {ct['mobile']}",
-                                    f"{name} ({ct['email']})") if x)
-    else:
-        who = "\n".join((iss["company"], iss["address"], f"담당자 : {name}", f"Mobile : {ct['mobile']}", f"E-mail : {ct['email']}"))
-    _cell(ws, "A4", who, merge="C7")
+    _cell(ws, "A4", who_text(header), merge="C7")
     for r, (k, val) in enumerate((("Bank", iss["bank"]), ("Address", iss.get("bank_address") or ""), ("Account No.", iss["account_no"]),
                                   ("Account Holder", iss["account_holder"])), start=4):
         ws.row_dimensions[r].height = 27
@@ -257,10 +302,10 @@ def build_xlsx(header: dict[str, Any], lines: list[dict[str, Any]], photos: dict
     # 8~14행: Customer / Comments
     _cell(ws, "A8", lab["customer"], size=11, h="left", border=False, wrap=False)
     ws.row_dimensions[8].height = 22
-    cust = f"        {header['customer']}\n  To : {header['to']}{',' if header['to'] else ''}\n  CC : {header['cc']}"
-    _cell(ws, "A9", cust, size=11, h="left", merge="C14")
+    # Comments 글자 크기 — 국내는 최근 견적(가나테크) 12pt, 해외는 해외 기준 견적서 14pt
+    _cell(ws, "A9", customer_text(header), size=11, h="left", merge="C14")
     _cell(ws, "D9", lab["comments"], merge="D14")
-    _cell(ws, "E9", header["comments"], size=12, merge="G14")
+    _cell(ws, "E9", header["comments"], size=14 if en else 12, merge="G14")
     for r in range(9, 15):
         ws.row_dimensions[r].height = 15
     ws.row_dimensions[14].height = 40
@@ -328,7 +373,9 @@ def build_xlsx(header: dict[str, Any], lines: list[dict[str, Any]], photos: dict
         ws.row_dimensions[r].height = max(31, 13 * (str(ln["desc"]).count("\n") + 1) + 5, 48 if pic else 0)
         _cell(ws, f"A{r}", ln.get("commodity") or "", size=9)
         _cell(ws, f"B{r}", ln["desc"], size=9, merge=f"C{r}")
-        _cell(ws, f"D{r}", ln["qty"], size=9, fmt=f'0" {ln["unit"]}"' if ln.get("unit") else EA)
+        # 해외 수량 서식 = 해외 기준 견적서('#,##0_ "sets"' — 천 단위 쉼표, 숫자와 단위 사이 한 칸)
+        _cell(ws, f"D{r}", ln["qty"], size=9, fmt=f'#,##0_ "{ln.get("unit") or "ea"}"' if en
+              else f'0" {ln["unit"]}"' if ln.get("unit") else EA)
         _cell(ws, f"E{r}", ln["unit_price"], size=9, fmt=money)
         if kind == "option":                               # 옵션 — 공급가액 칸은 비우고 합계에서 뺀다(LG CNS 견적서)
             _cell(ws, f"F{r}", None, size=9)
@@ -348,7 +395,7 @@ def build_xlsx(header: dict[str, Any], lines: list[dict[str, Any]], photos: dict
     _cell(ws, f"A{r}", tot_lab, fill=YELLOW, merge=f"F{r}")
     plain = billed == [f"F{i}" for i in range(17, 17 + len(billed))]      # 묶음 없는 견적 — 예전처럼 범위 SUM
     _cell(ws, f"G{r}", (f"=SUM(F17:F{16 + len(billed)})" if plain else f"=SUM({','.join(billed)})") if billed else 0,
-          fmt=money, h="right", fill=YELLOW)
+          size=9 if en else 10, fmt=money, h="right", fill=YELLOW)
     r += 1
 
     # 조건 · 비고 · 발주 확인
@@ -363,20 +410,20 @@ def build_xlsx(header: dict[str, Any], lines: list[dict[str, Any]], photos: dict
         r += 1
     ws.row_dimensions[r].height = max(34.4, 17 * (len(header["notes"]) + 1))
     _cell(ws, f"A{r}", lab["note"], fill=GREY)
-    _cell(ws, f"B{r}", "\n".join(header["notes"]), h="left", merge=f"G{r}", size=9)
+    _cell(ws, f"B{r}", "\n".join(header["notes"]), h="left", merge=f"G{r}", size=10 if en else 9)
     r += 1
     ws.row_dimensions[r].height = 100.4
     _cell(ws, f"A{r}", lab["order"], fill=GREY)
     if en:
         order = (f"{terms['order_note']}\n\n{terms['order_accept']}\n\n\n"
-                 + " " * 120 + "Purchaser Name :  _______________________ (Signature)")
+                 + " " * 148 + "Purchaser Name :  _______________________ (Signature)")   # 해외 기준 견적서 공백 수
     else:
         order = ("※ 발주 시 서명 날인하여  담당자 이메일을 통해 발신해주시기 바랍니다.\n\n당사는 이 견적서 상의 가격 및 조건들을 수용하고 "
                  "이 견적서를 귀사에 대한 공식 발주서로 대신하고자 합니다.\n\n\n" + " " * 120 + "발주자명 :  _______________________ (서명)")
     _cell(ws, f"B{r}", order, h="left", v="top", merge=f"G{r}")
     r += 1
     # 표 아래 주석 — 회사 고정 문구 다음에 담당자가 추가한 주석을 칸마다 한 줄씩(방역 로봇 견적서처럼, 사용자 2026-10-13)
-    for note in [terms["option_note"], *[x if x.startswith(("*", "※")) else f"* {x}" for x in _notes(header.get("foot_notes"))]]:
+    for note in foot_text(header):
         ws.row_dimensions[r].height = max(20, 14 * (note.count("\n") + 1) + 6)
         _cell(ws, f"A{r}", note, size=9, merge=f"G{r}")
         r += 1

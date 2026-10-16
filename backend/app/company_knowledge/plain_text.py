@@ -33,7 +33,10 @@ _FULL = re.compile(rf"\s*{_LIST}\s*")
 SKIP_KEYS = frozenset({"id", "ids", "rule", "ref", "refs", "key", "path", "status", "series", "code", "kind", "intent",
                        "intake", "meeting", "history", "request", "followups", "followups_answered", "question_id",
                        "entity_path", "target", "model", "name", "card_id", "image_id", "unit",
-                       "deal_no", "quote_no", "no", "file_name"})
+                       "deal_no", "quote_no", "no", "file_name",
+                       # 사용자가 적은 견적 내용(품목·규격·비고·고객사·한글 원문)과 올린 파일 판독 — 'Type T10'·'A01 볼트' 같은
+                       # 모델명이 규칙 번호 모양이라 지워지고, 화면이 그 값을 다시 저장하면 원본까지 사라졌다(검증 QT-063, 2026-10-15)
+                       "state", "customer", "hangul", "read"})
 
 
 def hide_codes(text: str, *, strip: bool = True) -> str:

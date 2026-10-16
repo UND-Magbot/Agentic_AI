@@ -268,10 +268,10 @@ async def initials_for(db: AsyncSession, owner: str | None) -> str | None:
 
 
 async def set_initials(db: AsyncSession, name: str, initials: str, *, overwrite: bool) -> None:
-    """담당자 이니셜 저장(대문자 영문 2~4자). 이미 있는 이름을 바꾸는 것은 관리자만(overwrite)."""
+    """담당자 이니셜 저장(대문자 영문 2자). 이미 있는 이름을 바꾸는 것은 관리자만(overwrite)."""
     ini = str(initials or "").strip().upper()
-    if not re.fullmatch(r"[A-Z]{2,4}", ini):
-        raise DealError("이니셜은 영문 2~4자로 적어 주세요(예: AL).")
+    if not re.fullmatch(r"[A-Z]{2}", ini):
+        raise DealError("이니셜은 영문 2자로 적어 주세요(예: AL).")
     key = str(name or "").strip().lower()
     if not key:
         raise DealError("담당자 이름이 없습니다.")
@@ -441,7 +441,10 @@ async def set_won(db: AsyncSession, deal_id: int, user_id: int | None, won: bool
     d = await _lock(db, deal_id)
     if d["kind"] == "shipment_only":
         raise DealError("견적 없는 출하 건은 수주 상태가 없습니다.")
-    fields: dict[str, Any] = {"won": won, "won_date": (day or dt.date.today()) if won else None}
+    # 이미 수주한 건에 날짜 없이 수주를 다시 누르면 원래 수주일 유지 — 분기 KPI 가 옮겨 가던 문제(검증 DL-049, 2026-10-15).
+    # 오늘은 한국 날짜로(서버 시계는 UTC)
+    keep = dt.date.fromisoformat(d["won_date"]) if won and d.get("won") and d.get("won_date") and day is None else None
+    fields: dict[str, Any] = {"won": won, "won_date": (day or keep or kst_today()) if won else None}
     picked = None
     if won and pick and pick.get("quote_id") is not None:
         docs = await deal_quotes(db, d.get("proposal_id"), deal_id)
@@ -582,7 +585,7 @@ async def set_statement(db: AsyncSession, deal_id: int, user_id: int | None, p: 
         raise DealError("수주 확인 뒤에 거래명세서를 발급합니다.")
     ini = dn.clean_initials(p.get("initials"))
     if not ini:
-        raise DealError("발행자 이니셜을 영문 2~4자로 적어 주세요(예: LU) — 발행번호 TS-LU20261012-01 에 들어갑니다.")
+        raise DealError("발행자 이니셜을 영문 2자로 적어 주세요(예: LU) — 발행번호 TS-LU20261012-01 에 들어갑니다.")
     st = {"no": "", "initials": ini, "date": p["date"].isoformat(),
           "buyer": {k: str((p.get("buyer") or {}).get(k) or "").strip()[:200] for k in ("reg_no", "name", "ceo", "address")},
           "items": [_st_item(it) | ({"unit": u} if (u := sx.unit_of(it)) else {}) for it in p.get("items") or []]}
@@ -855,7 +858,7 @@ async def remove_entry(db: AsyncSession, deal_id: int, user_id: int | None, kind
         raise DealError("이미 지워졌거나 없는 항목입니다.", 404)
     removed = items.pop(index)
     fields: dict[str, Any] = {kind: items}
-    if kind == "payments" and not items:
+    if kind == "payments":       # 입금 한 줄이라도 지우면 완납은 풀린다(회차 입금 확인 취소와 같게, 검증 DL-033 2026-10-15)
         fields["paid_full"] = False
     await _save(db, deal_id, **fields)
     await _log(db, deal_id, user_id, f"remove_{kind[:-1]}", removed)

@@ -13,6 +13,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from openpyxl import Workbook
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
@@ -36,7 +37,9 @@ ACTION_LABEL = {
     "po_compare": "발주서 품목 대조", "shipment_edit": "출하 기록 수정", "reset_to_quote": "견적 상태로 되돌림(테스트)",
     "statement": "거래명세서 발급", "pay_case": "결제 방식 선택", "pay_terms": "결제 조건 저장", "drop": "드랍", "undrop": "드랍 되살리기",
     "recommend": "제품 추천 확정", "quote": "견적서 발행", "quote_revision": "견적서 재발행", "meeting": "미팅 정보 입력",
-    "quote_upload": "견적서 첨부(외부 수정본)",
+    "quote_upload": "견적서 첨부(외부 수정본)", "quote_replace": "견적서 파일 교체", "import": "엑셀에서 이관",
+    "due_extend": "입금기한 연장", "due_request": "입금기한 연장 요청", "due_reject": "입금기한 연장 거절",
+    "recommend_new": "제품 추천 확정",
 }
 WON = "#,##0"
 BOLD = Font(bold=True)
@@ -44,14 +47,19 @@ HEAD_FILL = PatternFill("solid", fgColor="E8EEF7")
 LATE_FILL = PatternFill("solid", fgColor="FDE2E1")        # 예정 입금일 지남 — 화면 리스트 강조와 같게
 
 
+def _cells(values: list[Any]) -> list[Any]:
+    """엑셀이 받지 않는 제어문자를 뺀다 — 고객사명 등에 하나만 섞여도 내보내기 전체가 실패했다(검증 DL-067, 2026-10-15)."""
+    return [ILLEGAL_CHARACTERS_RE.sub("", v) if isinstance(v, str) else v for v in values]
+
+
 def _row(r: dict[str, Any]) -> list[Any]:
     fl = r.get("flow") or {}
     nxt = next((t for t in fl.get("terms") or [] if not t.get("confirmed")), None)
     ships = sorted(s.get("date") for s in r.get("shipments") or [] if s.get("date"))
-    return [r.get("customer") or "", r.get("title") or "", _nos(r), r.get("owner") or "",
-            r.get("base_date") or "", flow.supply_total(r), r.get("stage") or "", r.get("won_date") or "",
-            fl.get("pay_case_label") or "", fl.get("paid") or 0, (nxt or {}).get("expected_date") or "",
-            ships[0] if ships else "", " / ".join(a["text"] for a in r.get("alerts") or [])]
+    return _cells([r.get("customer") or "", r.get("title") or "", _nos(r), r.get("owner") or "",
+                   r.get("base_date") or "", flow.supply_total(r), r.get("stage") or "", r.get("won_date") or "",
+                   fl.get("pay_case_label") or "", fl.get("paid") or 0, (nxt or {}).get("expected_date") or "",
+                   ships[0] if ships else "", " / ".join(a["text"] for a in r.get("alerts") or [])])
 
 
 def _nos(r: dict[str, Any]) -> str:
@@ -87,6 +95,11 @@ def _what(h: dict[str, Any]) -> str:
         extra = f"V{d.get('revision')} · {d.get('amount') or 0:,.0f}원" if d.get("revision") else ""
     elif a == "drop":
         extra = str(d.get("reason") or "")
+    elif a in ("due_extend", "due_request"):              # 화면(deal-format.eventDetail)과 같게
+        extra = f"{d.get('label') or ''} {d.get('from') or '-'} → {d.get('to') or ''}".strip()
+        extra += f" · {d['reason']}" if d.get("reason") else ""
+    elif a == "due_reject":
+        extra = str(d.get("reason") or "")
     elif a in ("po_upload", "remove_po_file"):
         extra = str(d.get("filename") or "")
     name = ACTION_LABEL.get(a, a or "")
@@ -99,9 +112,9 @@ def _stage(h: dict[str, Any]) -> str:
 
 
 def _hist_row(r: dict[str, Any], h: dict[str, Any]) -> list[Any]:
-    return [r.get("customer") or "", r.get("title") or "", _nos(r), h.get("seq"), _when(h.get("created_at")),
-            _what(h), h.get("doc_no") or "", _stage(h), h.get("amount"), h.get("user_name") or "시스템",
-            "버전 업데이트됨" if h.get("superseded") else ""]
+    return _cells([r.get("customer") or "", r.get("title") or "", _nos(r), h.get("seq"), _when(h.get("created_at")),
+                   _what(h), h.get("doc_no") or "", _stage(h), h.get("amount"), h.get("user_name") or "시스템",
+                   "버전 업데이트됨" if h.get("superseded") else ""])
 
 
 def build_xlsx(data: dict[str, Any]) -> bytes:
@@ -123,8 +136,8 @@ def build_xlsx(data: dict[str, Any]) -> bytes:
         # 프로젝트 아래에 히스토리(최신 먼저) — 순번(발행번호)·바뀐 때·바뀐 내용·단계·공급가액·입력, 그룹으로 접힘
         for h in r.get("history") or []:
             no = f"{h.get('seq')}" + (f"  {h['doc_no']}" if h.get("doc_no") else "")
-            ws.append(["", f"  └ {_what(h)}", no, h.get("user_name") or "시스템", _when(h.get("created_at")),
-                       h.get("amount"), _stage(h) + (" (버전 업데이트됨)" if h.get("superseded") else "")])
+            ws.append(_cells(["", f"  └ {_what(h)}", no, h.get("user_name") or "시스템", _when(h.get("created_at")),
+                              h.get("amount"), _stage(h) + (" (버전 업데이트됨)" if h.get("superseded") else "")]))
             ws.row_dimensions[ws.max_row].outlineLevel = 1
             for c in ws[ws.max_row]:
                 c.fill, c.font = HIST_FILL, HIST_FONT

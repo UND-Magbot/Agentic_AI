@@ -37,8 +37,38 @@ JSON 하나만 답한다:
 {"items":[{"name":"","spec":"","qty":null,"unit_price":null,"amount":null}],"supply_total":null,"vat_included":null,"doc_no":null}"""
 
 
+def read_template(data: bytes, filename: str) -> dict[str, Any] | None:
+    """회사 양식(우리가 만든 견적서 엑셀)을 고친 파일이면 칸 그대로 읽는다(AI 없음, 사용자 2026-10-15) — 아니면 None.
+    _parsed = 작성 상태 되읽기(quote_readback.merge)에 쓰는 원본 — API 가 화면에 보내기 전에 뺀다."""
+    from ..company_knowledge import quote_readback as rb
+
+    if ext_of(filename) != ".xlsx":
+        return None
+    parsed = rb.parse(data)
+    if parsed is None:
+        return None
+    items = rb.items_of(parsed)
+    total = round(sum((x["qty"] or 0) * (x["unit_price"] or 0) for x in items), 2)
+    nego = next((r["amount"] for r in parsed["rows"] if r["row"] == "nego" and r.get("amount")), None)
+    if nego:                                                 # NEGO 는 음수 단가 한 줄로(영업 건 금액 = 견적서 Total)
+        items.append({"name": "NEGO", "spec": "", "qty": 1, "unit_price": nego, "amount": nego})
+    return {"status": "ok", "source": "template", "template": True, "items": items, "supply_total": round(total + (nego or 0), 2),
+            "vat_included": False, "doc_no": parsed["quote_no"] or None, "_parsed": parsed,
+            "summary": f"회사 견적서 양식이라 칸 그대로 읽었습니다 — 품목 {len([x for x in items if x['name'] != 'NEGO'])}줄"
+                       + (", NEGO 포함" if nego else "") + "." + _missing_note(items)}
+
+
+def _missing_note(items: list[dict[str, Any]]) -> str:
+    """수량·단가를 못 읽은 줄 안내 — 그대로 두면 합계가 0원·모자란 금액이 된다(검증 13번 변형본, 2026-10-16)."""
+    n = sum(1 for x in items if x["qty"] is None or x["unit_price"] is None)
+    return f" 수량·단가를 읽지 못한 줄이 {n}개 있습니다 — 확인 창에서 채워 주세요." if n else ""
+
+
 async def read(data: bytes, filename: str, mime: str) -> dict[str, Any]:
     """파일 → {status, items, supply_total, vat_included, doc_no, summary}. 읽을 수 없거나 AI 오류도 예외 없이 status 로."""
+    tpl = read_template(data, filename)
+    if tpl is not None:
+        return tpl
     try:
         text, images = po_compare.read_po(data, filename, mime)
     except Exception as e:  # 깨진 파일
@@ -74,7 +104,7 @@ async def read(data: bytes, filename: str, mime: str) -> dict[str, Any]:
     elif supply is not None and abs(total - supply) > 1:
         summary = f"품목 {len(items)}줄을 읽었습니다 — 품목 합계 {total:,.0f}원이 견적서 공급가액 {supply:,.0f}원과 다릅니다. 확인해 주세요."
     else:
-        summary = f"품목 {len(items)}줄을 읽었습니다. 값을 확인한 뒤 발행해 주세요."
+        summary = f"품목 {len(items)}줄을 읽었습니다. 값을 확인한 뒤 발행해 주세요." + _missing_note(items)
     return {"status": "ok", "source": "image" if images else "text", "items": items, "supply_total": supply,
             "vat_included": vat, "doc_no": po_compare._in_text(out.get("doc_no"), text), "summary": summary}
 
@@ -99,10 +129,14 @@ def clean_items(items: Any) -> list[dict[str, Any]]:
             raise ValueError(f"{i}번째 품목({name or '이름 없음'})의 수량·단가를 숫자로 적어 주세요.") from None
         if not name:
             raise ValueError(f"{i}번째 품목의 품명을 적어 주세요.")
-        if qty <= 0 or price < 0:
-            raise ValueError(f"{i}번째 품목({name})의 수량은 0보다, 단가는 0 이상이어야 합니다.")
+        nego = name.upper().startswith("NEGO")             # NEGO(할인) 한 줄은 음수 단가 — 견적서 발행과 같게(사용자 2026-10-15)
+        if qty <= 0 or (price < 0 and not nego) or (nego and price >= 0):
+            raise ValueError(f"{i}번째 품목({name})의 수량은 0보다, 단가는 0 이상이어야 합니다(NEGO 는 음수)." if not nego
+                             else f"{i}번째 NEGO 줄의 단가는 할인 금액을 음수로 적어 주세요.")
         out.append({"name": f"{name}\n- {spec}" if spec else name, "qty": int(qty) if qty.is_integer() else qty,
                     "unit_price": int(price) if price.is_integer() else price})
+    if sum(x["qty"] * x["unit_price"] for x in out) <= 0:     # 0원 견적 발행 막음(검증 QT-066, 2026-10-15)
+        raise ValueError("합계가 0원 이하입니다 — 품목 단가·NEGO 를 확인해 주세요.")
     return out
 
 
@@ -135,7 +169,7 @@ class UploadItem(BaseModel):
     name: str = Field(default="", max_length=120)
     spec: str = Field(default="", max_length=120)
     qty: float | None = Field(default=None, ge=0, le=1_000_000)
-    unit_price: float | None = Field(default=None, ge=0, lt=1e11)
+    unit_price: float | None = Field(default=None, gt=-1e11, lt=1e11)       # 음수는 NEGO 줄만(clean_items)
 
 
 class UploadConfirmIn(BaseModel):
@@ -146,6 +180,8 @@ class UploadConfirmIn(BaseModel):
     items: list[UploadItem] = Field(min_length=1, max_length=MAX_ITEMS)
     # 같은 영업 건에 같은 번호의 판이 있을 때, 덮어쓰기 확인을 받고 다시 보낸 요청(사용자 2026-10-13)
     overwrite: bool = False
+    # 작성 상태도 올린 파일 내용으로 맞추기(사용자 2026-10-15) — 끄면 예전처럼 발행 기록만
+    sync: bool = True
 
 
 async def store_and_read(file, folder: str) -> dict[str, Any]:

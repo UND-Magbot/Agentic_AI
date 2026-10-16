@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import copy
 import re
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from . import product_prices as pp
@@ -26,6 +27,8 @@ FORM_FIELDS = {   # 대화·직접 수정으로 바꿀 수 있는 머리 칸 →
     "contact_mobile": ("휴대폰", "text"), "contact_email": ("이메일", "text"), "delivery": ("납기", "text"),
     "place": ("납품장소", "text"), "payment": ("결제조건", "text"), "comments": ("Comments", "text"), "note": ("비고", "text"),
     "lang": ("언어", "lang"), "fx_rate": ("환율(원/달러)", "number"),
+    # 해외 견적서 담당자 표기 'Mr. Alex Jeon'(사용자 2026-10-14, 해외 기준 견적서) — 기본은 내 정보의 영문 이름·호칭
+    "contact_name_en": ("담당자 영문 이름", "text"), "contact_honorific": ("호칭", "text"),
     # 고객사가 우리에게 입금할 계좌(사용자 2026-10-08) — 기본은 회사 계좌(product_prices.QUOTE_ISSUER), 견적마다 바꿀 수 있다
     "bank": ("입금 은행", "text"), "account_no": ("입금 계좌번호", "text"), "account_holder": ("예금주", "text"),
     # 견적서 Total 아래 보조 문구·표 아래 주석(사용자 2026-10-13, 영업팀 요청 14번) — 비울 수 있다
@@ -167,7 +170,9 @@ def nego_amount(state: dict[str, Any], base: float) -> float:
     if not isinstance(v, (int, float)) or v <= 0:
         return 0.0
     amt = base * v / 100 if n.get("mode") == "percent" else float(v)
-    return round(amt, 2) if state["form"].get("lang") == "en" else float(round(amt))
+    # 0.5 는 올림 — 화면(Math.round)·엑셀 ROUND 와 같게(검증 QT-016, 2026-10-15: 파이썬 round 로 1원 달랐다)
+    step = Decimal("0.01") if state["form"].get("lang") == "en" else Decimal("1")
+    return float(Decimal(str(amt)).quantize(step, rounding=ROUND_HALF_UP))
 
 
 def nego_label(state: dict[str, Any]) -> str:
@@ -201,7 +206,7 @@ def _clean_block(b: dict[str, Any]) -> dict[str, Any] | None:
 # ── 초안 ──────────────────────────────────────────────────────────────────────
 
 MANUAL_COMMENTS = "www.magbot.kr\n- 제품 공급 건"
-MANUAL_COMMENTS_EN = "www.magbot.kr\n- Product Supply"
+MANUAL_COMMENTS_EN = "www.magbot.kr\nProduct Supply"           # 해외 기준 견적서처럼 줄머리 기호 없이
 
 
 def term_defaults(state: dict[str, Any], lang: str) -> dict[str, str]:
@@ -276,6 +281,32 @@ def clean_unit(v: Any) -> str:
     return re.sub(r'["\\\s]+', "", str(v or ""))[:8]
 
 
+# 해외 견적서의 한글 단위 → 영문(사용자 2026-10-14). 담당자가 적은 단위는 그대로 두고 견적서에 찍을 때만 바꾼다.
+UNIT_EN = {"식": "lot", "개월": "month", "대": "unit", "개": "ea", "인·일": "man-day", "인일": "man-day", "인/일": "man-day",
+           "일": "day", "명": "person", "세트": "set", "식(式)": "lot"}
+# 영문 단위 복수형 — 수량이 1이 아니면(해외 기준 견적서 '2 sets'). ea·pcs 는 그대로
+_UNIT_PLURAL = {"lot": "lots", "unit": "units", "set": "sets", "man-day": "man-days", "month": "months", "day": "days",
+                "person": "persons"}
+_UNIT_SINGULAR = {v: k for k, v in _UNIT_PLURAL.items()}
+
+
+def unit_label(unit: str, lang: str, qty: float | None = None) -> str:
+    """견적서에 찍을 수량 단위 — 해외 견적서면 한글 단위를 영문으로, 수량이 1이 아니면 복수형(1 lot / 2 lots)."""
+    if lang != "en":
+        return unit
+    u = UNIT_EN.get(unit, unit)
+    if qty is None or u.lower() not in {*_UNIT_PLURAL, *_UNIT_SINGULAR}:
+        return u
+    base = _UNIT_SINGULAR.get(u.lower(), u.lower())
+    return base if qty == 1 else _UNIT_PLURAL[base]
+
+
+def clean_honorific(v: Any) -> str:
+    """호칭 — Mr. / Ms. 만(그 밖은 비움). 이름으로 짐작하지 않고 본인이 고른다(사용자 2026-10-14)."""
+    s = re.sub(r"[\s.]", "", str(v or "")).lower()
+    return {"mr": "Mr.", "ms": "Ms."}.get(s, "")
+
+
 COMMENTS_LINES = 6                                         # 견적서 Comments 칸(E9:G14, 6행)에 들어가는 만큼
 
 
@@ -340,7 +371,7 @@ def next_question(state: dict[str, Any]) -> dict[str, Any] | None:
         return {"id": "extra", "text": "출장비·교육비 등 다른 추가 항목이 있나요? 있으면 항목·금액을, 없으면 '없음'이라고 해 주세요.",
                 "choices": ["없음"]}
     if not all(str(f.get(k) or "").strip() for k in ("initials", "contact_name", "contact_mobile", "contact_email")):
-        return {"id": "contact", "text": "견적서에 넣을 담당자 정보를 알려 주세요 — 이니셜 2자(견적번호용)·이름·직함·휴대폰·이메일. "
+        return {"id": "contact", "text": "견적서에 넣을 담당자 정보를 알려 주세요 — 이니셜 영문 2자(견적번호용)·이름·직함·휴대폰·이메일. "
                                          "예: HG, 홍길동 이사, 010-0000-0000, name@example.com"}
     if f.get("lang") == "en" and not f.get("fx_rate") and _usd_missing(state):
         return {"id": "fx", "text": "해외(달러) 견적입니다 — 품목 단가를 달러로 직접 적어 주시거나, 원화 단가표 가격을 바꿀 환율(원/달러)을 "
@@ -398,10 +429,16 @@ def problems(state: dict[str, Any]) -> list[str]:
     if not state["lines"]:
         out.append("품목이 없습니다")
     f = state["form"]
+    en = f.get("lang") == "en"
     for k in ("customer", "contact_name", "contact_mobile", "contact_email"):
+        if k == "contact_name" and en:               # 해외 견적서는 영문 이름(없으면 한글 이름 — 한글 칸으로 따로 막힌다)
+            if not (str(f.get("contact_name_en") or "").strip() or str(f.get(k) or "").strip()):
+                out.append(f"{FORM_FIELDS['contact_name_en'][0]} 비어 있음")
+            continue
         if not str(f.get(k) or "").strip():
             out.append(f"{FORM_FIELDS[k][0]} 비어 있음")
-    if not re.fullmatch(r"[A-Z][A-Za-z]", str(f.get("initials") or "")):
+    # 내 정보·발행번호와 같이 영문 2자(사용자 결정 2026-10-16)
+    if not re.fullmatch(r"[A-Z]{2}", str(f.get("initials") or "").upper()):
         out.append("담당자 이니셜(영문 2자, 예: VT) 필요")
     spec = DELIVERY.get(_delivery(state).get("case"))
     if not spec:
@@ -413,12 +450,16 @@ def problems(state: dict[str, Any]) -> list[str]:
         if spec["work"] and not (w.get("people") and w.get("days") and w.get("rate")):
             out.append("설치 인건비 — 인원·일수·1인 1일 단가 필요")
     n = state.get("nego") or {}
-    if n.get("mode") == "percent" and isinstance(n.get("value"), (int, float)) and n["value"] > 100:
-        out.append("NEGO 할인율은 100% 이하")
+    if n.get("mode") == "percent" and isinstance(n.get("value"), (int, float)) and n["value"] >= 100:
+        out.append("NEGO 할인율은 100% 미만")
     elif nego_amount(state, 1) > 0 and n.get("mode") != "percent":
         base = (subtotal_usd(state, nego=False) if f.get("lang") == "en" else subtotal(state, nego=False)) or 0
         if base and n["value"] >= base:
             out.append("NEGO 할인 금액이 합계보다 큽니다")
+    # 0원 이하 견적은 발행하지 않는다(검증 QT-005, 2026-10-15)
+    tot = subtotal_usd(state) if f.get("lang") == "en" else subtotal(state)
+    if state["lines"] and tot is not None and tot <= 0 and not any("NEGO" in p for p in out):
+        out.append("합계가 0원 이하입니다 — 단가·NEGO 를 확인해 주세요")
     if f.get("lang") == "en":
         if not f.get("fx_rate") and any(ln["kind"] in ("work", "freight") for ln in state["lines"]):
             out.append("물류비·설치 인건비(원화)를 달러로 바꾸려면 환율 필요")
@@ -517,6 +558,8 @@ def apply_ops(state: dict[str, Any], ops: Any, message: str | None) -> tuple[dic
                 v = clean_comments(v) if field == "comments" else re.sub(r"\s+", " ", str(v or "")).strip()[:200]
                 if field == "initials":
                     v = v.upper()[:2]
+                if field == "contact_honorific":
+                    v = clean_honorific(v)
                 if not v and field not in CLEARABLE_FIELDS:
                     continue
                 if (message is not None and field == "account_no"
@@ -527,6 +570,9 @@ def apply_ops(state: dict[str, Any], ops: Any, message: str | None) -> tuple[dic
             if field == "lang" and prev != v:
                 # 국내↔해외 — 조건 문구·입금 계좌를 그 언어의 기본으로(사용자 2026-10-08). 수기 견적 Comments 는 제품 공급 문구
                 st["form"].update({**term_defaults(st, v), **bank_defaults(v)})
+                # 비고 기본(해외 'Ex-work UND Korea Factory', 해외 기준 견적서) — 담당자가 적은 비고는 그대로
+                if (st["form"].get("note") or "") in ("", qx.DEFAULT_TERMS.get(prev or "ko", {}).get("note", "")):
+                    st["form"]["note"] = qx.DEFAULT_TERMS[v]["note"]
             done.append(f"{FORM_FIELDS[field][0]}: {v}")
         elif kind == "delivery":
             try:
@@ -858,10 +904,11 @@ def quick_ops(state: dict[str, Any], message: str) -> list[dict[str, Any]] | Non
 QUOTE_SYSTEM = """너는 유엔디로보틱스 견적 담당이다. [견적 상태]와 [지금 묻는 질문]을 보고 사용자의 마지막 [말]을 견적 변경(ops)으로 옮긴다.
 JSON 으로만 답한다. [말]에 분명히 있는 내용만 옮기고 지어내지 않는다. 숫자는 [말]에 적힌 그대로(원 단위; '50만원'은 500000).
 ops 종류:
-- {"op":"set","field":<customer|to|cc|initials|contact_name|contact_title|contact_mobile|contact_email|delivery|place|payment|comments|note|lang|fx_rate|bank|account_no|account_holder>,"value":...}
+- {"op":"set","field":<customer|to|cc|initials|contact_name|contact_title|contact_name_en|contact_honorific|contact_mobile|contact_email|delivery|place|payment|comments|note|lang|fx_rate|bank|account_no|account_holder>,"value":...}
   (lang 은 "ko" 또는 "en". contact_* 는 견적을 '보내는' 우리 회사(유엔디로보틱스) 담당자다 — '담당자는 …'처럼 분명할 때만.
    견적을 '받는' 고객사 쪽 사람('○○ 대표님께', '○○님 앞으로')은 to, 회사 이름은 customer.
    '홍길동 이사'처럼 이름과 직함이 같이 오면 contact_name 과 contact_title 로 나눈다.
+   해외 견적서에 찍히는 우리 담당자 영문 이름은 contact_name_en, 호칭은 contact_honorific("Mr." 또는 "Ms." — 말에 있을 때만).
    bank·account_no·account_holder 는 고객사가 우리에게 돈을 보낼 '입금 계좌'(견적서의 Bank·Account No. 칸)다 — 결제조건(payment)과 다르다.
    '계좌 바꿔 줘'·'입금 계좌는 신한은행 …' 이면 이 칸들을 바꾼다. 계좌번호는 [말]에 적힌 그대로. 새 계좌번호를 말하지 않았으면 ops 를 비우고
    answer 로 새 은행·계좌번호·예금주를 물어본다. 계좌 변경을 거절하거나 내부 정책·담당 부서 확인 같은 말을 지어내지 않는다.)
@@ -973,26 +1020,25 @@ def _item_rows(state: dict[str, Any], lines: list[dict[str, Any]], lang: str, fx
                auto_last: bool = False) -> list[dict[str, Any]]:
     """묶음 하나의 품목 줄 — 본체·액세서리 → 옵션 → 물류비 → 설치 인건비 → 추가 항목 순.
     사용자 지정 묶음(auto_last)은 직접 넣은 항목·서술형 줄(적은 순서) 다음에 물류비·인건비."""
-    pay = f" (Payload {state['payload_kg']:g}Kg)" if state.get("payload_kg") is not None else ""
+    kg = state.get("payload_kg")
+    pay = "" if kg is None else f" (Payload: {kg:g} kg)" if lang == "en" else f" (Payload {kg:g}Kg)"
     order = {"product": 0, "option": 1, "freight": 2, "work": 3, "extra": 4}
     if auto_last:
         order.update(freight=5, work=6)
     out = []
     for ln in sorted(lines, key=lambda x: order.get(x["kind"], 4)):     # 서술형 줄(note)은 추가 항목과 적은 순서대로
         if ln["kind"] == "note":
-            out.append({"row": "spec", "label": ln.get("commodity") or "", "value": ln.get("name") or ""})
+            out.append({"row": "spec", "label": ln.get("commodity") or "", "value": ln.get("name") or "", "note_id": ln.get("id")})
             continue
         k = ln["key"]
-        if k == "MASTER T.C":
-            desc = f"{state['model']}\n- MASTER T.C{pay}"
-        elif k == "T.P":
-            desc = f"{state['model']}\n- Tool side T.C{pay}"
+        if k in ("MASTER T.C", "T.P"):
+            desc = f"{state['model']}\n{qx.ATC_DESC[lang][k]}{pay}"
         elif ln["kind"] == "work":
             desc = WORK_NAME[lang]
         elif ln["kind"] == "freight":
             desc = FREIGHT_NAME[lang]
         elif k in qx._DESC:
-            desc = qx._DESC[k]
+            desc = (qx._DESC_EN if lang == "en" else qx._DESC)[k]
         else:
             desc = ln["name"]
         if ln["kind"] == "work":
@@ -1010,9 +1056,10 @@ def _item_rows(state: dict[str, Any], lines: list[dict[str, Any]], lang: str, fx
         unit = usd_price(ln, fx_rate) if lang == "en" else krw
         if unit is None:
             raise ValueError(f"{ln['name']} — " + ("달러 단가가 없습니다(직접 적거나 환율 입력)" if lang == "en" else "단가가 없습니다"))
-        out.append({"key": k, "commodity": qx.commodity_of(ln), "desc": desc, "qty": int(ln["qty"]),
+        # id — 올린 견적서 파일을 작성 상태로 되읽을 때 줄 짝짓기에 쓴다(quote_readback, 사용자 2026-10-15)
+        out.append({"id": ln.get("id"), "key": k, "commodity": qx.commodity_of(ln), "desc": desc, "qty": int(ln["qty"]),
                     **({"photo": ln["photo"]} if ln.get("photo") else {}), "unit_price": unit, "unit_price_krw": krw,
                     "amount": round(int(ln["qty"]) * unit, 2), "remark": remark, "option": ln["kind"] == "option", "kind": ln["kind"],
-                    **({"unit": "man-day" if lang == "en" else "인·일"} if ln["kind"] == "work"
-                       else {"unit": ln["unit"]} if ln.get("unit") else {})})
+                    **({"unit": unit_label("인·일", lang, int(ln["qty"]))} if ln["kind"] == "work"
+                       else {"unit": unit_label(ln["unit"], lang, int(ln["qty"]))} if ln.get("unit") else {})})
     return out

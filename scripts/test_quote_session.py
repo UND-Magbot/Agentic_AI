@@ -160,8 +160,14 @@ check(kinds[:2] == ["MASTER T.C", "T.P"] and kinds[-4:-2] == ["freight", "work"]
       and {rl[-2]["desc"], rl[-1]["desc"]} == {"교육비", "시운전 교육"} and rl[0]["desc"] == "TCV1\n- MASTER T.C (Payload 10Kg)",
       "엑셀 줄 순서(물류비 → 설치 인건비 → 추가 항목)·'인·일'·비고", str(kinds))
 re_ = qs.render_lines(st, "en", 1380)
-check(re_[-3]["desc"] == "Installation labor" and re_[-4]["desc"] == "Freight" and re_[-3]["unit"] == "man-day"
-      and re_[0]["unit_price"] == round(2_100_000 / 1380, 2), "영문: 물류비·인건비 문구·단위, 달러 환산")
+check(re_[-3]["desc"] == "Installation labor" and re_[-4]["desc"] == "Freight" and re_[-3]["unit"] == "man-days"
+      and re_[0]["unit_price"] == round(2_100_000 / 1380, 2), "영문: 물류비·인건비 문구·단위(8 man-days 복수형), 달러 환산")
+check(re_[0]["desc"] == "TCV1\n- Master Tool Changer (Payload: 10 kg)" and re_[1]["desc"] == "TCV1\n- Tool Plate (Payload: 10 kg)"
+      and rl[0]["desc"] == "TCV1\n- MASTER T.C (Payload 10Kg)",
+      "영문 본체 문구 = 해외 기준 견적서 표기(Master Tool Changer·Tool Plate·Payload: 10 kg), 국내는 그대로", str(re_[0]["desc"]))
+check([qs.unit_label(u, "en", n) for u, n in (("식", 1), ("식", 2), ("세트", 2), ("개", 3), ("개월", 1), ("개월", 12), ("set", 2), ("box", 2))]
+      == ["lot", "lots", "sets", "ea", "month", "months", "sets", "box"] and qs.unit_label("식", "ko", 2) == "식",
+      "영문 단위 단·복수(1 lot / 2 lots, 2 sets — 해외 기준 견적서), ea·모르는 단위는 그대로, 국내는 그대로")
 h = qx.quote_header(st["form"] | {"initials": "VT"}, lang="ko", quote_no="UND-VT20261006-01", day=date(2026, 10, 6), pogo=True)
 ws = openpyxl.load_workbook(io.BytesIO(qx.build_xlsx(h, rl))).active
 vals = {c.coordinate: c.value for row in ws.iter_rows() for c in row if c.value is not None}
@@ -171,7 +177,7 @@ check(ws[f"D{work_row[1:]}"].number_format == '0" 인·일"' and ws[f"D{work_row
       and vals.get(f"G{place_row[1:]}") == "직납 및 배차 비용 별도\n(화물 비용 별도)",
       "엑셀: 인건비 수량 '8 인·일', 납품장소 '직납 및 배차 비용 별도 (화물 비용 별도)'")
 en_st, _ = qs.apply_ops(st, [{"op": "set", "field": "lang", "value": "en"}], None)
-check(en_st["form"]["place"] == "Direct delivery & dispatch costs excluded\n(Freight costs excluded)", "영문 납품장소 문구")
+check(en_st["form"]["place"] == "UND Korea Factory", "영문 납품장소 문구(해외 기준 견적서, 2026-10-14)")
 
 # v1.2 액세서리 — 수량 미정 줄은 빼지 않고 발행을 막고, 조건부 수량은 담당자 확인 전 발행 불가(PGR24)
 ca = acc()
@@ -216,8 +222,8 @@ check(hd["issuer"]["account_no"] == "110-123-456789" and hd["issuer"]["bank"] ==
       and hd0["issuer"]["account_no"] == pp.QUOTE_ISSUER["account_no"], "견적서 머리: 바꾼 계좌, 비우면 회사 기본 계좌")
 check("account_no" in qs.QUOTE_SYSTEM and "결제조건(payment)과 다르다" in qs.QUOTE_SYSTEM, "AI 지시: 입금 계좌 ≠ 결제조건, 거절·지어내기 금지")
 
-# ── 해외 견적: 환율은 선택, 달러 단가 직접 입력(사용자 2026-10-13 — Realman 견적서처럼 $ 로만) ──
-CT = {"customer": "Realman", "initials": "AL", "contact_name": "Alex Jeon", "contact_mobile": "+82-10-0000-0000",
+# ── 해외 견적: 환율은 선택, 달러 단가 직접 입력(사용자 2026-10-13 — 해외 기준 견적서처럼 $ 로만) ──
+CT = {"customer": "ABC Robotics", "initials": "AL", "contact_name": "Alex Jeon", "contact_mobile": "+82-10-0000-0000",
       "contact_email": "a@example.com", "lang": "en"}
 us = qs.draft_state(acc(), model="TCV1", payload_kg=10, form=CT)
 us, _ = qs.apply_ops(us, [{"op": "delivery", "case": 5}, {"op": "no_extra"}], None)
@@ -412,7 +418,7 @@ check(qs.auto_block(sg3) == "B0" and all(r.get("row") != "section" for r in qs.r
 # ── 국내↔해외 전환 — 기본 문구만 바뀌고 직접 고친 문구는 그대로(사용자 2026-10-13) ──
 lk = qs.draft_state({}, model="", payload_kg=None, manual=True, form={"customer": "X"})
 le, _ = qs.apply_ops(lk, qs.edit_ops(lk, {"form": {**lk["form"], "lang": "en"}}), None)
-check(le["form"]["comments"] == qs.MANUAL_COMMENTS_EN and le["form"]["delivery"] == "Usually 3 ~ 4 weeks"
+check(le["form"]["comments"] == qs.MANUAL_COMMENTS_EN and le["form"]["delivery"] == "4 ~ 6 weeks after payment"
       and le["form"]["bank"] == "KOOKMIN BANK", "해외로: 조건 문구·계좌가 영문 기본으로(수기 견적 Comments 는 Product Supply)", str(le["form"]["comments"]))
 lb, _ = qs.apply_ops(le, qs.edit_ops(le, {"form": {**le["form"], "lang": "ko"}}), None)
 check(lb["form"]["comments"] == qs.MANUAL_COMMENTS and lb["form"]["delivery"] == "통상 3 ~ 4주" and lb["form"]["place"] == lk["form"]["place"]

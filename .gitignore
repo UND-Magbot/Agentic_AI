@@ -136,3 +136,12 @@ nul
 /scripts/test_plan_generator.py
 /scripts/diag_missing_recur.py
 /scripts/audit_placement_rules.py
+
+# 영업 기능 검증(test_cases) — 공개 저장소라 결과·오류 목록·실제 자료는 올리지 않음
+/test_cases/results/
+/test_cases/fixtures/private/
+/test_cases/defects.*
+
+# 로컬 디버그·실제 고객 파일 비교 스크립트(공개 저장소라 올리지 않음 — PRIVATE_FILES.md)
+/scripts/_*
+/scripts/compare_realman_quote.py

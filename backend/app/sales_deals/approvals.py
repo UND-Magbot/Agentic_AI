@@ -119,6 +119,10 @@ async def decide(db: AsyncSession, request_id: int, admin_id: int, approve: bool
         terms = d.get("pay_terms") or []
         if r["term_index"] is None or r["term_index"] >= len(terms):
             raise svc.DealError("요청한 회차가 결제 조건에 없습니다(결제 조건이 바뀌었을 수 있음). 거절 후 다시 요청받아 주세요.")
+        # 요청 뒤 결제 조건이 바뀌어 그 자리에 다른 회차가 오면 승인하지 않는다(검증 DL-064, 2026-10-15)
+        cur_due = r["current_due"].isoformat() if r["current_due"] else None
+        if (terms[r["term_index"]].get("expected_date") or None) != cur_due:
+            raise svc.DealError("요청한 뒤 결제 조건(회차·예정일)이 바뀌었습니다. 거절 후 다시 요청받아 주세요.")
         _check_new_due(due, terms[r["term_index"]].get("expected_date") or "", today)
         await _apply_due(db, d, r["term_index"], due, admin_id, note or r["reason"], request_id)
     else:

@@ -309,7 +309,12 @@ export type QuoteForm = {
   /** 견적서 Total 옆 보조 문구 · 표 아래 주석(여러 줄) — 영업팀 요청 14번 */
   /** foot_notes — 칸마다 주석 하나(예전 값은 줄바꿈으로 이은 글) */
   total_note?: string; foot_notes?: string[] | string;
+  /** 해외 견적서 담당자 'Mr. Alex Jeon' — 영문 이름·호칭(Mr./Ms.), 기본은 내 정보(사용자 2026-10-14) */
+  contact_name_en?: string; contact_honorific?: string;
 };
+/** 해외 견적서의 한글 칸(원문은 칸에 그대로) — en: AI·담당자 영어(null = 아직 번역 전, 미리보기·발행 때 번역),
+ *  by: ai|user, name: 이름·회사명(확인 필요), keep: [한글 그대로](번역 안 함, 발행 막지 않음) — 사용자 2026-10-14 */
+export type QuoteHangulCell = { path: string; label: string; text: string; name: boolean; en: string | null; by: "ai" | "user" | null; keep: boolean };
 /** 견적 본문 묶음 — items(소제목·소계) · option(합계 제외, 단가만) · spec(항목명/내용) · text(서술형). B0 = 기본 품목 묶음 */
 export type QuoteBlock = {
   id: string; type: "items" | "option" | "spec" | "text"; title: string; subtotal?: boolean;
@@ -330,6 +335,10 @@ export type QuoteSession = {
   subtotal: number; question: { id: string; text: string; choices?: string[] } | null; problems: string[];
   /** 해외 견적 달러 합계 — 달러 단가가 없는 줄이 있으면 null */
   subtotal_usd?: number | null;
+  /** 해외 견적서의 한글 칸과 AI 영어 — 영어도 [한글 그대로]도 아닌 칸이 있으면 발행 불가 */
+  hangul?: QuoteHangulCell[];
+  /** 올린 견적서 파일 위에서 이어서 고치는 중(그 발행번호) — 미리보기·발행이 그 파일의 엑셀 서식 그대로 */
+  on_file?: string | null;
   chat: { role: "user" | "assistant"; text: string }[];
   history: { revision: number; quote_no?: string | null; uploaded?: boolean; issued_at: string; total: number; currency: "KRW" | "USD"; file_name: string }[];
   created_at: string; updated_at: string;

@@ -637,6 +637,52 @@ def _reason(rs: list[dict[str, Any]], status: str, text: str, rule: str | None =
         rs.append({"status": status, "status_ko": STATUS_KO[status], "text_ko": text, "rule": rule, "ref": ref})
 
 
+# 입력 형식·범위(검증 REC-012·013·014, 2026-10-15) — 숫자 칸에 '3kg'·'2대', 음수 무게, DI 20만 개가 계산까지 가서
+# 서버 오류(500)나 비현실적인 모듈 수가 됐다. 값의 뜻(규칙)은 바꾸지 않고 형식·상한만 본다.
+_INT, _NUM = "int", "num"
+_LIMITS = {
+    "project": [("tool_count", _INT, 0, 100), ("spare_tool_plates", _INT, 0, 100)],
+    "robots": [("quantity", _INT, 1, 100)],
+    "tools": [("installed_quantity", _INT, 0, 1000), ("workpiece_count", _INT, 0, 1000),
+              ("intake.tool_assembly_mass_kg", _NUM, 0, 1000), ("intake.dimensions_mm.x", _NUM, 0, 10000),
+              ("intake.dimensions_mm.y", _NUM, 0, 10000), ("intake.dimensions_mm.z", _NUM, 0, 10000),
+              ("mass_components.max_simultaneous_workpieces_kg", _NUM, 0, 1000),
+              ("electrical.extra_pins", _INT, 0, 500), ("electrical.dio.di", _INT, 0, 500), ("electrical.dio.do", _INT, 0, 500),
+              ("pneumatic.pressure_bar.min", _NUM, 0, 100), ("pneumatic.pressure_bar.max", _NUM, 0, 100),
+              ("pneumatic.gripper_count", _INT, 0, 100), ("pneumatic.required_independent_paths", _INT, 0, 100),
+              ("pneumatic.extra_paths", _INT, 0, 100), ("pneumatic.observed_hose_count", _INT, 0, 100)],
+}
+_TEXT_FIELDS = {"project": ["system_request"]}
+
+
+def check_intake(intake: Any) -> None:
+    """판정 전에 입력 형식을 본다. 틀리면 ValueError(무엇이 틀렸는지, 화면에 그대로 보여도 되는 문구)."""
+    if not isinstance(intake, dict):
+        raise ValueError("입력 형식이 올바르지 않습니다.")
+    for scope, rules in _LIMITS.items():
+        ents = intake.get(scope)
+        if ents is None:
+            continue
+        if scope == "project":
+            ents = [ents]
+        if not isinstance(ents, list) or not all(isinstance(e, dict) for e in ents) or len(ents) > 50:
+            raise ValueError(f"{scope} 입력 형식이 올바르지 않습니다.")
+        for e in ents:
+            for path, kind, lo, hi in rules:
+                v = _get(e, path)
+                if v is None:
+                    continue
+                if isinstance(v, bool) or not isinstance(v, (int, float)) or (kind == _INT and float(v) != int(v)):
+                    raise ValueError(f"'{path}' 칸은 {'정수' if kind == _INT else '숫자'}로 적어 주세요(지금 {v!r}).")
+                if not lo <= v <= hi:
+                    raise ValueError(f"'{path}' 값 {v:g} 은 {lo:g}~{hi:g} 범위를 벗어납니다 — 다시 확인해 주세요.")
+    for scope, keys in _TEXT_FIELDS.items():
+        ent = intake.get(scope) or {}
+        for k in keys:
+            if ent.get(k) is not None and not isinstance(ent.get(k), str):
+                raise ValueError(f"'{k}' 칸은 글로 적어 주세요.")
+
+
 def evaluate(intake: dict[str, Any], catalog: list[dict[str, Any]], *, catalog_approved: bool | None = None) -> dict[str, Any]:
     """입력 → output_record(JSON output_record_template 형식 + 화면용 junior_summary)."""
     project = intake.get("project") or {}

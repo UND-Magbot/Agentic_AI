@@ -775,6 +775,11 @@ function PaymentBlock({ deal, busy, act }: { deal: DealRow; busy: boolean; act: 
     setFull(rest > 0);
     setOpen(true);
   };
+  // 입금액을 고치면 완납 제안도 다시 계산 — 일부 입금으로 고쳤는데 체크가 남아 완납 처리되던 문제(검증 DL-036, 2026-10-15)
+  const changeAmount = (v: string) => {
+    setAmount(v);
+    setFull(expected > 0 && paid + (Number(v.replaceAll(",", "")) || 0) >= expected);
+  };
   const save = async () => {
     if (await act("payments", { date, amount: Number(amount.replaceAll(",", "")), full })) setOpen(false);
   };
@@ -803,7 +808,7 @@ function PaymentBlock({ deal, busy, act }: { deal: DealRow; busy: boolean; act: 
                  canSave={Number(amount.replaceAll(",", "")) > 0 && !!date && !busy}>
           <div className="grid gap-2 md:grid-cols-3">
             <Field label="입금일"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={INPUT} /></Field>
-            <Field label="입금액"><input value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="numeric" className={cn(INPUT, "text-right")} /></Field>
+            <Field label="입금액"><input value={amount} onChange={(e) => changeAmount(e.target.value)} inputMode="numeric" className={cn(INPUT, "text-right")} /></Field>
             <label className="flex items-end gap-1.5 pb-2">
               <input type="checkbox" checked={full} onChange={(e) => setFull(e.target.checked)} /> 이 입금으로 완납
             </label>

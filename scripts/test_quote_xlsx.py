@@ -113,14 +113,25 @@ check(len(ws._images) == 4 and ws.print_area and int(ws.page_setup.paperSize) ==
 check(not any(c.font and c.font.name == "Book Antiqua" for row in ws.iter_rows() for c in row),
       "제목을 글꼴(Book Antiqua)로 쓰지 않음 — 서버 PDF 에서 다른 글꼴로 바뀌어 보였다")
 
-he = qx.quote_header({**form, "fx_rate": 1380}, lang="en", quote_no="S26-0183", day=day, pogo=True)
+he = qx.quote_header({**form, "fx_rate": 1380, "contact_name_en": "Gildong Hong", "contact_honorific": "Mr."}, lang="en", quote_no="S26-0183", day=day, pogo=True)
 we = openpyxl.load_workbook(io.BytesIO(qx.build_xlsx(he, en_lines))).active
 ev = {c.value for row in we.iter_rows() for c in row if isinstance(c.value, str)}
 check({"Delivery Schedule", "Payment Terms", "Total Amount", "Purchase Order Confirmation", pp.QUOTE_ISSUER_EN["company_en"],
        pp.QUOTE_ISSUER_EN["account_no"], pp.QUOTE_ISSUER_EN["account_holder"]} <= ev and not any("납기" in v or "부가세" in v for v in ev) and we.title == "Quotation"
-      and we["E17"].number_format == '"$"#,##0.00' and he["currency"] == "USD" and he["fx_rate"] == 1380
-      and "이사 홍길동" in we["A4"].value,
-      "영문 양식: 같은 구성, 문구 영어, 달러 서식, 영문 계좌·예금주, 직함 앞")
+      and we["E17"].number_format == qx.USD_CENTS and he["currency"] == "USD" and he["fx_rate"] == 1380
+      and "Mr. Gildong Hong (" in we["A4"].value and "이사" not in we["A4"].value,
+      "영문 양식: 같은 구성, 문구 영어, 달러 서식, 영문 계좌·예금주, 담당자 'Mr. 영문 이름'(해외 기준 견적서, 2026-10-14)")
+# 해외 기준 견적서 배치(사용자 2026-10-14) — 줄마다 앞 한 칸·국가명 앞 줄바꿈, 고객사 13칸 들여쓰기, Comments 14pt, 수량 서식, A열 15
+a4 = we["A4"].value.split("\n")
+check(all(x.startswith(" ") for x in a4) and any(x.strip().startswith("Republic of Korea") for x in a4)
+      and we["A9"].value.startswith(" " * 13 + form["customer"]) and we["E9"].font.sz == 14
+      and we["D17"].number_format == '#,##0_ "ea"' and we.column_dimensions["A"].width == 15.0
+      and ws["A9"].value.startswith(" " * 8 + form["customer"]) and ws["E9"].font.sz == 12 and ws.column_dimensions["A"].width == 13.58,
+      "영문 배치 = 해외 기준 견적서(주소 줄바꿈·들여쓰기·14pt·'#,##0_ \"ea\"'·A열 15), 국내 양식은 그대로", str(a4))
+whole = [{**en_lines[0], "unit_price": 1000.0, "amount": 1000.0, "qty": 2, "unit": "sets"}]
+ww = openpyxl.load_workbook(io.BytesIO(qx.build_xlsx(he, whole))).active
+check(ww["E17"].number_format == qx.USD_WHOLE and ww["D17"].number_format == '#,##0_ "sets"',
+      "센트가 없으면 '$ 1,000'(해외 기준 견적서 회계 서식), 수량 '2 sets'")
 
 # 묶음·NEGO 줄(사용자 2026-10-13) — 소제목·소계·옵션(공급가액 빈칸·합계 제외)·사양·문구·NEGO, Total 아래는 적은 문구만
 bl_lines = [lines[0],

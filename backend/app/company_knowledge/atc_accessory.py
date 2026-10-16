@@ -294,6 +294,9 @@ def pressure_check(medium: str | None, pmin: float | None, pmax: float | None) -
         return {"fit": None, "review": False, "reason": "needs_information"}
     lo, hi = (pmin if pmin is not None else pmax), (pmax if pmax is not None else pmin)
     lo_s, hi_s = STD_BAR
+    if lo > hi:     # 최소·최대가 뒤바뀐 입력(6~4bar)을 표준 이내로 판정하던 문제(검증 REC-009, 2026-10-15) — 값 확인 요청
+        return {"fit": False, "review": True, "reason": "PGR23",
+                "note": f"입력한 공급 압력 {lo:g}~{hi:g}bar 의 최소가 최대보다 큽니다 — 실제 공급 압력을 다시 확인해 주세요"}
     if lo >= lo_s and hi <= hi_s:
         return {"fit": True, "review": False, "reason": None,
                 "note": f"실제 공급 {lo:g}~{hi:g}bar — 표준 {lo_s:g}~{hi_s:g}bar 이내(압력 범위만, 유량·파지력은 별도 확인)"}

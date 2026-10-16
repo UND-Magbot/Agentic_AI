@@ -6,7 +6,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { QuoteBlock, QuoteDelivery, QuoteForm, QuoteLine, QuoteListItem, QuoteNego, QuoteSession, QuoteWork } from "@/lib/shared/product-recommend";
+import type { QuoteBlock, QuoteDelivery, QuoteForm, QuoteLine, QuoteListItem, QuoteNego, QuoteHangulCell, QuoteSession, QuoteWork } from "@/lib/shared/product-recommend";
 import { RichText } from "@/components/domains/sales/agent-chat";
 import { Icon } from "@/components/shared/ui/icon";
 import { cn } from "@/lib/shared/utils";
@@ -17,7 +17,7 @@ import { ErrorBox, inputCls, primaryBtn, secondaryBtn } from "./proposal-actions
 const CONTACT_KEY = "atcQuoteContact";
 
 /** 내용이 길어지면 높이가 늘어나는 글 칸(규격 여러 줄 — 사용자 2026-10-12). Enter 는 줄바꿈. */
-const CONTACT_FIELDS = ["initials", "contact_name", "contact_title", "contact_mobile", "contact_email"] as const;
+const CONTACT_FIELDS = ["initials", "contact_name", "contact_title", "contact_mobile", "contact_email", "contact_name_en", "contact_honorific"] as const;
 
 /** 브라우저에 기억한 담당자 정보 — 새 견적 초안에 미리 채운다(저장이 막혀 있어도 그대로 진행). */
 export function savedContact(): Record<string, string> {
@@ -169,17 +169,19 @@ export function DownloadDialog({ urlFor, fileName, title, onClose }: {
 }
 
 /** 미리보기(PDF, 파일로 남기지 않음) — 견적서·거래명세서 같이 씀. url: PDF 를 주는 주소. */
-export function PreviewDialog({ url: src0, title, sub, onClose }: { url: string; title: string; sub: string; onClose: () => void }) {
+export function PreviewDialog({ url: src0, title, sub, onClose, onLoaded }: {
+  url: string; title: string; sub: string; onClose: () => void; /** PDF 를 받은 뒤(해외 견적서: 서버가 AI 번역을 저장했을 수 있음) */ onLoaded?: () => void;
+}) {
   const [src, setSrc] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
     let url: string | null = null;
     let alive = true;
     fetchBlob(src0)
-      .then((b) => { url = URL.createObjectURL(b); if (alive) setSrc(url); })
+      .then((b) => { url = URL.createObjectURL(b); if (alive) { setSrc(url); onLoaded?.(); } })
       .catch((e: Error) => { if (alive) setErr(e.message); });
     return () => { alive = false; if (url) URL.revokeObjectURL(url); };
-  }, [src0]);
+  }, [src0]);  // eslint-disable-line react-hooks/exhaustive-deps -- onLoaded 는 받을 때 한 번만
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" onClick={onClose}>
       <div className="flex h-[92svh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-xl" onClick={(e) => e.stopPropagation()}
@@ -210,6 +212,50 @@ function Choices({ items, disabled, onPick }: { items: string[]; disabled: boole
         </button>
       ))}
     </div>
+  );
+}
+
+/** 해외 견적서 'AI 번역' 목록(사용자 2026-10-14) — 칸에는 한글 원문, 견적서에는 AI 영어. 영어는 고칠 수 있고,
+ *  꼭 한글로 둘 칸은 [한글 그대로]. 번역 전 칸은 미리보기·발행 때 AI 가 바꾼다. */
+function EnCells({ cells, disabled, note, onSet }: {
+  cells: QuoteHangulCell[]; disabled: boolean; note: string | null; onSet: (path: string, patch: { en?: string; keep?: boolean }) => void;
+}) {
+  const pending = cells.filter((c) => c.en == null && !c.keep).length;
+  return (
+    <div className="flex flex-col gap-1.5 rounded-lg border border-accent/25 bg-accent/[0.04] px-3 py-2 text-[12px]">
+      <p className="font-semibold text-foreground">AI 번역 · 한글 칸 {cells.length}개
+        <span className="ml-1.5 font-normal text-foreground-subtle">
+          {pending ? `${pending}칸은 미리보기·발행 때 AI 가 영어로 바꿉니다` : "견적서에는 오른쪽 영어가 들어갑니다 — 고칠 칸은 바로 고쳐 주세요"}
+        </span>
+      </p>
+      {note && <p className="text-accent">{note}</p>}
+      <ul className="flex flex-col gap-1">
+        {cells.map((c) => <EnRow key={`${c.path}|${c.en ?? ""}|${c.keep}`} c={c} disabled={disabled} onSet={onSet} />)}
+      </ul>
+    </div>
+  );
+}
+
+function EnRow({ c, disabled, onSet }: { c: QuoteHangulCell; disabled: boolean; onSet: (path: string, patch: { en?: string; keep?: boolean }) => void }) {
+  const [v, setV] = useState(c.en ?? "");
+  const commit = () => { if (v.trim() !== (c.en ?? "")) onSet(c.path, { en: v }); };
+  return (
+    <li className="grid items-start gap-x-2 gap-y-0.5 border-t border-border/60 pt-1 sm:grid-cols-[minmax(0,9rem)_minmax(0,1fr)_minmax(0,1.3fr)_auto]">
+      <span className="text-foreground-subtle">{c.label}
+        {c.name && c.by === "ai" && !c.keep && <span className="ml-1 rounded bg-amber-500/15 px-1 text-[10.5px] font-semibold text-amber-700 dark:text-amber-300">이름 확인</span>}
+      </span>
+      <span className="whitespace-pre-wrap text-foreground-muted">{c.text}</span>
+      {c.keep ? <span className="text-foreground-subtle">한글 그대로 들어갑니다</span> : (
+        <textarea value={v} rows={Math.min(4, Math.max(1, v.split("\n").length))} disabled={disabled}
+                  placeholder="미리보기·발행 때 AI 가 번역 (직접 적어도 됨)"
+                  onChange={(e) => setV(e.target.value)} onBlur={commit}
+                  className={cn("w-full resize-y rounded border bg-surface px-1.5 py-0.5 text-[12px] outline-none focus:border-accent",
+                    c.en == null ? "border-dashed border-border" : "border-border")} />
+      )}
+      <label className="inline-flex items-center gap-1 whitespace-nowrap text-foreground-muted" title="이 칸은 번역하지 않고 한글로 둡니다(발행 가능)">
+        <input type="checkbox" checked={c.keep} disabled={disabled} onChange={(e) => onSet(c.path, { keep: e.target.checked })} /> 한글 그대로
+      </label>
+    </li>
   );
 }
 
@@ -307,32 +353,36 @@ const toDraft = (q: QuoteSession): Draft => ({
 // 해외 견적서일 때 칸 이름은 영문(사용자 2026-10-13) — 견적서 양식의 영문 표기와 맞춤
 const LABEL_EN: Partial<Record<keyof QuoteForm, string>> = {
   customer: "Customer", to: "To (Attention)", cc: "CC", initials: "Initials", contact_name: "Name", contact_title: "Title",
+  contact_name_en: "Name (English)", contact_honorific: "Mr. / Ms.",
   contact_mobile: "Mobile", contact_email: "E-mail", delivery: "Delivery Schedule", place: "Delivery Place", payment: "Payment Terms",
   bank: "Bank", account_no: "Account No.", account_holder: "Account Holder", comments: "Comments", note: "Remarks",
 };
-const HEAD: { k: keyof QuoteForm; label: string; wide?: boolean; area?: boolean; req?: boolean; ph?: { ko: string; en: string } }[] = [
+// only — 그 견적서에서만 보이는 칸: 국내는 한글 이름·직함, 해외는 영문 이름·호칭('Mr. Alex Jeon', 해외 기준 견적서 — 사용자 2026-10-14)
+// 해외 예시 문구 = 해외 기준 견적서 표기
+const HEAD: { k: keyof QuoteForm; label: string; wide?: boolean; area?: boolean; req?: boolean; only?: "ko" | "en"; ph?: { ko: string; en: string } }[] = [
   { k: "customer", label: "고객사", req: true, ph: { ko: "예: (주)오토기기", en: "예: ABC Robotics Co., Ltd." } },
-  { k: "to", label: "받는 분(To)", ph: { ko: "예: 김철수 대표님", en: "예: Mr. John Smith" } },
+  { k: "to", label: "받는 분(To)", ph: { ko: "예: 김철수 대표님", en: "예: Mr. Sean Huang" } },
   { k: "cc", label: "참조(CC)", ph: { ko: "예: 이영희 과장", en: "예: Ms. Jane Doe (Purchasing)" } },
   { k: "initials", label: "담당자 이니셜", req: true, ph: { ko: "예: VT", en: "예: VT" } },
-  { k: "contact_name", label: "담당자 이름", req: true, ph: { ko: "예: 홍길동", en: "영문 이름 — 예: Gildong Hong" } },
-  { k: "contact_title", label: "직함", ph: { ko: "예: 이사", en: "예: Sales Manager" } },
-  { k: "contact_mobile", label: "휴대폰", req: true, ph: { ko: "예: 010-1234-5678", en: "국가번호 포함 — 예: +82-10-1234-5678" } },
+  { k: "contact_name", label: "담당자 이름", req: true, only: "ko", ph: { ko: "예: 홍길동", en: "" } },
+  { k: "contact_title", label: "직함", only: "ko", ph: { ko: "예: 이사", en: "" } },
+  { k: "contact_name_en", label: "담당자 영문 이름", req: true, only: "en", ph: { ko: "", en: "예: Alex Jeon (내 정보의 영문 이름)" } },
+  { k: "contact_honorific", label: "호칭", only: "en", ph: { ko: "", en: "" } },
+  { k: "contact_mobile", label: "휴대폰", req: true, ph: { ko: "예: 010-1234-5678", en: "예: 010-1234-5678 — 견적서엔 82-10-1234-5678 로" } },
   { k: "contact_email", label: "이메일", req: true, ph: { ko: "예: name@company.com", en: "예: name@company.com" } },
-  { k: "delivery", label: "납기", ph: { ko: "예: 통상 3 ~ 4주 (비우면 이 문구)", en: "예: Usually 3 ~ 4 weeks (비우면 이 문구)" } },
-  { k: "place", label: "납품장소", ph: { ko: "예: 직납 및 배차 비용 별도 (비우면 이 문구)",
-                                        en: "예: Direct delivery & dispatch costs excluded (비우면 이 문구)" } },
+  { k: "delivery", label: "납기", ph: { ko: "예: 통상 3 ~ 4주 (비우면 이 문구)", en: "예: 4 ~ 6 weeks after payment (비우면 이 문구)" } },
+  { k: "place", label: "납품장소", ph: { ko: "예: 직납 및 배차 비용 별도 (비우면 이 문구)", en: "예: UND Korea Factory (비우면 이 문구)" } },
   { k: "payment", label: "결제조건", ph: { ko: "예: 발주시 50%, 납품전 50% (비우면 이 문구)",
-                                          en: "예: 50% upon order, 50% before delivery (비우면 이 문구)" } },
+                                          en: "예: 100% advance payment before delivery. (비우면 이 문구)" } },
   // 입금 계좌(사용자 2026-10-08) — 기본은 회사 계좌, 바꾸면 이 견적서에만
   { k: "bank", label: "입금 은행", ph: { ko: "비우면 회사 기본 계좌", en: "비우면 회사 해외 송금 계좌 — 바꿀 때는 영문 은행명" } },
   { k: "account_no", label: "입금 계좌번호", ph: { ko: "비우면 회사 기본 계좌", en: "비우면 회사 해외 송금 계좌" } },
   { k: "account_holder", label: "예금주", ph: { ko: "비우면 회사 기본 계좌", en: "비우면 회사 해외 송금 계좌 — 바꿀 때는 영문 예금주" } },
   { k: "comments", label: "Comments", wide: true, area: true,
     ph: { ko: "비우면 기본 문구\n예: www.magbot.kr\n- Auto Tool Changer 공급 건\n맥봇 로봇 툴체인저",
-          en: "비우면 기본 문구\n예: www.magbot.kr\n- Auto Tool Changer Supply\nMagbot Robot Tool Changer" } },
+          en: "비우면 기본 문구\n예: www.magbot.kr\nMagbot Robot Automatic Tool Changer" } },
   { k: "note", label: "비고", wide: true, area: true,
-    ph: { ko: "예: 설치 일정은 발주 후 협의", en: "예: Installation schedule to be agreed after the order." } },
+    ph: { ko: "예: 설치 일정은 발주 후 협의", en: "예: Ex-work UND Korea Factory" } },
 ];
 
 export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void }) {
@@ -347,6 +397,8 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
   const [err, setErr] = useState<string | null>(null);
   const [text, setText] = useState("");
   const [preview, setPreview] = useState(false);
+  // 해외 견적서: 번역 전 칸이 있는데 [발행]을 누르면 미리보기로 먼저 확인하게 한다(사용자 2026-10-14: 사람이 더블체크)
+  const [enNote, setEnNote] = useState<string | null>(null);
   const [saving, setSaving] = useState<{ revision: number; fileName: string; title: string } | null>(null);
   const [uploading, setUploading] = useState(false);
   const chatEnd = useRef<HTMLDivElement>(null);
@@ -466,9 +518,26 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
     if (s) load(s);
   }
 
+  /** 'AI 번역' 목록 — 칸 하나의 영어 고치기('' = 다음 미리보기 때 AI 가 다시) · [한글 그대로] */
+  async function setEnCell(path: string, patch: { en?: string; keep?: boolean }) {
+    const s = await run("저장 중", () => api<QuoteSession>(`/quotes/${id}/en-cell`, { path, ...patch }));
+    if (s) load(s);
+  }
+  /** 미리보기 PDF 를 받은 뒤 — 서버가 그사이 AI 번역을 저장했으면 목록에 보이게 다시 불러온다. */
+  async function reloadAfterPreview() {
+    if (!q || !(q.hangul ?? []).some((c) => c.en == null && !c.keep)) return;
+    try { load(await api<QuoteSession>(`/quotes/${id}`)); } catch { /* 미리보기는 이미 열림 — 목록은 다음에 */ }
+  }
+
   /** 발행·재발행(늘 새 발행번호, 사용자 2026-10-12) → 바로 내려받기 창(PDF·엑셀 고르기, 다른 이름으로 저장). */
   async function issue() {
     if (!q) return;
+    if ((q.hangul ?? []).some((c) => c.en == null && !c.keep)) {
+      setEnNote("한글 칸을 AI 가 영어로 바꿨습니다 — 미리보기와 아래 'AI 번역' 목록을 확인한 뒤 다시 [발행]을 눌러 주세요.");
+      setPreview(true);
+      return;
+    }
+    setEnNote(null);
     const s = await run("발행 중", () => api<QuoteSession>(`/quotes/${id}/issue`, {}));
     if (s) {
       load(s);
@@ -519,6 +588,9 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
     : Math.round((manualUsd.reduce((s, x) => s + x.q * (x.u ?? 0), 0) + (autoKrw && fx ? autoKrw / fx : 0)) * 100) / 100;
   const totalUsd = baseUsd == null ? null : Math.round((baseUsd - negoCut(d.nego, baseUsd, true)) * 100) / 100;
   const en = d.form.lang === "en";
+  const hangul = q.hangul ?? [];
+  // 번역 전 칸은 [발행] 때 미리보기로 먼저 번역·확인 — 발행을 막는 건 채울 것(problems)뿐
+  const blocked = q.problems.length > 0;
   const issued = q.status === "issued";
   const optionsLeft = q.state.options.filter((o) => !d.include.includes(o.name));
 
@@ -537,6 +609,12 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
               issued ? "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300" : "bg-amber-500/15 text-amber-700 dark:text-amber-300")}>
               {issued ? "발행" : "작성 중"}
             </span>
+            {q.on_file && (
+              <span className="rounded-md bg-sky-500/12 px-1.5 py-0.5 text-[11.5px] font-semibold text-sky-700 dark:text-sky-300"
+                    title="미리보기·발행 파일을 회사 양식으로 새로 그리지 않고, 올린 엑셀 파일에서 바뀐 칸만 고칩니다(엑셀에서 넣은 서식 유지).">
+                올린 파일({q.on_file}) 위에서 고치는 중
+              </span>
+            )}
           </div>
           {q.question && !dirty && (
             <div className="flex flex-col gap-1.5 rounded-lg bg-accent/[0.07] px-3 py-2 text-[12.5px] text-foreground">
@@ -549,7 +627,10 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
               {q.problems.map((p) => <li key={p}>· {p}</li>)}
             </ul>
           )}
-          {!q.question && q.problems.length === 0 && !dirty && (
+          {en && hangul.length > 0 && (
+            <EnCells cells={hangul} disabled={!!busy || dirty} note={enNote} onSet={(path, patch) => void setEnCell(path, patch)} />
+          )}
+          {!q.question && !blocked && !dirty && (
             <p className="text-[12.5px] text-emerald-700 dark:text-emerald-300">필요한 내용을 다 채웠습니다 — [견적서 발행]을 누르면 엑셀이 만들어집니다.</p>
           )}
         </section>
@@ -570,15 +651,21 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
           </div>
           {en && (
             <p className="rounded-lg bg-accent/[0.07] px-3 py-2 text-[12px] text-foreground">
-              해외 견적서는 <b>모든 칸을 영문으로</b> 적어 주세요(칸마다 영문 예시가 보입니다). 비워 둔 납기·납품장소·결제조건·Comments 는 영문 기본 문구로 들어갑니다.
+              해외 견적서는 <b>모든 칸이 영문</b>이어야 발행됩니다. 한글로 적은 칸은 위의 <b>[AI로 영문 바꾸기]</b>로 한 번에 바꾸고 미리보기로 확인하세요.
+              비워 둔 납기·납품장소·결제조건·Comments 는 영문 기본 문구로, 한글 단위(식·개월·대·개)는 lot·months·unit·ea 로 들어갑니다.
             </p>
           )}
           <div className="grid gap-2 sm:grid-cols-2">
-            {HEAD.map((h) => (
+            {HEAD.filter((h) => !h.only || h.only === (en ? "en" : "ko")).map((h) => (
               <label key={h.k} className={cn("flex flex-col gap-1 text-[12px] text-foreground-muted", h.wide && "sm:col-span-2")}>
                 <span>{en ? LABEL_EN[h.k] ?? h.label : h.label}{h.req && <span className="text-red-600"> *</span>}
                   {h.k === "comments" && <span className="ml-1 text-[11px] text-foreground-subtle">· Enter(Shift+Enter)로 줄 바꿈, 견적서에 가운데 정렬 · 6줄까지</span>}</span>
-                {h.area
+                {h.k === "contact_honorific"
+                  ? <select className={cn(inputCls, "text-[12.5px]")} value={d.form.contact_honorific ?? ""} disabled={!!busy}
+                            onChange={(e) => setForm("contact_honorific", e.target.value)}>
+                      <option value="">안 씀</option><option value="Mr.">Mr.</option><option value="Ms.">Ms.</option>
+                    </select>
+                  : h.area
                   ? <textarea className={cn(inputCls, "min-h-[56px] text-[12.5px]", h.k === "comments" && "min-h-[110px] text-center")} value={String(d.form[h.k] ?? "")}
                               placeholder={h.ph?.[en ? "en" : "ko"]} disabled={!!busy} onChange={(e) => setForm(h.k, e.target.value)} />
                   : <input className={cn(inputCls, "text-[12.5px]")} value={String(d.form[h.k] ?? "")} placeholder={h.ph?.[en ? "en" : "ko"]} disabled={!!busy}
@@ -819,8 +906,10 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
                     title={dirty ? "먼저 변경을 저장해 주세요" : "엑셀에서 고쳤거나 따로 만든 견적서 파일로 발행합니다(새 번호)"}>
               <Icon name="paperclip" className="h-4 w-4" /> 고친 파일로 발행
             </button>
-            <button type="button" className={primaryBtn} disabled={dirty || !!busy || q.problems.length > 0} onClick={() => void issue()}
-                    title={q.problems.length ? "발행 전에 위의 확인할 것을 채워 주세요" : dirty ? "먼저 변경을 저장해 주세요" : ""}>
+            <button type="button" className={primaryBtn} disabled={dirty || !!busy || blocked} onClick={() => void issue()}
+                    title={q.problems.length ? "발행 전에 위의 확인할 것을 채워 주세요"
+                      : hangul.some((c) => c.en == null && !c.keep) ? "한글 칸을 AI 가 영어로 바꾼 뒤 미리보기로 먼저 보여 드립니다"
+                      : dirty ? "먼저 변경을 저장해 주세요" : ""}>
               <Icon name="file-spreadsheet" className="h-4 w-4" /> {issued ? "재발행 (새 번호)" : "견적서 발행"}
             </button>
           </div>
@@ -852,7 +941,8 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
         <ErrorBox error={err} />
       </div>
       {preview && <PreviewDialog url={`/api/product-recommend/quotes/${q.id}/preview`} title="견적서 미리보기"
-                                  sub="지금 저장된 내용 그대로 · 발행 전이면 견적번호는 발행 때 정해집니다" onClose={() => setPreview(false)} />}
+                                  sub={en && hangul.length ? "한글 칸은 AI 영어로 · 발행 전이면 견적번호는 발행 때 정해집니다" : "지금 저장된 내용 그대로 · 발행 전이면 견적번호는 발행 때 정해집니다"}
+                                  onClose={() => setPreview(false)} onLoaded={() => void reloadAfterPreview()} />}
       {uploading && (
         <QuoteUploadDialog title="고친 견적서 파일로 발행" uploadUrl={`/api/product-recommend/quotes/${q.id}/upload`}
                            confirmUrl={`/api/product-recommend/quotes/${q.id}/upload/confirm`}

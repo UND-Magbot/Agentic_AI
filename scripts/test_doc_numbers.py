@@ -21,6 +21,7 @@ from app.database import SessionLocal
 from app.main import app
 from app.models import User
 from app.sales_deals import doc_numbers as dn
+from app.user_profile import contact_form, get_profile
 
 PASS: list[str] = []
 FAIL: list[tuple[str, str]] = []
@@ -62,7 +63,7 @@ async def main() -> None:
             await dn.allocate(db, dn.QUOTE, "ZQ", DAY)
             await db.rollback()
         check(await take(dn.QUOTE, "ZQ") == "QT-ZQ20000103-13", "되돌린(발행 실패) 번호는 남지 않아 다음이 13")
-        for bad in ("", "Z", "Z1", "ABCDE"):
+        for bad in ("", "Z", "Z1", "ABC", "ABCDE"):
             try:
                 async with SessionLocal() as db:
                     await dn.allocate(db, dn.QUOTE, bad, DAY)
@@ -75,7 +76,8 @@ async def main() -> None:
     # ── 내 정보 ──
     async with SessionLocal() as db:
         user = (await db.execute(select(User).where(User.username == "mason"))).scalar_one()
-        before = dict((await db.execute(text("SELECT initials, name_ko, title, mobile, email FROM users WHERE id = :i"),
+        before = dict((await db.execute(text("SELECT initials, name_ko, title, mobile, email, name_en, name_en_first, name_en_last "
+                                             "FROM users WHERE id = :i"),
                                         {"i": user.id})).mappings().one())
     app.dependency_overrides[get_current_user] = lambda: user
     try:
@@ -85,14 +87,27 @@ async def main() -> None:
             got = (await c.get("/v1/me/profile")).json()
             check(r.status_code == 200 and got["initials"] == "MS" and got["name_ko"] == "메이슨 테스트" and got["mobile"] == "010-1234-5678",
                   "내 정보 저장·불러오기(이니셜 대문자, 공백 정리)", str(got))
-            for body, why in (({"initials": "M1"}, "이니셜"), ({"mobile": "전화"}, "휴대폰"), ({"email": "x@"}, "이메일")):
+            # 영문 성·이름 따로(사용자 2026-10-14) — 견적서용 name_en 은 'First Last' 로 합쳐 저장
+            r = await c.put("/v1/me/profile", json={"email": before["email"] or "", "name_en_last": " Jeon ", "name_en_first": "Alex",
+                                                    "name_en": "무시됨"})
+            got = r.json()
+            check(r.status_code == 200 and got["name_en_last"] == "Jeon" and got["name_en_first"] == "Alex" and got["name_en"] == "Alex Jeon",
+                  "영문 성·이름 따로 저장, name_en = 'Alex Jeon'", str(got))
+            async with SessionLocal() as db:
+                cf = contact_form(await get_profile(db, user.id))
+            check(cf.get("contact_name_en") == "Alex Jeon", "견적서 담당자 영문 이름 = 이름 성 순서", str(cf))
+            r = await c.put("/v1/me/profile", json={"email": before["email"] or "", "name_en_first": "Alex"})
+            check(r.json().get("name_en") == "Alex" and r.json().get("name_en_last") == "", "성이 비면 이름만", str(r.json()))
+            for body, why in (({"initials": "M1"}, "이니셜"), ({"mobile": "전화"}, "휴대폰"), ({"email": "x@"}, "이메일"),
+                              ({"name_en_last": "전"}, "영문 성(한글)"), ({"name_en_first": "A" * 30, "name_en_last": "B" * 30}, "영문 이름 60자 초과")):
                 r = await c.put("/v1/me/profile", json=body)
                 check(r.status_code == 422, f"내 정보 검사 — 잘못된 {why} 거절", str(r.status_code))
     finally:
         app.dependency_overrides.clear()
         async with SessionLocal() as db:
             await db.execute(text("UPDATE users SET initials = :initials, name_ko = :name_ko, title = :title, mobile = :mobile, "
-                                  "email = :email WHERE id = :i"), {**before, "i": user.id})
+                                  "email = :email, name_en = :name_en, name_en_first = :name_en_first, name_en_last = :name_en_last "
+                                  "WHERE id = :i"), {**before, "i": user.id})
             await db.commit()
 
 

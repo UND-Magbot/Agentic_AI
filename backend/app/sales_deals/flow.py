@@ -99,6 +99,16 @@ def steps(d: dict) -> list[dict[str, Any]]:
     return out
 
 
+def _real_date(v: str) -> bool:
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
+        return False
+    try:
+        dt.date.fromisoformat(v)
+    except ValueError:
+        return False
+    return True
+
+
 def clean_terms(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """화면·대화에서 받은 결제 조건 검사 — 구분·%(합 100)·시점(자유 글, 비어도 됨)·예정일. 틀리면 ValueError(무엇이 틀렸는지)."""
     out = []
@@ -109,12 +119,13 @@ def clean_terms(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
         except (TypeError, ValueError):
             pct = 0
         due = str(t.get("expected_date") or "").strip() or None
-        if due and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", due):
+        if due and not _real_date(due):              # 2월 30일 같은 없는 날짜도 거절(검증 DL-071, 2026-10-15)
             raise ValueError("예정 입금일은 날짜로 적어 주세요.")
         if not label or pct <= 0:
             raise ValueError("회차마다 구분(선금·중도금·잔금)·비율(%)을 적어 주세요.")
         when = re.sub(r"\s+", " ", str(t.get("when") or "")).strip()[:30]
-        out.append({"label": label, "pct": round(pct, 2), "when": when, "expected_date": due})
+        # 소수 셋째 자리까지 — 33.333/33.333/33.334 3분할이 둘째 자리로 잘려 99.99% 로 거절되던 문제(검증 DL-028, 2026-10-15)
+        out.append({"label": label, "pct": round(pct, 3), "when": when, "expected_date": due})
     if not out:
         raise ValueError("결제 조건을 한 회차 이상 적어 주세요.")
     if abs(sum(t["pct"] for t in out) - 100) > 0.01:

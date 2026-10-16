@@ -15,12 +15,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 QUOTE = "QT"
 STATEMENT = "TS"
-INITIALS_RE = re.compile(r"[A-Z]{2,4}")
+INITIALS_RE = re.compile(r"[A-Z]{2}")
 DOC_NO_RE = re.compile(r"^(QT|TS)-([A-Z]{2,4})(\d{8})-(\d{2,})$")
 
 
 def clean_initials(v: str | None) -> str | None:
-    """'lu ' → 'LU'. 영문 2~4자가 아니면 None."""
+    """'lu ' → 'LU'. 영문 2자가 아니면 None."""
     ini = str(v or "").strip().upper()
     return ini if INITIALS_RE.fullmatch(ini) else None
 
@@ -35,7 +35,7 @@ async def allocate(db: AsyncSession, doc_type: str, issuer: str, day: dt.date, *
     같은 발행자·날짜·종류는 잠가 두 사람이 동시에 내도 번호가 겹치지 않는다."""
     ini = clean_initials(issuer)
     if not ini or doc_type not in (QUOTE, STATEMENT):
-        raise ValueError("발행자 이니셜은 영문 2~4자로 적어 주세요(예: LU).")
+        raise ValueError("발행자 이니셜은 영문 2자로 적어 주세요(예: LU).")
     await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": f"doc_no:{doc_type}:{ini}:{day:%Y%m%d}"})
     seq = (await db.execute(text("SELECT COALESCE(MAX(seq), 0) + 1 FROM doc_numbers "
                                  "WHERE doc_type = :t AND issuer = :i AND issue_day = :d"),
@@ -90,6 +90,7 @@ async def register(db: AsyncSession, doc_no: str, *, deal_id: int | None = None,
                    user_id: int | None = None) -> None:
     """담당자가 견적서에 직접 적은 번호가 우리 형식(QT-LU20261012-03)이면 기록해 둔다 — 그 발행자의 그날 다음 번호가
     이 번호와 겹치지 않게. 이미 있으면(같은 판을 고친 것) 그대로 둔다. 다른 형식(예전 번호)은 기록하지 않는다."""
+    doc_no = doc_no.strip().upper()        # 소문자로 적은 번호도 같은 번호로 기록(검증 QT-069, 2026-10-15)
     m = DOC_NO_RE.match(doc_no)
     if not m:
         return

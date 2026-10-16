@@ -8,7 +8,7 @@ export function InitialsPrompt({ name, onSaved, onCancel }: { name?: string; onS
   const [ini, setIni] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const ok = /^[A-Z]{2,4}$/.test(ini);
+  const ok = /^[A-Z]{2}$/.test(ini);
   async function save() {
     setBusy(true);
     setErr(null);
@@ -28,7 +28,7 @@ export function InitialsPrompt({ name, onSaved, onCancel }: { name?: string; onS
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/[0.07] px-3 py-2 text-[12.5px]">
       <span>{name ? <b>{name}</b> : "내"} 건 번호 이니셜을 정해 주세요 — 예: <b>AL</b>20261008</span>
-      <input value={ini} maxLength={4} autoFocus aria-label="건 번호 이니셜" placeholder="AL"
+      <input value={ini} maxLength={2} autoFocus aria-label="건 번호 이니셜" placeholder="AL"
              onChange={(e) => setIni(e.target.value.toUpperCase().replace(/[^A-Z]/g, ""))}
              onKeyDown={(e) => { if (e.key === "Enter" && ok && !busy) void save(); }}
              className="h-8 w-20 rounded-lg border border-border bg-surface px-2 font-mono outline-none focus:border-accent" />

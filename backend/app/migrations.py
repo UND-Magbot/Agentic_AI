@@ -942,6 +942,21 @@ _SALES_DEALS_STMTS = [
     text("ALTER TABLE users ADD COLUMN IF NOT EXISTS name_ko VARCHAR(40)"),
     text("ALTER TABLE users ADD COLUMN IF NOT EXISTS title VARCHAR(40)"),
     text("ALTER TABLE users ADD COLUMN IF NOT EXISTS mobile VARCHAR(40)"),
+    # 해외 견적서 담당자 'Mr. Alex Jeon'(사용자 2026-10-14 승인) — 영문 이름·호칭(Mr./Ms., 본인이 고름)
+    text("ALTER TABLE users ADD COLUMN IF NOT EXISTS name_en VARCHAR(60)"),
+    text("ALTER TABLE users ADD COLUMN IF NOT EXISTS honorific VARCHAR(8)"),
+    # 영문 성·이름 따로(사용자 2026-10-14 승인) — name_en 은 'First Last' 로 합친 값을 같이 저장(견적서는 name_en 그대로)
+    text("ALTER TABLE users ADD COLUMN IF NOT EXISTS name_en_first VARCHAR(40)"),
+    text("ALTER TABLE users ADD COLUMN IF NOT EXISTS name_en_last VARCHAR(40)"),
+    # 이미 넣은 영문 이름은 마지막 띄어쓰기 기준으로 한 번 나눔(둘 다 비어 있을 때만 — 다시 돌려도 그대로)
+    text(
+        r"""
+        UPDATE users SET
+            name_en_first = CASE WHEN name_en ~ '\s' THEN regexp_replace(name_en, '\s+\S+$', '') ELSE name_en END,
+            name_en_last  = CASE WHEN name_en ~ '\s' THEN regexp_replace(name_en, '^.*\s', '') END
+        WHERE COALESCE(name_en, '') <> '' AND name_en_first IS NULL AND name_en_last IS NULL
+        """
+    ),
     # 발행번호(사용자 2026-10-12 승인) — 견적서 QT-LU20261012-01 · 거래명세서 TS-…. 일련번호 = 발행자(이니셜)의 그날 문서 종류별 발행 순서.
     # 한 번 나간 번호는 다시 쓰지 않는다(건을 지워도 남김 — 그래서 sales_deals 에 FK 를 걸지 않음).
     text(

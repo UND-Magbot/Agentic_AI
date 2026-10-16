@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import re
 from datetime import date
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any
 
@@ -116,9 +117,14 @@ def split_name(name: str) -> tuple[str, str]:
     return code, rest
 
 
+def _round_won(v: Any) -> int:
+    """엑셀 ROUND 와 같은 반올림(0.5 는 올림) — 파이썬 round 는 12.5 → 12 라 인쇄물(13)과 1원 달랐다(검증 DL-019, 2026-10-15)."""
+    return int(Decimal(str(v)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
 def totals(items: list[dict[str, Any]]) -> dict[str, int]:
-    supply = int(round(sum((it.get("qty") or 0) * (it.get("unit_price") or 0) for it in items)))
-    vat = int(round(supply * 0.1))
+    supply = _round_won(sum((it.get("qty") or 0) * (it.get("unit_price") or 0) for it in items))
+    vat = _round_won(supply * Decimal("0.1"))
     return {"supply": supply, "vat": vat, "total": supply + vat}
 
 
@@ -136,6 +142,8 @@ def check(st: dict[str, Any]) -> None:
         raise StatementError("거래명세서에 꼭 필요한 값이 비어 있습니다: " + ", ".join(miss))
     if len(items) > MAX_ITEMS:
         raise StatementError(f"품목은 {MAX_ITEMS}줄까지입니다.")
+    if totals(items)["total"] <= 0:                      # 0원·음수 명세서 막음(검증 DL-022, 2026-10-15)
+        raise StatementError("합계가 0원 이하입니다 — 품목 단가·NEGO 를 확인해 주세요.")
 
 
 def _cell(ws, ref: str, value: Any = None, *, size: float = 10, bold: bool = False, h: str = "center",
