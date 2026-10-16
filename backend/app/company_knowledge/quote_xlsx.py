@@ -156,6 +156,11 @@ def quote_header(form: dict[str, Any], *, lang: str, quote_no: str, day: date, p
             "foot_notes": _notes(form.get("foot_notes"))}
 
 
+def nlines(*vals: Any) -> int:
+    """칸 글의 줄 수 중 가장 많은 것 — 담당자가 줄을 바꾼 칸(Alt+Enter, 사용자 2026-10-16)만큼 행을 높인다."""
+    return max([str(v or "").count("\n") + 1 for v in vals] or [1])
+
+
 # ── 엑셀 ─────────────────────────────────────────────────────────────────────
 
 def _cell(ws, ref: str, value: Any = None, *, size: float = 10, bold: bool = True, h: str | None = "center",
@@ -332,7 +337,7 @@ def build_xlsx(header: dict[str, Any], lines: list[dict[str, Any]], photos: dict
             r += 1
             continue
         if kind == "section":
-            ws.row_dimensions[r].height = 22
+            ws.row_dimensions[r].height = max(22, 13 * nlines(ln.get("text")) + 8)
             _cell(ws, f"A{r}", ln.get("text") or "", size=9, merge=f"G{r}")
             block_cells = []
             r += 1
@@ -347,7 +352,7 @@ def build_xlsx(header: dict[str, Any], lines: list[dict[str, Any]], photos: dict
             continue
         if kind == "spec":
             # 방역 로봇 견적서처럼 항목명은 넓게(품목+규격 칸 A:B), 내용은 가운데(C:F), 비고(G)는 비움
-            n_lines = max(str(ln.get("value") or "").count("\n") + 1, -(-len(str(ln.get("label") or "")) // 22))
+            n_lines = max(nlines(ln.get("value"), ln.get("label")), -(-len(str(ln.get("label") or "")) // 22))
             ws.row_dimensions[r].height = max(20, 13 * n_lines + 6)
             _cell(ws, f"A{r}", ln.get("label") or "", size=9, merge=f"B{r}")
             _cell(ws, f"C{r}", ln.get("value") or "", size=9, merge=f"F{r}")
@@ -370,7 +375,7 @@ def build_xlsx(header: dict[str, Any], lines: list[dict[str, Any]], photos: dict
             r += 1
             continue
         pic = (photos or {}).get(str(ln.get("photo") or ""))
-        ws.row_dimensions[r].height = max(31, 13 * (str(ln["desc"]).count("\n") + 1) + 5, 48 if pic else 0)
+        ws.row_dimensions[r].height = max(31, 13 * nlines(ln["desc"], ln.get("commodity"), ln.get("remark")) + 5, 48 if pic else 0)
         _cell(ws, f"A{r}", ln.get("commodity") or "", size=9)
         _cell(ws, f"B{r}", ln["desc"], size=9, merge=f"C{r}")
         # 해외 수량 서식 = 해외 기준 견적서('#,##0_ "sets"' — 천 단위 쉼표, 숫자와 단위 사이 한 칸)
@@ -402,13 +407,13 @@ def build_xlsx(header: dict[str, Any], lines: list[dict[str, Any]], photos: dict
     rows = ((lab["delivery"], header["delivery"], lab["place"], header["place"]),
             (lab["validity"], terms["validity"], lab["payment"], header["payment"]))
     for a_lab, a_val, f_lab, f_val in rows:
-        ws.row_dimensions[r].height = 34.4
+        ws.row_dimensions[r].height = max(34.4, 14 * nlines(a_val, f_val) + 6)
         _cell(ws, f"A{r}", a_lab, fill=GREY)
         _cell(ws, f"B{r}", a_val, h="left", merge=f"E{r}")
         _cell(ws, f"F{r}", f_lab, fill=GREY)
         _cell(ws, f"G{r}", f_val, h="left")
         r += 1
-    ws.row_dimensions[r].height = max(34.4, 17 * (len(header["notes"]) + 1))
+    ws.row_dimensions[r].height = max(34.4, 17 * (sum(nlines(x) for x in header["notes"]) + 1))
     _cell(ws, f"A{r}", lab["note"], fill=GREY)
     _cell(ws, f"B{r}", "\n".join(header["notes"]), h="left", merge=f"G{r}", size=10 if en else 9)
     r += 1

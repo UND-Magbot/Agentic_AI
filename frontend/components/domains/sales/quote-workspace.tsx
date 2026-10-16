@@ -10,7 +10,7 @@ import type { QuoteBlock, QuoteDelivery, QuoteForm, QuoteLine, QuoteListItem, Qu
 import { RichText } from "@/components/domains/sales/agent-chat";
 import { Icon } from "@/components/shared/ui/icon";
 import { cn } from "@/lib/shared/utils";
-import { AutoTextarea, MAIN_BLOCK, MAIN_DEFAULT, QuoteBlocks, blockOf, negoCut, usd, usdOf } from "./quote-blocks";
+import { AutoTextarea, LineArea, MAIN_BLOCK, MAIN_DEFAULT, QuoteBlocks, blockOf, negoCut, usd, usdOf } from "./quote-blocks";
 import { QuoteUploadDialog } from "./quote-upload-dialog";
 import { ErrorBox, inputCls, primaryBtn, secondaryBtn } from "./proposal-actions";
 
@@ -359,7 +359,8 @@ const LABEL_EN: Partial<Record<keyof QuoteForm, string>> = {
 };
 // only — 그 견적서에서만 보이는 칸: 국내는 한글 이름·직함, 해외는 영문 이름·호칭('Mr. Alex Jeon', 해외 기준 견적서 — 사용자 2026-10-14)
 // 해외 예시 문구 = 해외 기준 견적서 표기
-const HEAD: { k: keyof QuoteForm; label: string; wide?: boolean; area?: boolean; req?: boolean; only?: "ko" | "en"; ph?: { ko: string; en: string } }[] = [
+// line — 견적서 칸 안에서 Alt+Enter 로 줄을 바꿀 수 있는 칸(사용자 2026-10-16)
+const HEAD: { k: keyof QuoteForm; label: string; wide?: boolean; area?: boolean; line?: boolean; req?: boolean; only?: "ko" | "en"; ph?: { ko: string; en: string } }[] = [
   { k: "customer", label: "고객사", req: true, ph: { ko: "예: (주)오토기기", en: "예: ABC Robotics Co., Ltd." } },
   { k: "to", label: "받는 분(To)", ph: { ko: "예: 김철수 대표님", en: "예: Mr. Sean Huang" } },
   { k: "cc", label: "참조(CC)", ph: { ko: "예: 이영희 과장", en: "예: Ms. Jane Doe (Purchasing)" } },
@@ -370,9 +371,9 @@ const HEAD: { k: keyof QuoteForm; label: string; wide?: boolean; area?: boolean;
   { k: "contact_honorific", label: "호칭", only: "en", ph: { ko: "", en: "" } },
   { k: "contact_mobile", label: "휴대폰", req: true, ph: { ko: "예: 010-1234-5678", en: "예: 010-1234-5678 — 견적서엔 82-10-1234-5678 로" } },
   { k: "contact_email", label: "이메일", req: true, ph: { ko: "예: name@company.com", en: "예: name@company.com" } },
-  { k: "delivery", label: "납기", ph: { ko: "예: 통상 3 ~ 4주 (비우면 이 문구)", en: "예: 4 ~ 6 weeks after payment (비우면 이 문구)" } },
-  { k: "place", label: "납품장소", ph: { ko: "예: 직납 및 배차 비용 별도 (비우면 이 문구)", en: "예: UND Korea Factory (비우면 이 문구)" } },
-  { k: "payment", label: "결제조건", ph: { ko: "예: 발주시 50%, 납품전 50% (비우면 이 문구)",
+  { k: "delivery", label: "납기", line: true, ph: { ko: "예: 통상 3 ~ 4주 (비우면 이 문구)", en: "예: 4 ~ 6 weeks after payment (비우면 이 문구)" } },
+  { k: "place", label: "납품장소", line: true, ph: { ko: "예: 직납 및 배차 비용 별도 (비우면 이 문구)", en: "예: UND Korea Factory (비우면 이 문구)" } },
+  { k: "payment", label: "결제조건", line: true, ph: { ko: "예: 발주시 50%, 납품전 50% (비우면 이 문구)",
                                           en: "예: 100% advance payment before delivery. (비우면 이 문구)" } },
   // 입금 계좌(사용자 2026-10-08) — 기본은 회사 계좌, 바꾸면 이 견적서에만
   { k: "bank", label: "입금 은행", ph: { ko: "비우면 회사 기본 계좌", en: "비우면 회사 해외 송금 계좌 — 바꿀 때는 영문 은행명" } },
@@ -668,6 +669,9 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
                   : h.area
                   ? <textarea className={cn(inputCls, "min-h-[56px] text-[12.5px]", h.k === "comments" && "min-h-[110px] text-center")} value={String(d.form[h.k] ?? "")}
                               placeholder={h.ph?.[en ? "en" : "ko"]} disabled={!!busy} onChange={(e) => setForm(h.k, e.target.value)} />
+                  : h.line
+                  ? <LineArea className={cn(inputCls, "text-[12.5px]")} value={String(d.form[h.k] ?? "")} placeholder={h.ph?.[en ? "en" : "ko"]}
+                              disabled={!!busy} onChange={(e) => setForm(h.k, e.target.value)} />
                   : <input className={cn(inputCls, "text-[12.5px]")} value={String(d.form[h.k] ?? "")} placeholder={h.ph?.[en ? "en" : "ko"]} disabled={!!busy}
                            onChange={(e) => setForm(h.k, h.k === "initials" ? e.target.value.toUpperCase().slice(0, 2) : e.target.value)} />}
               </label>
@@ -722,7 +726,7 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
                     <td className="px-1.5 py-1 text-[11.5px] text-foreground-subtle">{KIND_KO[l.kind]}</td>
                     <td className="px-1.5 py-1">
                       {isAuto(l) ? <span className="text-foreground-muted">{l.commodity}</span> : (
-                        <input className={cn(inputCls, "text-[12.5px]")} value={l.commodity ?? ""} aria-label="품목" placeholder={en ? "영문 — 예: Magbot ATC" : "예: Magbot ATC"}
+                        <LineArea className={cn(inputCls, "text-[12.5px]")} value={l.commodity ?? ""} aria-label="품목" placeholder={en ? "영문 — 예: Magbot ATC" : "예: Magbot ATC"}
                                disabled={!!busy} onChange={(e) => setLine(i, { commodity: e.target.value })} />
                       )}
                     </td>
@@ -770,7 +774,7 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
                     <td className="px-1.5 py-1">
                       {isAuto(l) ? <span className="text-foreground-muted">{l.remark}</span> : (
                         <div className="flex flex-col gap-1">
-                          <input className={cn(inputCls, "text-[12px]")} value={l.remark ?? ""} aria-label="비고" disabled={!!busy}
+                          <LineArea className={cn(inputCls, "text-[12px]")} value={l.remark ?? ""} aria-label="비고" disabled={!!busy}
                                  placeholder={en ? "예: Control box & 4m cable included" : "예: CONTROLBOX·4m 케이블 기본 포함"}
                                  onChange={(e) => setLine(i, { remark: e.target.value })} />
                           {/* 품목 사진 — 견적서 Remark 칸에 작게(사용자 2026-10-12). 저장 안 한 변경은 먼저 저장하고 올림 */}

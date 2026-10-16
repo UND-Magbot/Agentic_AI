@@ -208,9 +208,16 @@ def patch(base: bytes, base_lines: list[dict[str, Any]], base_header: dict[str, 
     for i, r in enumerate(parsed["rownums"]):
         sh.marks[f"row{i}"] = r
 
-    ref = load_workbook(io.BytesIO(qx.build_xlsx(new_header, new_lines)))       # 새 줄 서식·값의 출처(회사 양식)
+    ref_x = qx.build_xlsx(new_header, new_lines)
+    ref = load_workbook(io.BytesIO(ref_x))                  # 새 줄 서식·값의 출처(회사 양식)
     ref_ws = ref.worksheets[0]
-    ref_rows = rb.parse(qx.build_xlsx(new_header, new_lines))["rownums"]
+    ref_p = rb.parse(ref_x)
+    ref_rows = ref_p["rownums"]
+
+    def grow(r: int, ref_row: int | None, new: tuple, old: tuple) -> None:
+        """줄을 더 바꾼 칸(Alt+Enter, 사용자 2026-10-16) — 행이 낮으면 회사 양식의 같은 줄 높이만큼(더 높은 행은 그대로)."""
+        if ref_row is not None and qx.nlines(*new) > qx.nlines(*old):
+            _grow(ws, r, ref_ws.row_dimensions[ref_row].height, auto, sh)
     looks = _looks(ws, [_kind(r) for r in base_lines], parsed["rownums"])
 
     # 표 — base 줄 ↔ 지금 줄
@@ -229,6 +236,7 @@ def patch(base: bytes, base_lines: list[dict[str, Any]], base_header: dict[str, 
         if bi is not None:
             r = sh.marks[f"row{bi}"]
             _update(ws, r, base_lines[bi], new_lines[ni], en, money, notes)
+            grow(r, ref_rows[ni], _texts(new_lines[ni]), _texts(base_lines[bi]))
         else:
             r = max([at, *[x + 1 for x in final]])
             sh.insert(r)
@@ -256,17 +264,22 @@ def patch(base: bytes, base_lines: list[dict[str, Any]], base_header: dict[str, 
         if sh.marks.get(k) and n["issuer"].get(k) != b["issuer"].get(k):
             _set(ws, sh.marks[k], 5, n["issuer"].get(k))
     lab = {**qx.pp.QUOTE_LABELS[n["lang"]], **n["labels"]}
+    rp = ref_p["pos"]
     if n.get("total_note") != b.get("total_note"):
         _set(ws, sh.marks["total"], 1, "\n".join(x for x in (lab["total"], n.get("total_note") or "") if x))
+        grow(sh.marks["total"], rp.get("total"), (lab["total"], n.get("total_note")), (lab["total"], b.get("total_note")))
     if sh.marks.get("delivery"):
         if n["delivery"] != b["delivery"]:
             _set(ws, sh.marks["delivery"], 2, n["delivery"])
         if n["place"] != b["place"]:
             _set(ws, sh.marks["delivery"], 7, n["place"])
+        grow(sh.marks["delivery"], rp.get("delivery"), (n["delivery"], n["place"]), (b["delivery"], b["place"]))
     if sh.marks.get("validity") and n["payment"] != b["payment"]:
         _set(ws, sh.marks["validity"], 7, n["payment"])
+        grow(sh.marks["validity"], rp.get("validity"), (n["payment"],), (b["payment"],))
     if sh.marks.get("note") and n["notes"] != b["notes"]:
         _set(ws, sh.marks["note"], 2, "\n".join(n["notes"]))
+        grow(sh.marks["note"], rp.get("note"), ("\n".join(n["notes"]),), ("\n".join(b["notes"]),))
     _foot(ws, sh, qx.foot_text(b), qx.foot_text(n), len(pos.get("foot") or []))
 
     last = ws.max_row
@@ -276,6 +289,23 @@ def patch(base: bytes, base_lines: list[dict[str, Any]], base_header: dict[str, 
     wb.save(buf)
     out = _put_shapes(base, _restore_auto_heights(buf.getvalue(), auto, sh), sh, notes)
     return out, notes
+
+
+def _texts(r: dict[str, Any]) -> tuple:
+    """줄 하나에서 칸에 들어가는 글(줄 수를 셀 때)."""
+    return tuple(r.get(k) for k in ("desc", "commodity", "remark", "text", "label", "value"))
+
+
+def _grow(ws, r: int, need: float | None, auto: dict[int, str], sh: _Sheet) -> None:
+    """행 높이를 need 까지 늘린다. 자동 높이 행은 다시 쓸 ht 만 키운다(자동 높이 표시는 그대로)."""
+    if not need:
+        return
+    orig = next((o for o in auto if sh.new_row(o) == r), None)
+    if orig is not None:
+        if float(auto[orig]) < need:
+            auto[orig] = f"{need:g}"
+    elif (ws.row_dimensions[r].height or 0) < need:
+        ws.row_dimensions[r].height = need
 
 
 def _update(ws, r: int, b: dict[str, Any], n: dict[str, Any], en: bool, money: str, notes: list[str]) -> None:

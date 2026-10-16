@@ -10,8 +10,8 @@ import { Icon } from "@/components/shared/ui/icon";
 import { cn } from "@/lib/shared/utils";
 import { inputCls } from "./proposal-actions";
 
-/** 내용만큼 늘어나는 여러 줄 칸 — 규격·서술형 내용(기본 두 줄 높이, 사용자 2026-10-13: 규격 칸 더 크게) */
-export function AutoTextarea({ value, className, ...rest }: React.TextareaHTMLAttributes<HTMLTextAreaElement> & { value: string }) {
+/** 칸 높이를 내용만큼 */
+function useAutoHeight(value: string) {
   const ref = useRef<HTMLTextAreaElement>(null);
   useLayoutEffect(() => {
     const el = ref.current;
@@ -19,7 +19,23 @@ export function AutoTextarea({ value, className, ...rest }: React.TextareaHTMLAt
     el.style.height = "auto";
     el.style.height = `${el.scrollHeight + 2}px`;
   }, [value]);
+  return ref;
+}
+
+/** 내용만큼 늘어나는 여러 줄 칸 — 규격·서술형 내용(기본 두 줄 높이, 사용자 2026-10-13: 규격 칸 더 크게) */
+export function AutoTextarea({ value, className, ...rest }: React.TextareaHTMLAttributes<HTMLTextAreaElement> & { value: string }) {
+  const ref = useAutoHeight(value);
   return <textarea ref={ref} rows={2} value={value} className={cn(className, "min-h-[52px] resize-none overflow-hidden py-1.5 leading-snug")} {...rest} />;
+}
+
+/** 한 줄 칸처럼 쓰되 견적서 칸 안에서 줄을 바꿀 수 있는 칸 — 엑셀처럼 Alt+Enter 로만 줄바꿈(Enter 는 예전 한 줄 칸처럼 그대로,
+ *  사용자 2026-10-16). 줄을 바꾸면 내용만큼 늘어난다. Alt+Enter 자체는 AltEnterNewline 이 넣는다. */
+export function LineArea({ value, className, onKeyDown, ...rest }: React.TextareaHTMLAttributes<HTMLTextAreaElement> & { value: string }) {
+  const ref = useAutoHeight(value);
+  return (
+    <textarea ref={ref} rows={1} value={value} className={cn(className, "resize-none overflow-hidden leading-snug")} {...rest}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.altKey && !e.nativeEvent.isComposing) e.preventDefault(); onKeyDown?.(e); }} />
+  );
 }
 
 export const MAIN_BLOCK = "B0";
@@ -109,7 +125,7 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
             <div className="flex flex-wrap items-center gap-2">
               <span className={cn("rounded px-1.5 py-0.5 text-[11px] font-semibold", TYPE_TAG[b.type])}>{TYPE_LABEL[b.type]}</span>
               {b.type !== "text" && (
-                <input className={cn(inputCls, "min-w-0 flex-1 basis-40 py-0.5 text-[12.5px] font-semibold")} value={b.title} disabled={busy}
+                <LineArea className={cn(inputCls, "min-w-0 flex-1 basis-40 py-0.5 text-[12.5px] font-semibold")} value={b.title} disabled={busy}
                        aria-label={`${TYPE_LABEL[b.type]} 제목`} maxLength={60}
                        placeholder={b.type === "items" ? (en ? "묶음 이름 — 예: Installation & Commissioning" : "묶음 이름 — 예: 설치 및 시운전")
                          : b.type === "option" ? "< OPTION >" : (en ? "예: Main Specifications" : "제목(선택) — 예: 방역 로봇 주요 사양")}
@@ -160,7 +176,7 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
                         if (l.kind === "note") return (            // 서술형 줄 — 항목명 / 내용(가격 없음), 견적서엔 내용 가운데 정렬
                           <tr key={l.id} className="bg-emerald-500/[0.03]">
                             <td className="px-1.5 py-1.5">
-                              <input className={cn(inputCls, "h-8 text-[12.5px]")} value={l.commodity ?? ""} maxLength={40} aria-label="서술형 항목명" disabled={busy}
+                              <LineArea className={cn(inputCls, "min-h-8 text-[12.5px]")} value={l.commodity ?? ""} maxLength={40} aria-label="서술형 항목명" disabled={busy}
                                      placeholder={en ? "e.g. Weight" : "항목명 — 예: 무게"} onChange={(e) => setLine(idx, { commodity: e.target.value })} />
                             </td>
                             <td className="px-1.5 py-1.5" colSpan={6}>
@@ -179,7 +195,7 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
                         return (
                           <tr key={l.id}>
                             <td className="px-1.5 py-1.5">
-                              <input className={cn(inputCls, "h-8 text-[12.5px]")} value={l.commodity ?? ""} aria-label="품목" disabled={busy}
+                              <LineArea className={cn(inputCls, "min-h-8 text-[12.5px]")} value={l.commodity ?? ""} aria-label="품목" disabled={busy}
                                      placeholder={en ? "e.g. Charging Dock" : "예: 충전 스테이션"} onChange={(e) => setLine(idx, { commodity: e.target.value })} />
                             </td>
                             <td className="px-1.5 py-1.5">
@@ -214,7 +230,7 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
                             </td>
                             <td className="px-1.5 py-1.5">
                               <div className="flex flex-col gap-1">
-                                <input className={cn(inputCls, "h-8 text-[12px]")} value={l.remark ?? ""} aria-label="비고" disabled={busy}
+                                <LineArea className={cn(inputCls, "min-h-8 text-[12px]")} value={l.remark ?? ""} aria-label="비고" disabled={busy}
                                        placeholder={en ? "Remark" : "비고"} onChange={(e) => setLine(idx, { remark: e.target.value })} />
                                 {photoCell?.(l)}
                               </div>
@@ -257,7 +273,7 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
               <div className="flex flex-col gap-1.5">
                 {(b.rows ?? []).map((r, ri) => (
                   <div key={ri} className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto] items-start gap-1.5">
-                    <input className={cn(inputCls, "text-[12.5px]")} value={r.label} maxLength={40} disabled={busy} aria-label={`${ri + 1}번 항목명`}
+                    <LineArea className={cn(inputCls, "text-[12.5px]")} value={r.label} maxLength={40} disabled={busy} aria-label={`${ri + 1}번 항목명`}
                            placeholder={en ? "예: Weight" : "항목명 — 예: 무게"}
                            onChange={(e) => setBlock(b.id, { rows: (b.rows ?? []).map((x, j) => (j === ri ? { ...x, label: e.target.value } : x)) })} />
                     <textarea className={cn(inputCls, "min-h-[34px] resize-y text-center text-[12.5px]")} rows={1} value={r.value} maxLength={300}
@@ -342,7 +358,7 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
       <div className="grid gap-2 sm:grid-cols-2">
         <label className="flex flex-col gap-1 text-[12px] text-foreground-muted">
           <span>Total 아래 보조 문구 <span className="text-[11px] text-foreground-subtle">· 적은 것만 들어감(비우면 없음)</span></span>
-          <input className={cn(inputCls, "text-[12.5px]")} value={totalNote} maxLength={200} disabled={busy}
+          <LineArea className={cn(inputCls, "text-[12.5px]")} value={totalNote} maxLength={200} disabled={busy}
                  placeholder={en ? "예: Monthly USD 750" : "예: 월 995,000원"} onChange={(e) => onChange({ total_note: e.target.value })} />
         </label>
         <div className="flex flex-col gap-1 text-[12px] text-foreground-muted">

@@ -35,6 +35,8 @@ FORM_FIELDS = {   # 대화·직접 수정으로 바꿀 수 있는 머리 칸 →
     "total_note": ("Total 아래 문구", "text"), "foot_notes": ("표 아래 주석", "list"),
 }
 CLEARABLE_FIELDS = ("total_note", "foot_notes")
+# 견적서 칸 안에서 줄을 바꿀 수 있는 머리 칸(Alt+Enter, 사용자 2026-10-16). 고객사·받는 분·참조·담당자는 영업 건·파일명에도 쓰여 한 줄 그대로
+MULTILINE_FIELDS = ("delivery", "place", "payment", "note", "total_note")
 BANK_FIELDS = ("bank", "account_no", "account_holder")
 
 
@@ -186,14 +188,14 @@ def _clean_block(b: dict[str, Any]) -> dict[str, Any] | None:
     t = b.get("type")
     if t not in BLOCK_TYPES:
         return None
-    out = {"id": str(b.get("id") or ""), "type": t, "title": re.sub(r"\s+", " ", str(b.get("title") or "")).strip()[:60]}
+    out = {"id": str(b.get("id") or ""), "type": t, "title": clean_lines(b.get("title"), 60)}
     if t == "items":
         out["subtotal"] = bool(b.get("subtotal"))
     if t == "spec":
         rows = []
         for r in (b.get("rows") or [])[:SPEC_ROWS_MAX]:
             if isinstance(r, dict):
-                lab = re.sub(r"\s+", " ", str(r.get("label") or "")).strip()[:40]
+                lab = clean_lines(r.get("label"), 40)
                 val = clean_spec(r.get("value"))
                 if lab or val:
                     rows.append({"label": lab, "value": val})
@@ -314,6 +316,15 @@ def clean_comments(v: Any) -> str:
     """Comments — 담당자가 띄운 줄을 그대로 살린다(사용자 2026-10-13, 견적서엔 가운데 정렬). 6줄·200자까지."""
     rows = [re.sub(r"[ \t]+", " ", x).strip() for x in str(v or "").splitlines()]
     return "\n".join([x for x in rows if x][:COMMENTS_LINES])[:200]
+
+
+TEXT_LINES = 4
+
+
+def clean_lines(v: Any, limit: int) -> str:
+    """견적서 칸 하나의 글 — 담당자가 바꾼 줄(Alt+Enter, 사용자 2026-10-16)은 살리고 줄마다 공백 정리·빈 줄 제거, 4줄까지."""
+    rows = [re.sub(r"\s+", " ", x).strip() for x in str(v or "").splitlines()]
+    return "\n".join([x for x in rows if x][:TEXT_LINES])[:limit]
 
 
 def _new_id(state: dict[str, Any]) -> str:
@@ -555,7 +566,8 @@ def apply_ops(state: dict[str, Any], ops: Any, message: str | None) -> tuple[dic
             elif typ == "list":
                 v = clean_notes(v)
             else:
-                v = clean_comments(v) if field == "comments" else re.sub(r"\s+", " ", str(v or "")).strip()[:200]
+                v = (clean_comments(v) if field == "comments" else clean_lines(v, 200) if field in MULTILINE_FIELDS
+                     else re.sub(r"\s+", " ", str(v or "")).strip()[:200])
                 if field == "initials":
                     v = v.upper()[:2]
                 if field == "contact_honorific":
@@ -610,7 +622,7 @@ def apply_ops(state: dict[str, Any], ops: Any, message: str | None) -> tuple[dic
             _sync_work(st)
             by_id = {ln["id"]: ln for ln in st["lines"]}
         elif kind == "add" and op.get("kind") == "note":          # 서술형 줄(항목명 / 내용, 가격 없음 — 사용자 2026-10-13)
-            lab = re.sub(r"\s+", " ", str(op.get("commodity") or "")).strip()[:40]
+            lab = clean_lines(op.get("commodity"), 40)
             val = clean_spec(op.get("name"))
             if not (lab or val):
                 continue
@@ -647,8 +659,8 @@ def apply_ops(state: dict[str, Any], ops: Any, message: str | None) -> tuple[dic
             ln = {"id": _new_id(st), "kind": "extra", "key": "extra", "name": name, "qty": int(qty), "unit_price": price,
                   **({"usd": usd} if usd else {}), **({"block": blk} if blk and blk != MAIN_BLOCK else {}),
                   **({"unit": clean_unit(op.get("unit"))} if clean_unit(op.get("unit")) else {}),
-                  "commodity": re.sub(r"\s+", " ", str(op.get("commodity") or "")).strip()[:60],
-                  "remark": re.sub(r"\s+", " ", str(op.get("remark") or "")).strip()[:100], "price_status": "set"}
+                  "commodity": clean_lines(op.get("commodity"), 60), "remark": clean_lines(op.get("remark"), 100),
+                  "price_status": "set"}
             st["lines"].append(ln)
             by_id[ln["id"]] = ln
             st["asked"] = list({*st.get("asked", []), "extra"})
@@ -696,7 +708,7 @@ def apply_ops(state: dict[str, Any], ops: Any, message: str | None) -> tuple[dic
                     done.append(f"{ln['name']} 묶음 옮김")
             for k in ("name", "remark", "commodity"):
                 if isinstance(op.get(k), str) and (ln["kind"] in ("extra", "note") or k != "name"):
-                    ln[k] = clean_spec(op[k]) if k == "name" else re.sub(r"\s+", " ", op[k]).strip()[:100 if k == "remark" else 60]
+                    ln[k] = clean_spec(op[k]) if k == "name" else clean_lines(op[k], 100 if k == "remark" else 60)
                     done.append(f"{ln['name']} {dict(remark='비고', commodity='품목').get(k, '규격')} 수정")
         elif kind == "remove" and op.get("line") in by_id:
             ln = by_id.pop(op["line"])

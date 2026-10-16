@@ -161,6 +161,34 @@ check(cv.get(f"A{fr + 1}") == "* 본 견적은 1개월 유효" and cv.get(f"A{fr
       "표 아래 주석: 고정 문구 다음에 칸마다 한 줄씩('*' 없으면 붙임, 칸 안 줄바꿈이면 높이 늘림)", str((cv.get(f"A{fr + 1}"), cv.get(f"A{fr + 2}"))))
 check(qx.total(bl_lines) == lines[0]["amount"] + lines[1]["amount"] - 100_000, "견적 합계(영업 건 금액)도 품목·NEGO 만")
 
+# 견적서 칸 안 줄바꿈(Alt+Enter, 사용자 2026-10-16) — 직접 수정으로 저장해도 줄이 남고(빈 줄·앞뒤 공백 정리), 엑셀 칸·행 높이에 반영
+nl_st = qs.draft_state({"applicable": True, "items": items}, model=model, payload_kg=10)
+l0 = nl_st["lines"][0]
+nl_st, _ = qs.apply_ops(nl_st, qs.edit_ops(nl_st, {
+    "form": {"place": "공장 인도\n(화물 비용 별도)", "payment": "  발주시 50% \n\n 납품전 50%\n잔금 없음", "note": "설치 일정\n발주 후 협의",
+             "customer": "가나\n테크", "to": "김철수\n대표님"},
+    "lines": [{**x, **({"commodity": "Magbot\nATC", "remark": "기본 포함\n케이블 4m"} if x["id"] == l0["id"] else {})}
+              for x in nl_st["lines"] if x["kind"] not in ("work", "freight")]}), None)
+nf = nl_st["form"]
+nl0 = next(x for x in nl_st["lines"] if x["id"] == l0["id"])
+check(nf["place"] == "공장 인도\n(화물 비용 별도)" and nf["payment"] == "발주시 50%\n납품전 50%\n잔금 없음" and nf["note"] == "설치 일정\n발주 후 협의"
+      and nl0["commodity"] == "Magbot\nATC" and nl0["remark"] == "기본 포함\n케이블 4m",
+      "칸 안 줄바꿈 저장: 납기·장소·결제·비고·품목·품목 비고는 줄 그대로(빈 줄·공백 정리)", str((nf.get("payment"), nl0.get("commodity"))))
+check(nf["customer"] == "가나 테크" and nf["to"] == "김철수 대표님", "고객사·받는 분은 영업 건·파일명에도 쓰여 한 줄로", str((nf["customer"], nf["to"])))
+check(qs.clean_lines("a\nb\nc\nd\ne", 200) == "a\nb\nc\nd" and qs.clean_lines("x" * 300, 60) == "x" * 60, "칸 안 줄은 4줄·글자 수 제한")
+nl_lines = qs.render_lines(nl_st, "ko", None)
+nl_h = qx.quote_header({**form, "place": nf["place"], "payment": nf["payment"], "note": nf["note"]}, lang="ko", quote_no="QT-NL", day=day, pogo=False)
+nws = openpyxl.load_workbook(io.BytesIO(qx.build_xlsx(nl_h, nl_lines))).active
+nr = next(c.row for c in nws["A"] if c.value == "Magbot\nATC")
+dv = next(c.row for c in nws["A"] if c.value == {**pp.QUOTE_LABELS["ko"], **nl_h["labels"]}["delivery"])
+nt = next(c.row for c in nws["A"] if c.value == {**pp.QUOTE_LABELS["ko"], **nl_h["labels"]}["note"])
+check(nws[f"G{nr}"].value == "기본 포함\n케이블 4m" and nws[f"G{nr}"].alignment.wrap_text and nws.row_dimensions[nr].height >= 31
+      and nws[f"G{dv}"].value == "공장 인도\n(화물 비용 별도)" and nws[f"G{dv + 1}"].value == "발주시 50%\n납품전 50%\n잔금 없음"
+      and nws.row_dimensions[dv + 1].height > 34.4 and nws.row_dimensions[dv].height == 34.4
+      and nws[f"B{nt}"].value == "설치 일정\n발주 후 협의" and nws.row_dimensions[nt].height > 34.4,
+      "엑셀: 칸 안 줄바꿈 그대로(자동 줄바꿈), 3줄 결제조건·2줄 비고 행은 높게, 2줄까지는 원래 높이",
+      str((nws.row_dimensions[dv].height, nws.row_dimensions[dv + 1].height, nws.row_dimensions[nt].height)))
+
 print(f"PASS {len(PASS)} / FAIL {len(FAIL)}")
 for label, detail in FAIL:
     print(f"  ✗ {label}: {detail}")

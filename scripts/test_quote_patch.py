@@ -240,6 +240,23 @@ else:
     check(type(a9).__name__ == "CellRichText" and rb._s(a9).endswith("CC :"), "고친 파일에서도 CC 숨김 글자 유지", repr(a9))
     check(_img(asyncio.run(qx.to_pdf(outp))) == _img(asyncio.run(qx.to_pdf(PCM))), "미리보기 PDF = 올린 파일 PDF(숨긴 글자·자동 행 높이)")
 
+# 올린 파일 위에서 칸 안 줄을 더 바꾸면(Alt+Enter, 사용자 2026-10-16) 그 행만 회사 양식 높이만큼 — 그대로인 행·더 높은 행은 손대지 않음
+bl_nl = [dict(x) for x in bl]
+bh_nl = {**bh, "payment": "발주시 50%\n납품전 50%\n잔금 없음"}
+i_nl = next(i for i, x in enumerate(bl_nl) if not x.get("row"))
+bl_nl[i_nl] = {**bl_nl[i_nl], "remark": "기본 포함\n케이블 4m\n사진 별도"}
+out_nl, _ = qp.patch(U, bl, bh, bl_nl, {**bh_nl, "date": DAY.isoformat()})
+w_nl = openpyxl.load_workbook(io.BytesIO(out_nl)).active
+w_u = openpyxl.load_workbook(io.BytesIO(U)).active
+p_nl, p_u = rb.parse(out_nl), rb.parse(U)
+r_nl, r_u = p_nl["rownums"][i_nl], p_u["rownums"][i_nl]
+v_nl, v_u = p_nl["pos"]["validity"], p_u["pos"]["validity"]
+check(w_nl[f"G{r_nl}"].value == "기본 포함\n케이블 4m\n사진 별도" and (w_nl.row_dimensions[r_nl].height or 0) >= 13 * 3 + 5
+      and w_nl[f"G{v_nl}"].value == "발주시 50%\n납품전 50%\n잔금 없음" and (w_nl.row_dimensions[v_nl].height or 0) > 34.4
+      and w_nl.row_dimensions[p_nl["pos"]["delivery"]].height == w_u.row_dimensions[p_u["pos"]["delivery"]].height,
+      "올린 파일: 줄을 더 바꾼 비고·결제조건 행만 높아지고 나머지 행 높이는 그대로",
+      str((w_u.row_dimensions[r_u].height, w_nl.row_dimensions[r_nl].height, w_nl.row_dimensions[v_nl].height)))
+
 print(f"PASS {len(PASS)} / FAIL {len(FAIL)}")
 for label, detail in FAIL:
     print(f"  ✗ {label}: {detail}")
