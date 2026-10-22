@@ -23,7 +23,7 @@ by = {(r["model"], r["item"]): r for r in rows}
 models = {r["model"] for r in rows}
 cats = {r["category"] for r in rows}
 
-check(cats == {"ATC_유선", "ATC_무선", "Tool Changer Motor K", "Tool Changer Motor", "MG", "산업용 마그네틱 그리퍼(TCK)"},
+check(cats == {"ATC_유선", "ATC_무선", "Tool Changer Motor K", "Tool Changer Motor", "MTC", "MG", "산업용 마그네틱 그리퍼(TCK)"},
       "저장 범위 = 단가표 ATC_유선 ~ MG (TCK 는 산업용 마그네틱 그리퍼로 따로 구분)", str(cats))
 check(not models & {"mDMG2F", "mDPG-C5", "SMG1S10D", "SMG10S1A ( cylinder type)"},
       "범위 밖(DC Motor·Pneumatic·Shape-Memory·Shiftlock 그리퍼)은 넣지 않음")
@@ -56,7 +56,11 @@ check(by[("MG5", "본체")]["customer_price"] == 1_650_000 and not any(m.startsw
 check(pp.find(rows, "tcv2", "PPF") is by[("TCV2", "PPM/PPF")] and pp.find(rows, "TCV2", "PMM") is by[("TCV2", "PMM/PMF")]
       and pp.find(rows, "TCV2", "1m CABLE") is None,
       "견적용 찾기: PPF→PPM/PPF, PMM→PMM/PMF, 단가표에 없는 1m 케이블은 None(가격 만들지 않음)")
-check(pp.price_list_date(pp.BOOK_NAME) == date(2026, 10, 2), "파일명 261002 → 단가표 날짜 2026-10-02")
+check(pp.price_list_date(pp.BOOK_NAME) == date(2026, 10, 13), "파일명 261013 → 단가표 날짜 2026-10-13")
+check(pp.price_list_date("Magbot 단가표_Chris 송부용 261002.xlsx") == date(2026, 10, 2), "파일명 261002 → 2026-10-02")
+mtc = sorted((m, it, by[(m, it)]["customer_price"], by[(m, it)]["dealer_price"], by[(m, it)]["price_status"]) for m, it in by if m.startswith("MTC"))
+check(mtc == [("MTC_L", "본체", 1_250_000, None, "set"), ("MTC_S", "본체", 850_000, None, "set")],
+      "MTC(261013 추가) = 본체 고객사가만, 대리점가 빈칸·T.P 미정 줄 없음", str(mtc))
 check("가격 미정" in pp.markdown(rows) and "1,800,000 / 1,260,000" in pp.markdown(rows), "정리 문서 표")
 
 # 견적 단가 붙이기(국내 고객사가) — 선택 품목은 합계에서 빼고, 모르는 값은 0 으로 더하지 않음

@@ -354,7 +354,7 @@ function OrderList({ onOpen }: { onOpen: (id: number) => void }) {
       <ErrorBox error={err} />
       {rows === null ? <Muted>불러오는 중…</Muted> : rows.length === 0 ? (
         <p className="rounded-lg border border-dashed border-border px-3 py-6 text-center text-[12.5px] text-foreground-subtle">
-          진행 중인 수주 건이 없습니다. [제품 영업 건 관리]에서 건을 열고 [수주 확정]을 누르면 여기에 나옵니다.
+          진행 중인 수주 건이 없습니다. [제품 판매·대여 관리]에서 건을 열고 [수주 확정]을 누르면 여기에 나옵니다.
         </p>
       ) : (
         <table className="w-full border-collapse text-[13px]">

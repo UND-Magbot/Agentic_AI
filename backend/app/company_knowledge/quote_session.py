@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import copy
 import re
+from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -33,7 +34,10 @@ FORM_FIELDS = {   # 대화·직접 수정으로 바꿀 수 있는 머리 칸 →
     "bank": ("입금 은행", "text"), "account_no": ("입금 계좌번호", "text"), "account_holder": ("예금주", "text"),
     # 견적서 Total 아래 보조 문구·표 아래 주석(사용자 2026-10-13, 영업팀 요청 14번) — 비울 수 있다
     "total_note": ("Total 아래 문구", "text"), "foot_notes": ("표 아래 주석", "list"),
+    # 판매 / 대여(사용자 2026-10-22, 방역 로봇 3년 렌탈 견적서 기준) — 대여면 계약 개월 수로 Total 옆에 월 납입금
+    "purpose": ("목적", "purpose"), "rental_months": ("대여 개월 수", "number"), "rental_start": ("대여 시작일", "date"),
 }
+PURPOSES = {"sale": "제품 판매", "rental": "제품 대여"}
 CLEARABLE_FIELDS = ("total_note", "foot_notes")
 # 견적서 칸 안에서 줄을 바꿀 수 있는 머리 칸(Alt+Enter, 사용자 2026-10-16). 고객사·받는 분·참조·담당자는 영업 건·파일명에도 쓰여 한 줄 그대로
 MULTILINE_FIELDS = ("delivery", "place", "payment", "note", "total_note")
@@ -159,14 +163,15 @@ def _types(state: dict[str, Any]) -> dict[str, str]:
 
 
 def billable(state: dict[str, Any]) -> list[dict[str, Any]]:
-    """합계에 들어가는 줄(옵션 묶음 줄 제외)."""
+    """합계에 들어가는 줄 — 옵션 묶음 줄은 [반영](in_total)한 것만(사용자 2026-10-19)."""
     ty = _types(state)
     auto = auto_block(state)
-    return [ln for ln in state["lines"] if ty.get(block_of(ln, ty, auto)) != "option" and ln.get("kind") != "note"]
+    return [ln for ln in state["lines"] if ln.get("kind") != "note"
+            and (ty.get(block_of(ln, ty, auto)) != "option" or ln.get("in_total"))]
 
 
 def nego_amount(state: dict[str, Any], base: float) -> float:
-    """NEGO 할인 금액(양수) — 금액이면 그대로, %면 base(옵션 뺀 합계) × %. 견적 통화 기준(국내 원·해외 달러)."""
+    """NEGO 할인 금액(양수) — 금액이면 그대로, %면 base(미반영 옵션 뺀 합계) × %. 견적 통화 기준(국내 원·해외 달러)."""
     n = state.get("nego") or {}
     v = n.get("value")
     if not isinstance(v, (int, float)) or v <= 0:
@@ -209,12 +214,75 @@ def _clean_block(b: dict[str, Any]) -> dict[str, Any] | None:
 
 MANUAL_COMMENTS = "www.magbot.kr\n- 제품 공급 건"
 MANUAL_COMMENTS_EN = "www.magbot.kr\nProduct Supply"           # 해외 기준 견적서처럼 줄머리 기호 없이
+RENTAL_COMMENTS = "www.magbot.kr\n- 제품 대여 건"
+RENTAL_COMMENTS_EN = "www.magbot.kr\nProduct Rental"
+# 대여 견적서 기본 주석 — 방역 로봇 3년 렌탈 견적서(Lu260309)의 중도 해지 문구
+RENTAL_NOTE = ("* 중도 해지 시, 해지일의 익월부터 잔여 계약기간까지 발생할 예정이었던 로봇 렌탈 비용은\n"
+               "잔여 개월 수 × 월 납입료를 기준으로 위약금을 산정하며, 계약자는 해당 위약금을 일시불로 납부하여야 합니다.")
+RENTAL_NOTE_EN = ("* In case of early termination, a penalty of (remaining months × monthly fee) from the month after termination\n"
+                  "until the end of the contract shall be paid in a lump sum.")
+
+
+def is_rental(state: dict[str, Any]) -> bool:
+    return (state.get("form") or {}).get("purpose") == "rental"
+
+
+# 단위가 기간인 줄('36 개월' — 예전 방식, 수량이 곧 개월 수)은 개월을 다시 곱하지 않는다
+TIME_UNITS = {"개월", "월", "년", "일", "주", "month", "months", "year", "years", "day", "days", "week", "weeks"}
+# 단위 '식'(일괄 금액 — 유지보수 1식·설치 1식)과 물류비 이름 줄도 대여 견적서에서 한 번만 낸다(사용자 2026-10-22)
+ONCE_UNITS = {"식", "lot", "lots"}
+# '비·료'까지 붙어야 물류비로 본다 — '물류 로봇'·'운반 로봇' 같은 제품 이름은 아니다
+FREIGHT_RE = re.compile(r"(물류|운송|화물|배송|운반|택배)\s*(비|료)|freight|shipping", re.I)
+
+
+def month_factor(form: dict[str, Any], ln: dict[str, Any]) -> int:
+    """대여 견적서 줄의 곱할 개월 수(사용자 2026-10-22) — 단가 = 1대당 월 납입금이라 금액 = 수량 × 단가 × 대여 개월.
+    한 번만 내는 줄(품목 Service · 단위 '식' · 물류비·배송비·설치 인건비 · 서술형)과 단위가 이미 기간인 줄은 1. 판매 견적서는 늘 1."""
+    if form.get("purpose") != "rental":
+        return 1
+    try:
+        m = int(form.get("rental_months") or 0)
+    except (TypeError, ValueError):
+        return 1
+    if m <= 0 or ln.get("kind") in ("work", "freight", "note") or ln.get("row") in ("nego", "spec", "text", "gap", "section", "subtotal"):
+        return 1
+    if str(ln.get("commodity") or "").strip().lower() == "service":
+        return 1
+    if str(ln.get("unit") or "").strip().lower() in TIME_UNITS | ONCE_UNITS:
+        return 1
+    if FREIGHT_RE.search(f"{ln.get('commodity') or ''} {ln.get('name') or ''}"):
+        return 1
+    return m
+
+
+def rental_monthly(total: float, months: Any) -> int | None:
+    """월 납입금 = 총액 ÷ 개월 수, 천 원 단위 올림(방역 로봇 견적서: 35,800,000 ÷ 36 → 995,000)."""
+    try:
+        m = int(months or 0)
+    except (TypeError, ValueError):
+        return None
+    if m <= 0 or not total:
+        return None
+    return -(-round(total) // (m * 1000)) * 1000
+
+
+def clean_date(v: Any) -> str:
+    """'2026-11-01' · '2026.11.1' · '2026년 11월 1일' → ISO 날짜. 못 읽으면 ''."""
+    m = re.fullmatch(r"\s*(\d{4})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})\s*일?\s*", str(v or ""))
+    if not m:
+        return ""
+    try:
+        return date(int(m[1]), int(m[2]), int(m[3])).isoformat()
+    except ValueError:
+        return ""
 
 
 def term_defaults(state: dict[str, Any], lang: str) -> dict[str, str]:
     """언어별 견적 조건 기본 문구(Comments·납기·납품장소·결제조건) — 수기 견적의 Comments 는 제품 공급 문구."""
     d = {k: qx.DEFAULT_TERMS[lang][k] for k in ("comments", "delivery", "place", "payment")}
-    if state.get("manual"):
+    if is_rental(state):
+        d["comments"] = RENTAL_COMMENTS_EN if lang == "en" else RENTAL_COMMENTS
+    elif state.get("manual"):
         d["comments"] = MANUAL_COMMENTS_EN if lang == "en" else MANUAL_COMMENTS
     return d
 
@@ -241,12 +309,17 @@ def draft_state(accessories: dict[str, Any], *, model: str, payload_kg: float | 
         ln["id"] = f"L{i}"
     d = qx.DEFAULT_TERMS["ko"]
     f = {k: "" for k in FORM_FIELDS} | {"lang": "ko", "fx_rate": None, "comments": d["comments"], "delivery": d["delivery"],
-                                         "place": d["place"], "payment": d["payment"]} | bank_defaults("ko")
+                                         "place": d["place"], "payment": d["payment"], "purpose": "sale",
+                                         "rental_months": None} | bank_defaults("ko")
     if manual:                    # 수기 견적(사용자 2026-10-08) — 툴체인저 문구 대신 일반 공급 문구, 건명은 담당자가
         f.update(comments=MANUAL_COMMENTS, subject="")
     for k, v in (form or {}).items():
         if k in FORM_FIELDS and v not in (None, ""):
             f[k] = v
+    if f.get("purpose") not in PURPOSES:
+        f["purpose"] = "sale"
+    if f["purpose"] == "rental":            # 대여 견적서(사용자 2026-10-22) — 대여 문구·중도 해지 주석
+        f.update(comments=RENTAL_COMMENTS, foot_notes=[RENTAL_NOTE])
     return {"model": model, "payload_kg": payload_kg, "applicable": bool(accessories.get("applicable")) or manual, "form": f,
             "lines": lines, "options": options, "work": {"needed": None, "people": None, "days": None, "rate": None},
             "delivery": {"case": None, "freight": None}, "asked": [], "next_id": len(lines) + 1, "manual": manual}
@@ -416,7 +489,8 @@ def subtotal_usd(state: dict[str, Any], *, nego: bool = True) -> float | None:
     if state["form"].get("lang") != "en" or _usd_missing(state):
         return None
     fx = state["form"].get("fx_rate")
-    base = round(sum((ln.get("qty") or 0) * usd_price(ln, fx) for ln in billable(state)), 2)
+    f = state["form"]
+    base = round(sum((ln.get("qty") or 0) * usd_price(ln, fx) * month_factor(f, ln) for ln in billable(state)), 2)
     return round(base - (nego_amount(state, base) if nego else 0), 2)
 
 
@@ -448,6 +522,8 @@ def problems(state: dict[str, Any]) -> list[str]:
             continue
         if not str(f.get(k) or "").strip():
             out.append(f"{FORM_FIELDS[k][0]} 비어 있음")
+    if is_rental(state) and not f.get("rental_months"):
+        out.append("대여 개월 수 필요(월 납입금 계산)")
     # 내 정보·발행번호와 같이 영문 2자(사용자 결정 2026-10-16)
     if not re.fullmatch(r"[A-Z]{2}", str(f.get("initials") or "").upper()):
         out.append("담당자 이니셜(영문 2자, 예: VT) 필요")
@@ -481,7 +557,7 @@ def problems(state: dict[str, Any]) -> list[str]:
 
 def subtotal(state: dict[str, Any], *, nego: bool = True) -> int:
     """원화 합계(VAT 별도) — 옵션 묶음 줄은 빼고, 국내 견적이면 NEGO 를 뺀다."""
-    base = sum((ln.get("qty") or 0) * (ln.get("unit_price") or 0) for ln in billable(state))
+    base = sum((ln.get("qty") or 0) * (ln.get("unit_price") or 0) * month_factor(state["form"], ln) for ln in billable(state))
     cut = nego_amount(state, base) if nego and state["form"].get("lang") != "en" else 0
     return int(base - cut)
 
@@ -560,8 +636,17 @@ def apply_ops(state: dict[str, Any], ops: Any, message: str | None) -> tuple[dic
                 v = num(v)
                 if v is None or v <= 0:
                     continue
+                if field == "rental_months":
+                    v = int(v)
             elif typ == "lang":
                 if v not in ("ko", "en"):
+                    continue
+            elif typ == "purpose":
+                if v not in PURPOSES:
+                    continue
+            elif typ == "date":
+                v = clean_date(v)
+                if not v:
                     continue
             elif typ == "list":
                 v = clean_notes(v)
@@ -579,12 +664,24 @@ def apply_ops(state: dict[str, Any], ops: Any, message: str | None) -> tuple[dic
                     continue                                # 말에 없는 계좌번호는 넣지 않는다
             prev = st["form"].get(field)
             st["form"][field] = v
+            if field == "purpose" and prev != v:
+                # 판매 ↔ 대여 — 기본 문구였던 Comments·주석만 바꾼다(담당자가 고친 글은 그대로)
+                lang = st["form"].get("lang") or "ko"
+                was = {**st, "form": {**st["form"], "purpose": prev}}
+                if (st["form"].get("comments") or "") == term_defaults(was, lang)["comments"]:
+                    st["form"]["comments"] = term_defaults(st, lang)["comments"]
+                note = RENTAL_NOTE_EN if lang == "en" else RENTAL_NOTE
+                notes = [x for x in (st["form"].get("foot_notes") or []) if x not in (RENTAL_NOTE, RENTAL_NOTE_EN)]
+                st["form"]["foot_notes"] = [*notes, note][:FOOT_NOTES_MAX] if v == "rental" else notes
             if field == "lang" and prev != v:
                 # 국내↔해외 — 조건 문구·입금 계좌를 그 언어의 기본으로(사용자 2026-10-08). 수기 견적 Comments 는 제품 공급 문구
                 st["form"].update({**term_defaults(st, v), **bank_defaults(v)})
                 # 비고 기본(해외 'Ex-work UND Korea Factory', 해외 기준 견적서) — 담당자가 적은 비고는 그대로
                 if (st["form"].get("note") or "") in ("", qx.DEFAULT_TERMS.get(prev or "ko", {}).get("note", "")):
                     st["form"]["note"] = qx.DEFAULT_TERMS[v]["note"]
+                swap = RENTAL_NOTE_EN if v == "en" else RENTAL_NOTE     # 대여 중도 해지 주석도 그 언어로
+                st["form"]["foot_notes"] = [swap if x in (RENTAL_NOTE, RENTAL_NOTE_EN) else x
+                                            for x in (st["form"].get("foot_notes") or [])]
             done.append(f"{FORM_FIELDS[field][0]}: {v}")
         elif kind == "delivery":
             try:
@@ -660,13 +757,13 @@ def apply_ops(state: dict[str, Any], ops: Any, message: str | None) -> tuple[dic
                   **({"usd": usd} if usd else {}), **({"block": blk} if blk and blk != MAIN_BLOCK else {}),
                   **({"unit": clean_unit(op.get("unit"))} if clean_unit(op.get("unit")) else {}),
                   "commodity": clean_lines(op.get("commodity"), 60), "remark": clean_lines(op.get("remark"), 100),
-                  "price_status": "set"}
+                  **({"in_total": True} if op.get("in_total") is True else {}), "price_status": "set"}
             st["lines"].append(ln)
             by_id[ln["id"]] = ln
             st["asked"] = list({*st.get("asked", []), "extra"})
             is_opt = _types(st).get(blk or MAIN_BLOCK) == "option"
             done.append(("옵션 추가" if is_opt else "추가") + f": {name} {int(qty)} × " + (f"{price:,.0f}원" if price else f"${usd:,.2f}")
-                        + (" (합계 제외)" if is_opt else ""))
+                        + ((" (Total 반영)" if ln.get("in_total") else " (Total 미반영)") if is_opt else ""))
         elif kind == "update" and op.get("line") in by_id:
             ln = by_id[op["line"]]
             if ln["kind"] == "work":
@@ -695,6 +792,9 @@ def apply_ops(state: dict[str, Any], ops: Any, message: str | None) -> tuple[dic
             if op.get("confirmed") is True and ln.get("conditional") and not ln.get("confirmed") and ln.get("qty"):
                 ln["confirmed"] = True
                 done.append(f"{ln['name']} 수량 {ln['qty']} 확인")
+            if isinstance(op.get("in_total"), bool) and op["in_total"] != bool(ln.get("in_total")):
+                ln["in_total"] = op["in_total"]                # 옵션 줄 Total 반영/미반영(사용자 2026-10-19)
+                done.append(f"{ln['name']} 옵션 {'Total 반영' if op['in_total'] else '미반영'}")
             if isinstance(op.get("unit"), str) and clean_unit(op["unit"]) != (ln.get("unit") or ""):
                 ln["unit"] = clean_unit(op["unit"])
                 done.append(f"{ln['name']} 단위: {ln['unit'] or 'ea'}")
@@ -843,10 +943,13 @@ def edit_ops(state: dict[str, Any], payload: dict[str, Any]) -> list[dict[str, A
                     ch["commodity"] = x["commodity"]
                 if x.get("confirmed") is True and ln.get("conditional") and not ln.get("confirmed"):
                     ch["confirmed"] = True
+                if isinstance(x.get("in_total"), bool) and x["in_total"] != bool(ln.get("in_total")):
+                    ch["in_total"] = x["in_total"]
                 if ch:
                     ops.append({"op": "update", "line": x["id"], **ch})
             elif not x.get("id"):
-                ops.append({"op": "add", **{k: x.get(k) for k in ("name", "qty", "unit_price", "remark", "commodity", "usd", "block", "unit", "kind")}})
+                ops.append({"op": "add", **{k: x.get(k) for k in ("name", "qty", "unit_price", "remark", "commodity", "usd", "block", "unit", "kind",
+                                                                  "in_total")}})
         ops += [{"op": "remove", "line": i} for i in cur if i not in seen]
     for name in payload.get("include_options") or []:
         ops.append({"op": "option", "name": name, "include": True})
@@ -924,6 +1027,8 @@ ops 종류:
    bank·account_no·account_holder 는 고객사가 우리에게 돈을 보낼 '입금 계좌'(견적서의 Bank·Account No. 칸)다 — 결제조건(payment)과 다르다.
    '계좌 바꿔 줘'·'입금 계좌는 신한은행 …' 이면 이 칸들을 바꾼다. 계좌번호는 [말]에 적힌 그대로. 새 계좌번호를 말하지 않았으면 ops 를 비우고
    answer 로 새 은행·계좌번호·예금주를 물어본다. 계좌 변경을 거절하거나 내부 정책·담당 부서 확인 같은 말을 지어내지 않는다.)
+- {"op":"set","field":<purpose|rental_months|rental_start>,"value":...}  — 판매/대여 견적서: purpose 는 "sale"(판매) 또는 "rental"(대여·렌탈),
+  rental_months 는 대여 계약 개월 수(정수, '3년'이면 36), rental_start 는 대여 시작일(YYYY-MM-DD) — [말]에 있을 때만.
 - {"op":"delivery","case":1|2|3|4|5,"freight":물류비}  — 납품 방식: 1 택배 발송(품목 그대로), 2 화물 직납(물류비 추가),
   3 우리 인원이 설치하며 납품(설치 인건비 추가), 4 화물로 보내고 우리 인원이 설치(물류비+인건비), 5 별도 협의(품목 그대로). freight 는 물류비 금액(말에 있을 때만).
 - {"op":"work","people":명,"days":일,"rate":1인1일단가}  — 설치 인건비(인원·일수·단가). 설치를 빼라고 하면 {"op":"work","needed":false}
@@ -937,7 +1042,8 @@ ops 종류:
 - {"op":"update","line":"L3","usd":1000}  — 달러 단가 바꾸기(해외 견적, 위와 같은 기준). 물류비·설치 인건비 줄은 원화로만
 - {"op":"update","line":"L3","confirmed":true}  — 조건부 수량을 담당자가 '맞다'고 확인할 때만
 - 견적 본문은 묶음 여러 개다([견적 상태]의 묶음 목록). 줄을 특정 묶음에 넣거나 옮길 때:
-  {"op":"add",...,"option":true}  — '옵션으로'·'선택 사항으로' 넣는 품목(견적서 < OPTION > 아래, 단가만 보이고 합계 제외)
+  {"op":"add",...,"option":true}  — '옵션으로'·'선택 사항으로' 넣는 품목(견적서 < OPTION > 아래, 공급가액은 보이고 기본은 Total 미반영)
+  {"op":"update","line":"L3","in_total":true|false}  — 옵션 줄을 Total 에 반영/미반영('옵션도 합계에 넣어 줘'). 반영한 옵션만 옵션 Sub total·Total 에 들어감
   {"op":"add",...,"group":"설치 및 시운전"}  — 소제목 묶음에 넣기(없으면 소계 표시 묶음으로 새로 만든다)
   {"op":"update","line":"L3","option":true} / {"op":"update","line":"L3","group":"유지보수"} / {"op":"update","line":"L3","block":"B0"}  — 묶음 옮기기
   {"op":"group","title":"유지보수","subtotal":true}  — 빈 소제목 묶음 만들기
@@ -956,7 +1062,8 @@ def describe(state: dict[str, Any]) -> str:
     names = {b["id"]: (b.get("title") or ("기본" if b["id"] == MAIN_BLOCK else OPTION_TITLE if b["type"] == "option" else ""))
              for b in blocks(state)}
     rows = "\n".join(f"- {ln['id']} [{ln['kind']}] 묶음 {block_of(ln, ty, auto_block(state))}({names.get(block_of(ln, ty, auto_block(state)), '')}"
-                     + (", 옵션·합계 제외" if ty.get(block_of(ln, ty, auto_block(state))) == "option" else "") + ")"
+                     + ((", 옵션·Total 반영" if ln.get("in_total") else ", 옵션·Total 미반영")
+                        if ty.get(block_of(ln, ty, auto_block(state))) == "option" else "") + ")"
                      + f" · 품목 {qx.commodity_of(ln) or '(비움)'} · 규격 {ln['name']} · 수량 {ln.get('qty')} · 단가 {ln.get('unit_price')}원"
                      + (f" · 달러 단가 ${ln['usd']:,.2f}" if ln.get("usd") else "")
                      + (f" · 비고 {ln['remark']}" if ln.get("remark") else "") for ln in state["lines"])
@@ -1002,14 +1109,23 @@ def render_lines(state: dict[str, Any], lang: str, fx_rate: float | None) -> lis
         if rows:
             sections.append((b, rows))
     multi = len(sections) > 1
-    subtotals = sum(1 for b, _ in sections if b["type"] == "items") > 1
+    # 대여 견적서는 품목 + < OPTION > 이어도 품목 묶음에 Sub total(사용자 2026-10-22). 판매는 LG CNS 견적서처럼 품목 묶음 둘 이상일 때만
+    subtotals = (sum(1 for b, _ in sections if b["type"] == "items") > 1
+                 or (is_rental(state) and any(b["type"] == "option" for b, _ in sections)))
     out: list[dict[str, Any]] = []
     for b, rows in sections:
         rows = [r if r.get("row") else {**r, "block": b["id"]} for r in rows]
         title = b.get("title") or ""
         if b["type"] == "option":
+            # 옵션 줄마다 [반영/미반영](사용자 2026-10-19) — 둘 다 공급가액은 보이고, 반영한 줄만 Sub total·Total 에 들어간다.
+            # in_total 이 있는 줄 = 이 방식(없는 예전 발행본은 공급가액 칸을 비운 채 그대로)
+            inc = {ln["id"] for ln in groups[b["id"]] if ln.get("in_total")}
+            opt = [r if r.get("row") else {**r, "row": "option", "in_total": r.get("id") in inc} for r in rows]
             out.append({"row": "section", "text": title or OPTION_TITLE})
-            out += [r if r.get("row") else {**r, "row": "option"} for r in rows]
+            out += opt
+            if any(r.get("in_total") for r in opt):
+                out.append({"row": "subtotal", "text": "Sub total",
+                            "amount": round(sum(r["amount"] for r in opt if r.get("in_total")), 2)})
         else:
             if title and b["type"] != "text":
                 out.append({"row": "section", "text": title})
@@ -1018,7 +1134,7 @@ def render_lines(state: dict[str, Any], lang: str, fx_rate: float | None) -> lis
                 out.append({"row": "subtotal", "text": "Sub total", "amount": round(sum(r["amount"] for r in rows if not r.get("row")), 2)})
         if multi:
             out.append({"row": "gap"})
-    base = round(sum(r["amount"] for r in out if not r.get("row")), 2)
+    base = round(sum(r["amount"] for r in out if not r.get("row") or r.get("in_total")), 2)
     cut = nego_amount(state, base)
     if cut > 0:
         out.append({"row": "nego", "key": "nego", "commodity": "", "desc": nego_label(state), "qty": 1,
@@ -1069,9 +1185,12 @@ def _item_rows(state: dict[str, Any], lines: list[dict[str, Any]], lang: str, fx
         if unit is None:
             raise ValueError(f"{ln['name']} — " + ("달러 단가가 없습니다(직접 적거나 환율 입력)" if lang == "en" else "단가가 없습니다"))
         # id — 올린 견적서 파일을 작성 상태로 되읽을 때 줄 짝짓기에 쓴다(quote_readback, 사용자 2026-10-15)
+        # months — 대여 견적서에서 단가(월 납입금)에 곱한 개월 수(엑셀 금액 식 =D×E×개월, 사용자 2026-10-22)
+        mf = month_factor(state["form"], ln)
         out.append({"id": ln.get("id"), "key": k, "commodity": qx.commodity_of(ln), "desc": desc, "qty": int(ln["qty"]),
                     **({"photo": ln["photo"]} if ln.get("photo") else {}), "unit_price": unit, "unit_price_krw": krw,
-                    "amount": round(int(ln["qty"]) * unit, 2), "remark": remark, "option": ln["kind"] == "option", "kind": ln["kind"],
+                    **({"months": mf} if mf > 1 else {}),
+                    "amount": round(int(ln["qty"]) * unit * mf, 2), "remark": remark, "option": ln["kind"] == "option", "kind": ln["kind"],
                     **({"unit": unit_label("인·일", lang, int(ln["qty"]))} if ln["kind"] == "work"
                        else {"unit": unit_label(ln["unit"], lang, int(ln["qty"]))} if ln.get("unit") else {})})
     return out

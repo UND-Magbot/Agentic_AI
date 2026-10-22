@@ -16,26 +16,29 @@ type Props = {
   onPickExample?: (text: string) => void;
   /** 추천 질문 아래에 렌더할 도메인 전용 슬롯(예: 재무 원클릭 작업 버튼). */
   children?: ReactNode;
+  /** 머리(아이콘·제목) 여백을 줄인다 — 기능 카드가 많은 화면(기술영업)에서 한 화면에 다 보이게. */
+  dense?: boolean;
 };
 
-export function EmptyState({ icon, accent, title, tagline, description, examples, onPickExample, children }: Props) {
+export function EmptyState({ icon, accent, title, tagline, description, examples, onPickExample, children, dense }: Props) {
   return (
     // 세로 가운데는 my-auto 로 — justify-center 는 내용이 화면보다 길면 위쪽이 스크롤로도 안 보이게 잘린다
-    <div className="und-aurora anim-fade-in flex min-h-full flex-col items-center px-6 py-12 text-center">
+    <div className={cn("und-aurora anim-fade-in flex min-h-full flex-col items-center px-6 text-center", dense ? "py-5" : "py-12")}>
       <div className="relative z-[1] my-auto flex w-full flex-col items-center">
       <span className="relative" aria-hidden>
         <span className="und-glow absolute -inset-5 rounded-full" />
         <span
           className={cn(
-            "relative grid h-14 w-14 place-items-center rounded-2xl text-white ring-1 ring-black/10 dark:ring-white/10",
+            "relative grid place-items-center rounded-2xl text-white ring-1 ring-black/10 dark:ring-white/10",
             "shadow-[inset_0_1px_0_rgba(255,255,255,0.35),0_14px_30px_-14px_rgba(15,30,70,0.6)]",
+            dense ? "h-11 w-11" : "h-14 w-14",
             accent.bg,
           )}
         >
-          <Icon name={icon} className="h-6 w-6" />
+          <Icon name={icon} className={dense ? "h-5 w-5" : "h-6 w-6"} />
         </span>
       </span>
-      <h1 className="mt-5 text-2xl font-bold tracking-tight">{title}</h1>
+      <h1 className={cn("text-2xl font-bold tracking-tight", dense ? "mt-3" : "mt-5")}>{title}</h1>
       <p className="mt-2 text-sm text-foreground-muted">{tagline}</p>
       {description && (
         <p className="mt-1 max-w-md text-sm text-foreground-subtle">{description}</p>

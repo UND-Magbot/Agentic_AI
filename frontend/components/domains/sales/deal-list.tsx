@@ -12,10 +12,12 @@ import { DealDetail } from "@/components/domains/sales/deal-detail";
 import { DealMeetingDialog, hasMeeting } from "@/components/domains/sales/deal-meeting";
 import { ACTION_LABEL, Muted, STAGE_TONE, StageChip, eventDetail, quoteVer, shortDate, stamp, won } from "@/components/domains/sales/deal-format";
 import { DealNewForm } from "@/components/domains/sales/deal-new-form";
-import type { DealKpi, DealListData, DealRow, DealStage } from "@/lib/shared/sales-deals";
+import type { DealBiz, DealKpi, DealListData, DealRental, DealRow, DealStage } from "@/lib/shared/sales-deals";
 import { cn } from "@/lib/shared/utils";
 
 const STAGES: DealStage[] = ["제품 추천 확정", "견적", "수주", "출하 후 입금 대기", "완료 (출하·완납)", "드랍", "출하 기록만 (이전)"];
+// 대여 관리 탭의 단계(사용자 2026-10-22) — 입금은 단계가 아니라 미수·예정일 알림으로
+const RENTAL_STAGES: DealStage[] = ["견적", "수주", "대여 중", "회수 중", "회수 완료", "드랍"];
 
 const hasReview = (r: DealRow) => r.alerts.some((a) => a.level === "review");
 // 미수 = 받을 일이 생겼는데(거래명세서 발급·출하, 이관 건은 옛 계산서 기록) 아직 완납이 아님
@@ -25,10 +27,14 @@ const isOverdue = (r: DealRow) => !!r.flow?.overdue?.length;
 const supplyOf = (r: DealRow) => r.flow?.total ?? (r.quote?.amount == null ? null
   : r.quote.vat_included ? Math.round(r.quote.amount / 1.1) : r.quote.amount);
 
-type Filter = { q: string; owner: string; stage: string; year: string; unpaid: boolean; review: boolean; overdue: boolean };
+type Filter = { q: string; owner: string; stage: string; year: string; unpaid: boolean; review: boolean; overdue: boolean; as: boolean };
 
-export function DealList({ data, onRefresh, onMeeting, onOrder, onQuote }: {
+export function DealList({ data, biz = "sale", initialOpenId = null, onRefresh, onMeeting, onOrder, onQuote }: {
   data: DealListData;
+  /** 처음부터 열어 둘 건 — [제품·A/S] 탭의 [프로젝트 건 열기](사용자 2026-10-22) */
+  initialOpenId?: number | null;
+  /** sale = 제품 판매 관리, rental = 제품 대여 관리(사용자 2026-10-22) — 제목·설명·대여 기간 표시 */
+  biz?: DealBiz;
   /** 상태 변경 뒤 리스트 다시 받기 — 탭(클라이언트)에서 쓰면 넘기고, 없으면 서버 컴포넌트 새로고침. */
   onRefresh?: () => void;
   /** [미팅 정보] — 최종 제안 확정 기록(미팅·최종 추천·근거·대화) 열기. 없으면 버튼을 숨긴다. */
@@ -40,7 +46,7 @@ export function DealList({ data, onRefresh, onMeeting, onOrder, onQuote }: {
 }) {
   const router = useRouter();
   const refresh = onRefresh ?? (() => router.refresh());
-  const [f, setF] = useState<Filter>({ q: "", owner: "", stage: "", year: "", unpaid: false, review: false, overdue: false });
+  const [f, setF] = useState<Filter>({ q: "", owner: "", stage: "", year: "", unpaid: false, review: false, overdue: false, as: false });
   const admin = !!data.me?.admin;
   const overdueRows = useMemo(() => data.rows.filter(isOverdue), [data.rows]);
   // 예정 입금일 지난 건 팝업 — 하루 한 번(닫으면 그날은 다시 안 뜸, 리스트 강조는 그대로).
@@ -52,7 +58,7 @@ export function DealList({ data, onRefresh, onMeeting, onOrder, onQuote }: {
     setLateOpen(false);
     try { localStorage.setItem("deals-overdue-seen", data.today); } catch { /* 무시 */ }
   };
-  const [openId, setOpenId] = useState<number | null>(null);
+  const [openId, setOpenId] = useState<number | null>(initialOpenId);
   // 히스토리를 펼친 건 — 건번호 아래 [히스토리 N]으로 열고 닫는다
   const [shown, setShown] = useState<Set<number>>(new Set());
   const toggleShown = (id: number) => setShown((prev) => {
@@ -113,6 +119,7 @@ export function DealList({ data, onRefresh, onMeeting, onOrder, onQuote }: {
       if (f.unpaid && !isUnpaid(r)) return false;
       if (f.review && !hasReview(r)) return false;
       if (f.overdue && !isOverdue(r)) return false;
+      if (f.as && !r.as_active) return false;               // A/S 진행 중(단계 필터와 같이 걸 수 있음)
       if (!q) return true;
       const hay = [r.display_no, r.statement_no, r.deal_no, r.legacy_no, r.customer, r.title, ...(r.quote?.items.map((i) => i.name) ?? [])]
         .join(" ").toLowerCase();
@@ -136,10 +143,12 @@ export function DealList({ data, onRefresh, onMeeting, onOrder, onQuote }: {
     <div className="mx-auto w-full max-w-[1400px] px-4 pb-16 pt-6 md:px-6">
       <header className="mb-4 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-[20px] font-bold tracking-tight">제품 영업 건 관리</h1>
+          <h1 className="text-[20px] font-bold tracking-tight">{biz === "rental" ? "제품 대여 관리" : "제품 판매 관리"}</h1>
           <p className="mt-1 text-[12.5px] text-foreground-muted">
-            제품 추천 확정 → 견적 → 수주 → 거래명세서 발급·입금 확인 → 출하를 한 건씩 관리합니다. (전체 {data.counts.total}건) · 기준일 {data.today}
-            · 금액은 공급가액 · 최근에 바뀐 건이 위
+            {biz === "rental"
+              ? "대여 견적서(견적서 수기 작성 → 제품 대여)로 낸 건 — 견적 → 수주 → 시리얼 등록(R 대여) → 출하를 관리하고, 대여 기간·월 납입금을 함께 봅니다."
+              : "제품 추천 확정 → 견적 → 수주 → 거래명세서 발급·입금 확인 → 출하를 한 건씩 관리합니다."} (전체 {data.counts.total}건) · 기준일 {data.today}
+            · 금액은 공급가액 · 새로 만든 건이 위
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -186,12 +195,16 @@ export function DealList({ data, onRefresh, onMeeting, onOrder, onQuote }: {
       <div className="mb-3 flex flex-wrap gap-2">
         <SummaryChip label="전체" count={data.counts.total} active={!f.stage && !f.review}
                      tone="bg-foreground/8 text-foreground" onClick={() => set({ stage: "", review: false })} />
-        {STAGES.map((s) => (
+        {(biz === "rental" ? RENTAL_STAGES : STAGES).map((s) => (
           <SummaryChip key={s} label={s} count={data.summary[s]} active={f.stage === s}
                        tone={STAGE_TONE[s]} onClick={() => set({ stage: f.stage === s ? "" : s })} />
         ))}
         <SummaryChip label="⚠ 확인 필요" count={data.summary["확인 필요"]} active={f.review}
                      tone="bg-sky-500/12 text-sky-700 dark:text-sky-300" onClick={() => set({ review: !f.review })} />
+        {data.summary["A/S 진행 중"] > 0 && (
+          <SummaryChip label="🔧 A/S 진행 중" count={data.summary["A/S 진행 중"]} active={f.as}
+                       tone="bg-amber-500/12 text-amber-700 dark:text-amber-300" onClick={() => set({ as: !f.as })} />
+        )}
         {overdueRows.length > 0 && (
           <SummaryChip label="⏰ 입금 예정일 지남" count={overdueRows.length} active={f.overdue}
                        tone="bg-red-500/12 text-red-700 dark:text-red-300" onClick={() => set({ overdue: !f.overdue })} />
@@ -203,10 +216,11 @@ export function DealList({ data, onRefresh, onMeeting, onOrder, onQuote }: {
         <input value={f.q} onChange={(e) => set({ q: e.target.value })} placeholder="고객사·품목·건번호 검색"
                className="h-9 w-64 rounded-lg border border-border bg-surface px-3 outline-none focus:border-accent" />
         <Select value={f.owner} onChange={(v) => set({ owner: v })} label="담당자" options={owners} />
-        <Select value={f.stage} onChange={(v) => set({ stage: v })} label="단계" options={STAGES} />
+        <Select value={f.stage} onChange={(v) => set({ stage: v })} label="단계" options={biz === "rental" ? RENTAL_STAGES : STAGES} />
         <Select value={f.year} onChange={(v) => set({ year: v })} label="연도" options={years} />
         <Check checked={f.unpaid} onChange={(v) => set({ unpaid: v })} label="미수만" />
         <Check checked={f.review} onChange={(v) => set({ review: v })} label="확인 필요만" />
+        <Check checked={f.as} onChange={(v) => set({ as: v })} label="A/S 진행 중만" />
         <span className="ml-auto text-foreground-subtle">{rows.length}건</span>
       </div>
 
@@ -232,6 +246,8 @@ export function DealList({ data, onRefresh, onMeeting, onOrder, onQuote }: {
                   aria-selected={selecting ? selected.has(r.id) : undefined}
                   className={cn("cursor-pointer border-b border-border/70 last:border-0 hover:bg-accent/5",
                     isOverdue(r) && "bg-red-500/[0.07] shadow-[inset_3px_0_0_#dc2626]", r.dropped && "opacity-60",
+                    // A/S 진행 중인 건은 그 줄만 연하게(사용자 2026-10-22) — 마우스를 올리면 또렷하게
+                    !!r.as_active && "opacity-50 hover:opacity-100",
                     !selecting && openId === r.id && "bg-accent/8", selecting && selected.has(r.id) && "bg-red-500/8")}>
                 {selecting && (
                   <td className="w-10 px-3 py-2" onClick={(e) => e.stopPropagation()}>
@@ -244,6 +260,9 @@ export function DealList({ data, onRefresh, onMeeting, onOrder, onQuote }: {
                   <div className="truncate font-semibold" title={r.customer ?? undefined}>{r.customer ?? <Muted>고객사 미기재</Muted>}</div>
                   <div className="mt-0.5 flex items-center gap-1.5">
                     <span className="truncate text-[12.5px] text-foreground-muted" title={r.title}>{r.title}</span>
+                    {r.biz === "rental" && biz !== "rental" && (
+                      <span className="shrink-0 rounded bg-emerald-500/12 px-1.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">대여</span>
+                    )}
                     {!r.imported && r.kind !== "shipment_only" && (
                       <button type="button" title={r.proposal_id ? "미팅 내용·최종 추천·근거·AI 대화 보기" : hasMeeting(r) ? "직접 입력한 미팅 정보 보기" : "미팅 정보 없음 — 직접 입력"}
                               onClick={(e) => { e.stopPropagation(); showMeeting(r); }}
@@ -253,6 +272,7 @@ export function DealList({ data, onRefresh, onMeeting, onOrder, onQuote }: {
                       </button>
                     )}
                   </div>
+                  {r.rental && <RentalLine rental={r.rental} today={data.today} />}
                 </td>
                 <td className="whitespace-nowrap px-3 py-2 font-mono text-[12px]">
                   {r.display_no ?? r.deal_no ?? "번호 미부여"}
@@ -278,6 +298,14 @@ export function DealList({ data, onRefresh, onMeeting, onOrder, onQuote }: {
                 <td className="whitespace-nowrap px-3 py-2">{paymentCell(r)}</td>
                 <td className="whitespace-nowrap px-3 py-2">
                   {r.shipments.length ? `${r.shipments.length}회` : r.shipped ? <Muted>완료(비고)</Muted> : <Muted>-</Muted>}
+                  {!!r.as_active && (
+                    <span className="ml-1.5 rounded bg-amber-500/12 px-1.5 py-0.5 text-[11.5px] font-semibold text-amber-700 dark:text-amber-300"
+                          title={`A/S ${r.as_total}건 중 ${r.as_active}건 진행 중`}>A/S 진행 {r.as_active}</span>
+                  )}
+                  {!!r.as_open && r.as_open > (r.as_active ?? 0) && (
+                    <span className="ml-1.5 rounded border border-amber-500/40 px-1.5 py-0.5 text-[11.5px] font-semibold text-amber-700 dark:text-amber-300"
+                          title="A/S 접수만 하고 아직 A/S 에 들어가지 않은 건">A/S 접수 {r.as_open - (r.as_active ?? 0)}</span>
+                  )}
                 </td>
                 <td className="max-w-[260px] px-3 py-2"><AlertCell row={r} /></td>
               </tr>
@@ -357,6 +385,7 @@ export function DealList({ data, onRefresh, onMeeting, onOrder, onQuote }: {
       {creating && (
         <DealNewForm
           owners={owners}
+          biz={biz}
           onClose={() => setCreating(false)}
           onCreated={(row) => { setCreating(false); refresh(); setOpenId(row.id); }}
         />
@@ -538,6 +567,25 @@ function HistoryPanel({ row }: { row: DealRow }) {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+/** 대여 기간·월 납입금(사용자 2026-10-22) — 끝나는 날이 지났거나 30일 안이면 붉게(반납 처리는 다음 단계). */
+export function RentalLine({ rental, today }: { rental: DealRental; today: string }) {
+  const ret = rental.return ?? {};
+  // 회수를 시작·마친 건은 끝나는 날 경고 대신 회수 상태(사용자 2026-10-22)
+  const left = rental.end && !ret.started ? Math.round((Date.parse(rental.end) - Date.parse(today)) / 86_400_000) : null;
+  return (
+    <div className={cn("mt-0.5 text-[11.5px]", ret.done ? "text-foreground-muted"
+      : ret.started ? "font-semibold text-amber-700 dark:text-amber-300"
+      : left != null && left < 0 ? "font-semibold text-red-600 dark:text-red-400"
+      : left != null && left <= 30 ? "font-semibold text-amber-700 dark:text-amber-300" : "text-emerald-700 dark:text-emerald-300")}>
+      대여 {rental.months}개월
+      {rental.start ? ` · ${rental.start} ~ ${rental.end}` : " · 시작일 미정"}
+      {rental.monthly ? ` · 월 ${rental.monthly.toLocaleString("ko-KR")}원` : ""}
+      {ret.done ? ` · 회수 완료 ${ret.done}` : ret.started ? ` · 회수 중(${ret.started} 시작)`
+        : left != null && (left < 0 ? " · 대여 기간 끝남" : left <= 30 ? ` · ${left}일 남음` : "")}
     </div>
   );
 }

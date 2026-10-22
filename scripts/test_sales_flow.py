@@ -175,6 +175,13 @@ names = [c.value for row in ws.iter_rows() for c in row if isinstance(c.value, s
 check(len(qty_cells) == 2 and all('" SET"' in c.number_format for c in qty_cells) and not names,
       "세트 명세서: 수량 칸 '1 SET'(숫자 그대로), 구성 품목은 양식에 안 나옴", str([c.number_format for c in qty_cells]))
 
+# 공급가액 = 견적 합계(물류비 포함) — 명세서(제품 줄만)가 있어도 물류비가 빠지지 않는다(사용자 2026-10-22)
+fr = {"quote": {"amount": 19_600_000, "vat_included": False}, "statement": {"totals": {"supply": 19_500_000}},
+      "pay_case": "terms", "pay_terms": flow.clean_terms([{"label": "선금", "pct": 70}, {"label": "잔금", "pct": 30}]), "payments": []}
+check(flow.supply_total(fr) == 19_600_000 and [t["amount"] for t in flow.terms(fr)] == [13_720_000, 5_880_000],
+      "명세서가 있어도 공급가액·회차 금액은 견적 합계(물류비 포함) 기준", str((flow.supply_total(fr), [t["amount"] for t in flow.terms(fr)])))
+check(flow.supply_total({"statement": {"totals": {"supply": 5_000_000}}}) == 5_000_000, "견적 없는 옛 건은 명세서 공급가액")
+
 print(f"PASS {len(PASS)} / FAIL {len(FAIL)}")
 for label, detail in FAIL:
     print(f"  ✗ {label}: {detail}")

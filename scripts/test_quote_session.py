@@ -343,8 +343,8 @@ check([b["id"] for b in qs.blocks(mr)] == ["B0", "B1", "B3", "B4"] and len(mr["l
 # 대화: 옵션·소제목·NEGO
 c1, d1 = qs.apply_ops(mb, [{"op": "add", "name": "CS-01", "commodity": "충전 스테이션", "qty": 1, "unit_price": 1_200_000, "option": True}],
                       "충전 스테이션 120만원 옵션으로 넣어 줘")
-check(qs.blocks(c1)[-1]["type"] == "option" and c1["lines"][-1]["block"] == qs.blocks(c1)[-1]["id"] and "합계 제외" in d1[-1]
-      and qs.subtotal(c1) == 0, "대화: '옵션으로' → 옵션 묶음을 만들어 넣고 합계 제외", str(d1))
+check(qs.blocks(c1)[-1]["type"] == "option" and c1["lines"][-1]["block"] == qs.blocks(c1)[-1]["id"] and "Total 미반영" in d1[-1]
+      and qs.subtotal(c1) == 0, "대화: '옵션으로' → 옵션 묶음을 만들어 넣고 기본은 Total 미반영", str(d1))
 c2, d2 = qs.apply_ops(mb, [{"op": "add", "name": "설치 1MD", "qty": 1, "unit_price": 2_000_000, "group": "설치 및 시운전"},
                            {"op": "add", "name": "배송비", "qty": 1, "unit_price": 500_000, "group": "설치 및 시운전"}],
                       "설치 및 시운전 묶음 만들고 소계 보여 줘. 설치 1MD 200만원, 배송비 50만원")

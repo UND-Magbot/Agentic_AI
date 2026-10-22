@@ -145,3 +145,6 @@ nul
 # 로컬 디버그·실제 고객 파일 비교 스크립트(공개 저장소라 올리지 않음 — PRIVATE_FILES.md)
 /scripts/_*
 /scripts/compare_realman_quote.py
+
+# 영업팀 배포용 테스트 가이드(화면 캡처가 들어 있어 올리지 않음)
+/test_cases/*.html

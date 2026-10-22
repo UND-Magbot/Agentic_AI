@@ -26,6 +26,7 @@ import { ErrorBox, inputCls, primaryBtn, secondaryBtn } from "./proposal-actions
 import { OPEN_APPROVALS_EVENT } from "./approval-alert";
 import { ApprovalRequests } from "./approval-requests";
 import { DealsTab } from "./deals-tab";
+import { ProductUnitsTab } from "./product-units-tab";
 import { InitialsPrompt } from "./initials-prompt";
 import { QuoteTab, savedContact } from "./quote-workspace";
 
@@ -918,7 +919,7 @@ function MeetRows({ rows }: { rows: [string, string][] }) {
   );
 }
 
-export type RecommendTab = "recommend" | "quote" | "order" | "deals" | "memory";
+export type RecommendTab = "recommend" | "quote" | "order" | "deals" | "rentals" | "units" | "memory";
 
 export function ProductRecommend({ initial, initialTab, startManual, writer = "", initialSub }: {
   initial: CorrectionList; initialTab?: RecommendTab; startManual?: boolean; initialSub?: "approvals";
@@ -975,15 +976,18 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
   const [list, setList] = useState<CorrectionList>(initial);
   const seq = useRef(0);
   const intakeRef = useRef(atcIntake);
-  // 첫 화면 '견적서 수기 작성' → 빈 견적서를 만들고 견적서 탭으로(한 번만 — 새로고침해도 또 만들지 않게 주소에서 뺀다)
+  // 첫 화면 '견적서 수기 작성' → 견적서 탭에서 목적(판매/대여)을 고르는 창부터(사용자 2026-10-22). 한 번만 — 새로고침해도
+  // 또 묻지 않게 주소에서 뺀다
   const manualStarted = useRef(false);
+  const [askManual, setAskManual] = useState(false);
+  // [제품·A/S] 탭 → [프로젝트 건 열기] — 판매·대여 관리 탭을 열며 그 건 상세를 띄운다(사용자 2026-10-22)
+  const [dealOpen, setDealOpen] = useState<number | null>(null);
   useEffect(() => {
     if (!startManual || manualStarted.current) return;
     manualStarted.current = true;
     window.history.replaceState(null, "", "/proposals/recommend?tab=quote");
-    post<QuoteSession>("/quotes/manual", { form: savedContact() })
-      .then((q) => { setQuoteId(q.id); setTab("quote"); })
-      .catch((e: Error) => setError(e.message));
+    setAskManual(true);
+    setTab("quote");
   }, [startManual]);
   const answersRef = useRef(answers);
   const skipped = useRef(new Set<string>());
@@ -1625,7 +1629,7 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
       // 건 번호는 견적서 첫 발행 때 부여(사용자 2026-10-08) — 확정만 한 건은 번호 없이 '제품 추천 확정'
       say(`최종 제안으로 확정했습니다 — 제품 영업 건${p.deal_no ? ` ${p.deal_no}` : ""}(제품 추천 확정)로 등록했습니다`
         + (p.deal_no ? ". " : "(건 번호는 견적서를 처음 발행할 때 붙습니다). ") + "미팅 내용·최종 추천·근거·대화는 "
-        + "[제품 영업 건 관리]에서 그 건의 [미팅 정보]로 볼 수 있습니다. 이어서 [견적서 작성 →]으로 견적서를 만들면 같은 번호로 견적 단계가 됩니다.");
+        + "[제품 판매·대여 관리]에서 그 건의 [미팅 정보]로 볼 수 있습니다. 이어서 [견적서 작성 →]으로 견적서를 만들면 같은 번호로 견적 단계가 됩니다.");
     } catch (e) {
       // 영업 건 번호 = 담당 이니셜 + 날짜 — 내 이니셜을 아직 안 정했으면 한 번 묻고 다시 확정
       if (e instanceof Error && e.message.includes("이니셜")) setNeedIni(true);
@@ -1774,7 +1778,7 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
     <SpecLockContext.Provider value={specLock}>
     <SpecAskContext.Provider value={() => void askSpec()}>
     <div className="scroll-thin h-full overflow-y-auto">
-    <div className={cn("mx-auto flex w-full flex-col gap-4 px-4 py-6", session || tab === "quote" || tab === "order" || tab === "deals" ? "max-w-[1440px]" : "max-w-4xl")}>
+    <div className={cn("mx-auto flex w-full flex-col gap-4 px-4 py-6", session || tab === "quote" || tab === "order" || tab === "deals" || tab === "rentals" || tab === "units" ? "max-w-[1440px]" : "max-w-4xl")}>
       <header>
         <h1 className="text-[18px] font-semibold text-foreground">회사 제품 추천</h1>
         <p className="text-[12.5px] text-foreground-muted">
@@ -1785,10 +1789,10 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
 
       {/* 탭: 제품 추천 / AI 학습 내용 관리 */}
       <div role="tablist" aria-label="회사 제품 추천 화면" className="flex gap-1 border-b border-border">
-        {([["recommend", "제품 추천"], ["quote", "견적서"], ["order", "수주 진행"], ["deals", "제품 영업 건 관리"], ["memory", "검토·승인"]] as const).map(([key, label]) => {
+        {([["recommend", "제품 추천"], ["quote", "견적서"], ["order", "수주 진행"], ["deals", "제품 판매 관리"], ["rentals", "제품 대여 관리"], ["units", "제품·A/S"], ["memory", "검토·승인"]] as const).map(([key, label]) => {
           const pending = list.items.filter((c) => c.review_status === "pending").length;
           return (
-            <button key={key} type="button" role="tab" aria-selected={tab === key} onClick={() => setTab(key)}
+            <button key={key} type="button" role="tab" aria-selected={tab === key} onClick={() => { setDealOpen(null); setTab(key); }}
                     className={cn("-mb-px whitespace-nowrap border-b-2 px-3 py-2 text-[13.5px] font-semibold transition-colors",
                       tab === key ? "border-accent text-accent" : "border-transparent text-foreground-muted hover:text-foreground")}>
               {label}
@@ -2184,10 +2188,14 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
       </div>
       )}
 
-      {tab === "quote" && <QuoteTab openId={quoteId} onOpen={setQuoteId} />}
+      {tab === "quote" && <QuoteTab openId={quoteId} onOpen={(id) => { setAskManual(false); setQuoteId(id); }} askManual={askManual} />}
       {tab === "order" && <OrderTab openId={orderId} onOpen={setOrderId} />}
-      {tab === "deals" && <DealsTab onMeeting={setMeetingId} onOrder={(id) => { setOrderId(id); setTab("order"); }}
+      {tab === "deals" && <DealsTab openDealId={dealOpen} onMeeting={setMeetingId} onOrder={(id) => { setOrderId(id); setTab("order"); }}
                                      onQuote={(id) => { setQuoteId(id); setTab("quote"); }} />}
+      {/* 제품 대여 관리(사용자 2026-10-22) — 대여 견적서로 낸 건만, 흐름은 판매와 같다 */}
+      {tab === "rentals" && <DealsTab biz="rental" openDealId={dealOpen} onMeeting={setMeetingId} onOrder={(id) => { setOrderId(id); setTab("order"); }}
+                                      onQuote={(id) => { setQuoteId(id); setTab("quote"); }} />}
+      {tab === "units" && <ProductUnitsTab onOpenDeal={(id, biz) => { setDealOpen(id); setTab(biz === "rental" ? "rentals" : "deals"); }} />}
       {meetingId && <MeetingInfo id={meetingId} onClose={() => setMeetingId(null)} />}
       {/* 공개 사양 검색이 끝나면 어느 질문을 작성 중이든 요약 팝업(사용자 2026-10-12) */}
       {specAsk ? <SpecAskPopup items={specAsk.items} onAnswer={answerSpecAsk} />

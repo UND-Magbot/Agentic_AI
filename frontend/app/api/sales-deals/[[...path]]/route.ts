@@ -15,6 +15,11 @@
  * POST /api/sales-deals/{id}/statement · /terms · /confirm-term · /unconfirm-term (JSON) · /ship-photos (multipart)
  * 수주 진행 탭(AI 대화): GET /{id}/order · POST /{id}/order/draft · /order/ship · /order/note (JSON)
  *                      · /order/agent (생각·단계·답을 NDJSON 으로 흘려 보냄 — 모으지 않고 그대로 잇는다)
+ * 제품 시리얼·A/S(사용자 2026-10-19):
+ * GET  /api/sales-deals/{id}/units?quote_id&revision · POST /{id}/units (판 하나의 시리얼 저장)
+ * GET  /api/sales-deals/units/search?q= · /units/{unitId} · /as-cases?case_status= · /warranty-policies
+ * POST /api/sales-deals/as-cases · /as-cases/batch(여러 시리얼) · /as-cases/{caseId} · /warranty-policies (관리자)
+ * A/S 접수서 사진: POST /api/sales-deals/as-photos (multipart) · GET /as-photos/{pid}
  */
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
@@ -24,7 +29,7 @@ export const runtime = "nodejs";
 const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:8002";
 const TOKEN_COOKIE = "und_cortex_token";
 const BASE = "/v1/sales-deals";
-const ACTIONS = new Set(["won", "invoices", "payments", "paid-full", "shipments", "shipment-edit", "remove", "review", "statement", "terms", "confirm-term", "unconfirm-term", "drop", "meeting", "reset-to-quote",
+const ACTIONS = new Set(["won", "rental-return", "rental-start", "invoices", "payments", "paid-full", "shipments", "shipment-edit", "remove", "review", "statement", "terms", "confirm-term", "unconfirm-term", "drop", "meeting", "reset-to-quote",
   // 입금 예정일 연장 — 관리자 바로 · 일반 직원 요청(사용자 2026-10-13)
   "due-extend", "due-request"]);
 // 파일을 올리는 동작 — 본문·경계를 그대로 넘긴다
@@ -56,7 +61,9 @@ export async function GET(req: NextRequest, { params }: Params) {
   if (!tok) return NextResponse.json({ detail: "인증이 필요합니다." }, { status: 401 });
   // 리스트 — 회사 제품 추천 화면의 [영업 건 관리] 탭(클라이언트)이 받는다
   if (path.length === 0) {
-    const r = await fetch(`${BACKEND_URL}${BASE}`, { headers: { Authorization: `Bearer ${tok}` }, cache: "no-store" });
+    // ?biz=sale|rental — 제품 판매 관리 / 제품 대여 관리 탭(사용자 2026-10-22)
+    const biz = req.nextUrl.searchParams.get("biz");
+    const r = await fetch(`${BACKEND_URL}${BASE}${biz === "sale" || biz === "rental" ? `?biz=${biz}` : ""}`, { headers: { Authorization: `Bearer ${tok}` }, cache: "no-store" });
     return NextResponse.json(await r.json().catch(() => ({})), { status: r.status });
   }
   if (path.length === 1 && path[0] === "export") return passFile(`${BACKEND_URL}${BASE}/export`, tok);
@@ -73,6 +80,18 @@ export async function GET(req: NextRequest, { params }: Params) {
     const r = await fetch(`${BACKEND_URL}${BASE}/photos/${path[1]}`, { headers: { Authorization: `Bearer ${tok}` }, cache: "no-store" });
     if (!r.ok) return NextResponse.json(await r.json().catch(() => ({})), { status: r.status });
     return new NextResponse(r.body, { status: 200, headers: { "content-type": "image/jpeg", "cache-control": "private, max-age=3600" } });
+  }
+  // 제품 시리얼·A/S(사용자 2026-10-19) — 검색어·견적서 판 등 쿼리는 그대로
+  const unitsGet = (path.length === 2 && path[0] === "units" && (path[1] === "search" || /^\d+$/.test(path[1])))
+    || (path.length === 1 && (path[0] === "as-cases" || path[0] === "warranty-policies"))
+    || (path.length === 2 && /^\d+$/.test(path[0]) && path[1] === "units");
+  if (path.length === 2 && path[0] === "as-photos" && /^[0-9a-f]{32}\.(jpg|jpeg|png|webp)$/.test(path[1])) {
+    return passFile(`${BACKEND_URL}${BASE}/as-photos/${path[1]}`, tok);
+  }
+  if (unitsGet) {
+    const r = await fetch(`${BACKEND_URL}${BASE}/${path.join("/")}${req.nextUrl.search}`,
+                          { headers: { Authorization: `Bearer ${tok}` }, cache: "no-store" });
+    return NextResponse.json(await r.json().catch(() => ({})), { status: r.status });
   }
   if (path.length === 1 && /^\d+$/.test(path[0])) {
     const r = await fetch(`${BACKEND_URL}${BASE}/${path[0]}`, { headers: { Authorization: `Bearer ${tok}` }, cache: "no-store" });
@@ -123,14 +142,19 @@ export async function POST(req: NextRequest, { params }: Params) {
   if (isOrder && !["draft", "note", "agent", "ship"].includes(path[2])) return notFound();
   // 리스트에서 체크한 건들 삭제(JSON {ids}, 관리자) · 담당자 이니셜 저장
   const isBatch = path.length === 1 && (path[0] === "delete" || path[0] === "initials");
-  const isUpload = path.length === 2 && /^\d+$/.test(path[0]) && UPLOADS.has(path[1]);
+  const isUpload = (path.length === 2 && /^\d+$/.test(path[0]) && UPLOADS.has(path[1]))
+    || (path.length === 1 && path[0] === "as-photos");          // A/S 접수서 사진(사용자 2026-10-19)
   const isPoCompare = path.length === 4 && /^\d+$/.test(path[0]) && path[1] === "po" && /^\d+$/.test(path[2]) && path[3] === "compare";
   // 밖에서 고친 견적서 — 확인한 품목으로 발행(JSON, 사용자 2026-10-12)
   const isQuoteConfirm = path.length === 3 && /^\d+$/.test(path[0]) && path[1] === "quote-upload" && path[2] === "confirm";
   // 승인 요청 처리 — approvals/{id}/decide (관리자)
   const isDecide = (path.length === 3 && path[0] === "approvals" && /^\d+$/.test(path[1]) && path[2] === "decide")
     || (path.length === 2 && path[0] === "approvals" && path[1] === "seen");     // 팝업을 봤음(DB 기록)
-  const ok = path.length === 0 || isUpload || isOrder || isBatch || isPoCompare || isQuoteConfirm || isDecide
+  // 제품 시리얼 저장 · A/S 접수·고치기 · 무상 기간 기본값(사용자 2026-10-19)
+  const isUnits = (path.length === 2 && /^\d+$/.test(path[0]) && path[1] === "units")
+    || (path.length === 1 && (path[0] === "as-cases" || path[0] === "warranty-policies"))
+    || (path.length === 2 && path[0] === "as-cases" && (/^\d+$/.test(path[1]) || path[1] === "delete" || path[1] === "batch"));   // 지우기는 관리자(사용자 2026-10-22)
+  const ok = path.length === 0 || isUpload || isOrder || isBatch || isPoCompare || isQuoteConfirm || isDecide || isUnits
     || (path.length === 2 && /^\d+$/.test(path[0]) && ACTIONS.has(path[1]));
   if (!ok) return notFound();
   const tok = await token();

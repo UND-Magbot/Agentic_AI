@@ -6,11 +6,13 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { QuoteBlock, QuoteDelivery, QuoteForm, QuoteLine, QuoteListItem, QuoteNego, QuoteHangulCell, QuoteSession, QuoteWork } from "@/lib/shared/product-recommend";
+import type { QuoteBlock, QuoteDelivery, QuoteForm, QuoteLine, QuoteListItem, QuoteNego, QuoteHangulCell, QuotePurpose, QuoteSession, QuoteWork } from "@/lib/shared/product-recommend";
 import { RichText } from "@/components/domains/sales/agent-chat";
 import { Icon } from "@/components/shared/ui/icon";
+import { useDragMove } from "@/components/shared/ui/use-drag-move";
 import { cn } from "@/lib/shared/utils";
-import { AutoTextarea, LineArea, MAIN_BLOCK, MAIN_DEFAULT, QuoteBlocks, blockOf, negoCut, usd, usdOf } from "./quote-blocks";
+import { AutoTextarea, LineArea, MAIN_BLOCK, MAIN_DEFAULT, QuoteBlocks, blockOf, monthFactor, negoCut, usd, usdOf } from "./quote-blocks";
+import { QuotePurposeDialog } from "./quote-purpose-dialog";
 import { QuoteUploadDialog } from "./quote-upload-dialog";
 import { ErrorBox, inputCls, primaryBtn, secondaryBtn } from "./proposal-actions";
 
@@ -169,9 +171,11 @@ export function DownloadDialog({ urlFor, fileName, title, onClose }: {
 }
 
 /** 미리보기(PDF, 파일로 남기지 않음) — 견적서·거래명세서 같이 씀. url: PDF 를 주는 주소. */
-export function PreviewDialog({ url: src0, title, sub, onClose, onLoaded }: {
+export function PreviewDialog({ url: src0, title, sub, onClose, onLoaded, movable = false }: {
   url: string; title: string; sub: string; onClose: () => void; /** PDF 를 받은 뒤(해외 견적서: 서버가 AI 번역을 저장했을 수 있음) */ onLoaded?: () => void;
+  /** 머리를 잡아 끌어 옮기기(시리얼 등록 옆에 띄워 맞춰 볼 때, 사용자 2026-10-19) */ movable?: boolean;
 }) {
+  const drag = useDragMove();
   const [src, setSrc] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
@@ -183,10 +187,13 @@ export function PreviewDialog({ url: src0, title, sub, onClose, onLoaded }: {
     return () => { alive = false; if (url) URL.revokeObjectURL(url); };
   }, [src0]);  // eslint-disable-line react-hooks/exhaustive-deps -- onLoaded 는 받을 때 한 번만
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" onClick={onClose}>
-      <div className="flex h-[92svh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-xl" onClick={(e) => e.stopPropagation()}
-           role="dialog" aria-label={title}>
-        <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
+    // 옮길 수 있는 창은 뒤를 가리지 않는다 — 견적서를 옆에 띄워 둔 채 뒤 창(시리얼 등록)에 입력할 수 있게. 닫기는 ✕·Esc
+    <div className={cn("fixed inset-0 z-50 grid place-items-center p-4", movable ? "pointer-events-none" : "bg-black/40")} onClick={movable ? undefined : onClose}>
+      <div className={cn("flex h-[92svh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-xl",
+                         movable && "pointer-events-auto shadow-[0_30px_70px_-20px_rgba(15,30,70,0.6)]")} onClick={(e) => e.stopPropagation()}
+           role="dialog" aria-label={title} style={movable ? drag.style : undefined}>
+        <div className={cn("flex items-center gap-2 border-b border-border px-4 py-2.5", movable && drag.handleClass)} {...(movable ? drag.handle : {})}
+             title={movable ? "잡고 끌어 옮기기 · 두 번 누르면 가운데로" : undefined}>
           <h3 className="text-[14px] font-semibold text-foreground">{title}</h3>
           <span className="text-[12px] text-foreground-subtle">{sub}</span>
           <button type="button" className="ml-auto grid h-7 w-7 place-items-center rounded-md hover:bg-foreground/[0.06]" onClick={onClose} aria-label="닫기">
@@ -194,7 +201,7 @@ export function PreviewDialog({ url: src0, title, sub, onClose, onLoaded }: {
           </button>
         </div>
         {err ? <div className="p-4"><ErrorBox error={err} /></div>
-          : src ? <iframe src={src} title={title} className="w-full flex-1 bg-white" />
+          : src ? <iframe src={src} title={title} className={cn("w-full flex-1 bg-white", drag.dragging && "pointer-events-none")} />
             : <p className="flex flex-1 items-center justify-center gap-2 text-[13px] text-foreground-subtle"><Icon name="refresh" className="h-4 w-4 animate-spin text-accent" /> 견적서를 PDF 로 만드는 중…</p>}
       </div>
     </div>
@@ -260,24 +267,31 @@ function EnRow({ c, disabled, onSet }: { c: QuoteHangulCell; disabled: boolean; 
 }
 
 /** 견적서 탭 — 목록 또는 한 건 작업 화면. */
-export function QuoteTab({ openId, onOpen }: { openId: number | null; onOpen: (id: number | null) => void }) {
+export function QuoteTab({ openId, onOpen, askManual = false }: {
+  openId: number | null; onOpen: (id: number | null) => void;
+  /** 첫 화면 '견적서 수기 작성' 카드로 들어옴 — 목적(판매/대여) 고르는 창부터 */
+  askManual?: boolean;
+}) {
   if (openId) return <QuoteWorkspace key={openId} id={openId} onBack={() => onOpen(null)} />;
-  return <QuoteList onOpen={onOpen} />;
+  // 첫 화면 카드 → 탭이 이미 열린 뒤에 들어와도 목적 창을 연다(key 가 바뀌면 목록을 새로 그려 처음 값으로)
+  return <QuoteList key={askManual ? "ask" : "list"} onOpen={onOpen} askManual={askManual} />;
 }
 
-function QuoteList({ onOpen }: { onOpen: (id: number) => void }) {
+function QuoteList({ onOpen, askManual }: { onOpen: (id: number) => void; askManual: boolean }) {
   const [items, setItems] = useState<QuoteListItem[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  /** 견적서 수기 작성(사용자 2026-10-08) — AI 추천 없이 빈 견적서를 만들어 연다. */
-  async function createManual() {
+  const [picking, setPicking] = useState(askManual);
+  /** 견적서 수기 작성(사용자 2026-10-08) — AI 추천 없이 빈 견적서를 만들어 연다. 목적(판매/대여)은 창에서 고른다(2026-10-22). */
+  async function createManual(purpose: QuotePurpose) {
     setCreating(true);
     setErr(null);
     try {
-      onOpen((await api<QuoteSession>("/quotes/manual", { form: savedContact() })).id);
+      onOpen((await api<QuoteSession>("/quotes/manual", { form: { ...savedContact(), purpose } })).id);
     } catch (e) {
       setErr((e as Error).message);
       setCreating(false);
+      setPicking(false);
     }
   }
   useEffect(() => {
@@ -291,17 +305,18 @@ function QuoteList({ onOpen }: { onOpen: (id: number) => void }) {
     <section className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-2">
         <p className="min-w-0 flex-1 text-[12.5px] text-foreground-muted">
-          AI 추천이 아직 없는 제품(그리퍼·AMR 등)은 <b>[견적서 수기 작성]</b>으로 빈 견적서에서 시작합니다 — 발행하면 건 번호가 붙어 제품 영업 건 관리로 이어집니다.
+          AI 추천이 아직 없는 제품(그리퍼·AMR 등)은 <b>[견적서 수기 작성]</b>으로 빈 견적서에서 시작합니다 — 발행하면 건 번호가 붙어 제품 판매·대여 관리로 이어집니다.
         </p>
-        <button type="button" className={primaryBtn} disabled={creating} onClick={() => void createManual()}>
+        <button type="button" className={primaryBtn} disabled={creating} onClick={() => setPicking(true)}>
           <Icon name="plus" className="h-4 w-4" /> {creating ? "만드는 중…" : "견적서 수기 작성"}
         </button>
       </div>
       <p className="text-[12.5px] text-foreground-muted">
         제품 추천에서 툴체인저 후보를 [최종 제안 확정]한 뒤 <b>[견적서 작성 →]</b>을 누르면 추천 결과로 초안이 만들어지고, AI 와 대화하며 채웁니다.
-        이 목록에는 <b>작성 중(발행 전)</b>인 견적서만 보입니다 — 발행한 견적서는 [제품 영업 건 관리]에서 건을 열어 다시 받거나 [견적서 고치기 →]로 고칩니다.
+        이 목록에는 <b>작성 중(발행 전)</b>인 견적서만 보입니다 — 발행한 견적서는 [제품 판매·대여 관리]에서 건을 열어 다시 받거나 [견적서 고치기 →]로 고칩니다.
       </p>
       <ErrorBox error={err} />
+      {picking && <QuotePurposeDialog busy={creating} onPick={(p) => void createManual(p)} onClose={() => setPicking(false)} />}
       {items === null && !err && <p className="text-[12.5px] text-foreground-subtle">불러오는 중…</p>}
       {items && items.length === 0 && <p className="rounded-xl border border-dashed border-border p-6 text-center text-[13px] text-foreground-subtle">작성 중인 견적서가 없습니다.</p>}
       {items && items.length > 0 && (
@@ -319,7 +334,8 @@ function QuoteList({ onOpen }: { onOpen: (id: number) => void }) {
                 <tr key={x.id} className="cursor-pointer hover:bg-foreground/[0.03]" onClick={() => onOpen(x.id)}>
                   <td className="px-3 py-2 font-medium text-foreground">{x.quote_no ? `${x.quote_no} (v${x.revision + 1})` : "— (초안)"}</td>
                   <td className="px-3 py-2">{x.customer ?? "—"}</td>
-                  <td className="px-3 py-2">{x.manual ? <span className="text-violet-700 dark:text-violet-300">수기 작성</span> : x.model ?? "—"}</td>
+                  <td className="px-3 py-2">{x.manual ? <span className="text-violet-700 dark:text-violet-300">수기 작성</span> : x.model ?? "—"}
+                    {x.purpose === "rental" && <span className="ml-1.5 rounded bg-emerald-500/12 px-1.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">대여</span>}</td>
                   <td className="px-3 py-2">
                     <span className={cn("rounded-md px-1.5 py-0.5 text-[11.5px] font-semibold",
                       x.status === "issued" ? "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300" : "bg-amber-500/15 text-amber-700 dark:text-amber-300")}>
@@ -386,6 +402,147 @@ const HEAD: { k: keyof QuoteForm; label: string; wide?: boolean; area?: boolean;
     ph: { ko: "예: 설치 일정은 발주 후 협의", en: "예: Ex-work UND Korea Factory" } },
 ];
 
+const SPLIT_KEY = "und_cortex_quote_split";
+const SPLIT_DEFAULT = 60;               // 예전 3:2 와 같은 폭
+const SPLIT_MIN = 35;
+const SPLIT_MAX = 75;               // AI 대화창이 너무 좁아지지 않게
+
+/** 견적서(왼쪽) 폭 % — 막대를 끌거나 화살표 키로 바꾸고, 이 브라우저에 기억한다(사용자 2026-10-22). */
+function useSplit() {
+  // 기억한 폭 — 견적 내용을 받은 뒤(브라우저에서만) 그려지므로 처음 값으로 바로 읽는다
+  const [pct, setPct] = useState(() => {
+    if (typeof window === "undefined") return SPLIT_DEFAULT;
+    try {
+      const v = Number(window.localStorage.getItem(SPLIT_KEY));
+      return v >= SPLIT_MIN && v <= SPLIT_MAX ? v : SPLIT_DEFAULT;
+    } catch {
+      return SPLIT_DEFAULT;
+    }
+  });
+  const keep = (v: number) => {
+    const c = Math.min(SPLIT_MAX, Math.max(SPLIT_MIN, v));
+    setPct(c);
+    try { window.localStorage.setItem(SPLIT_KEY, String(Math.round(c * 10) / 10)); } catch { /* 기억 못 해도 동작 */ }
+  };
+  const start = (e: React.PointerEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    const box = el.parentElement?.getBoundingClientRect();         // 막대의 부모 = 견적서·대화를 담은 칸
+    if (!box) return;
+    e.preventDefault();
+    el.setPointerCapture(e.pointerId);
+    const move = (ev: PointerEvent) => keep(((ev.clientX - box.left) / box.width) * 100);
+    const up = () => {
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      el.removeEventListener("pointercancel", up);
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+    el.addEventListener("pointercancel", up);
+  };
+  const key = (e: React.KeyboardEvent) => {
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      e.preventDefault();
+      keep(pct + (e.key === "ArrowLeft" ? -2 : 2));
+    }
+  };
+  return { pct, start, key, reset: () => keep(SPLIT_DEFAULT) };
+}
+
+/** 품목 줄 크게 보기 — 넓은 칸에서 품목·규격·수량·단가·비고를 고치고, 오른쪽에 견적서 표에 찍히는 모양을 같이 보여 준다.
+ *  고친 내용은 표와 같은 작성 중 값이라 [변경 저장]을 눌러야 저장된다. */
+function LineDialog({ line, en, fx, busy, months, onChange, onClose }: {
+  line: QuoteLine; en: boolean; fx: number | null; busy: boolean; months: number; onChange: (patch: Partial<QuoteLine>) => void; onClose: () => void;
+}) {
+  const mf = monthFactor(line, months);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  const price = en ? usdOf(line, fx) : line.unit_price;
+  const money = (n: number | null | undefined) => (n == null ? "-" : en ? usd(n) : `₩${Math.round(n).toLocaleString("ko-KR")}`);
+  const qtyText = line.qty == null ? "-" : `${line.qty}${line.unit ? ` ${line.unit}` : ""}`;
+  const cell = "border border-foreground/40 px-1.5 py-1 align-middle";
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-4" onClick={onClose}>
+      <div role="dialog" aria-label="품목 줄 크게 보기" onClick={(e) => e.stopPropagation()}
+           className="scroll-thin max-h-full w-full max-w-[1080px] overflow-y-auto rounded-2xl bg-background p-5 shadow-2xl">
+        <div className="mb-3 flex items-center gap-2">
+          <h2 className="text-[16px] font-bold">품목 줄 크게 보기</h2>
+          <span className="text-[12px] text-foreground-muted">고친 내용은 표에 바로 반영되고, 닫은 뒤 [변경 저장]을 눌러야 저장됩니다.</span>
+          <button type="button" onClick={onClose} aria-label="닫기"
+                  className="ml-auto grid h-8 w-8 place-items-center rounded-lg text-foreground-muted hover:bg-foreground/8"><Icon name="x" className="h-4 w-4" /></button>
+        </div>
+        <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
+          <div className="flex flex-col gap-3 text-[12.5px]">
+            <label className="flex flex-col gap-1 text-foreground-muted">{en ? "Commodity" : "품목"}
+              <LineArea className={cn(inputCls, "text-[13px]")} value={line.commodity ?? ""} disabled={busy}
+                        onChange={(e) => onChange({ commodity: e.target.value })} />
+            </label>
+            {line.kind === "extra" && (
+              <label className="flex flex-col gap-1 text-foreground-muted">{en ? "Specifications" : "규격"} <span className="text-[11px] text-foreground-subtle">Enter 로 줄 바꿈 · 8줄까지</span>
+                <AutoTextarea className={cn(inputCls, "min-h-[96px] text-[13px]")} value={line.name} disabled={busy}
+                              onChange={(e) => onChange({ name: e.target.value })} />
+              </label>
+            )}
+            <div className="grid grid-cols-3 gap-2">
+              <label className="flex flex-col gap-1 text-foreground-muted">수량
+                <input type="number" min={1} className={cn(inputCls, "text-[13px]")} value={line.qty ?? ""} disabled={busy}
+                       onChange={(e) => onChange({ qty: Math.max(0, Math.floor(Number(e.target.value) || 0)), ...(line.conditional ? { confirmed: true } : {}) })} />
+              </label>
+              <label className="flex flex-col gap-1 text-foreground-muted">단위
+                <input className={cn(inputCls, "text-[13px]")} value={line.unit ?? ""} maxLength={8} placeholder="ea" disabled={busy}
+                       onChange={(e) => onChange({ unit: e.target.value })} />
+              </label>
+              {!en && (
+                <label className="flex flex-col gap-1 text-foreground-muted">{months ? "단가 (월 납입금 또는 1회 지불, 원)" : "단가(원)"}
+                  <input inputMode="numeric" className={cn(inputCls, "text-[13px]")} value={line.unit_price ?? ""} disabled={busy}
+                         onChange={(e) => onChange({ unit_price: Number(e.target.value.replace(/,/g, "")) || null })} />
+                </label>
+              )}
+            </div>
+            <label className="flex flex-col gap-1 text-foreground-muted">{en ? "Remark" : "비고"} <span className="text-[11px] text-foreground-subtle">Alt+Enter 로 줄 바꿈 · {(line.remark ?? "").length}자</span>
+              <LineArea className={cn(inputCls, "min-h-[96px] text-[13px]")} value={line.remark ?? ""} disabled={busy}
+                        onChange={(e) => onChange({ remark: e.target.value })} />
+            </label>
+          </div>
+          <div className="flex flex-col gap-2">
+            <p className="text-[12.5px] font-semibold text-foreground">견적서 표에는 이렇게 들어갑니다</p>
+            <div className="overflow-x-auto rounded-lg border border-border bg-white p-3 text-black">
+              <table className="w-full min-w-[460px] border-collapse text-center text-[11.5px] font-semibold leading-snug">
+                <thead>
+                  <tr className="bg-[#d9d9d9]">
+                    <th className={cn(cell, "w-[16%]")}>Commodity</th><th className={cn(cell, "w-[30%]")}>Specifications</th>
+                    <th className={cn(cell, "w-[10%]")}>Quantity</th><th className={cn(cell, "w-[13%]")}>Price{months ? <><br />(월 납입금)</> : null}</th>
+                    <th className={cn(cell, "w-[13%]")}>Supply amount</th><th className={cn(cell, "w-[18%]")}>Remark</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td className={cn(cell, "whitespace-pre-line")}>{line.commodity || " "}</td>
+                    <td className={cn(cell, "whitespace-pre-line")}>{line.name || " "}</td>
+                    <td className={cell}>{qtyText}</td>
+                    <td className={cell}>{money(price)}</td>
+                    <td className={cell}>{money(price == null || line.qty == null ? null : price * line.qty * mf)}{mf > 1 && <span className="block text-[10px] font-normal">× {mf}개월</span>}</td>
+                    <td className={cn(cell, "whitespace-pre-line")}>{line.remark || " "}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p className="text-[11.5px] text-foreground-subtle">
+              칸 폭은 실제 견적서 비율에 맞춘 것이고, 글이 길면 그만큼 칸이 높아집니다. 정확한 모양은 저장한 뒤 [미리보기]로 확인하세요.
+            </p>
+          </div>
+        </div>
+        <div className="mt-4 flex justify-end">
+          <button type="button" onClick={onClose} className={primaryBtn}>완료</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void }) {
   const [q, setQ] = useState<QuoteSession | null>(null);
   // 불러올 때마다 +1 — 달러 단가 칸(소수점 입력 중 글자를 지키려고 비제어 입력)을 새 값으로 다시 그린다
@@ -398,6 +555,9 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
   const [err, setErr] = useState<string | null>(null);
   const [text, setText] = useState("");
   const [preview, setPreview] = useState(false);
+  // 품목 줄 크게 보기(사용자 2026-10-22) — 비고·규격이 길 때 넓은 칸에서 고치고 견적서에 찍히는 모양을 같이 본다
+  const [bigLine, setBigLine] = useState<number | null>(null);
+  const split = useSplit();
   // 해외 견적서: 번역 전 칸이 있는데 [발행]을 누르면 미리보기로 먼저 확인하게 한다(사용자 2026-10-14: 사람이 더블체크)
   const [enNote, setEnNote] = useState<string | null>(null);
   const [saving, setSaving] = useState<{ revision: number; fileName: string; title: string } | null>(null);
@@ -449,7 +609,7 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
       // 물류비·인건비 줄은 납품 방식으로, 화면에서 넣은 옵션 줄은 include_options 로 보낸다(두 번 들어가지 않게)
       lines: d.lines.filter((l) => !isAuto(l) && !l.id.startsWith("new-opt-")).map((l) => ({
         id: l.id.startsWith("new") ? null : l.id, name: l.name, commodity: l.commodity ?? "", qty: l.qty, unit_price: l.unit_price, remark: l.remark ?? "",
-        usd: l.usd ?? null, block: blockOf(l, d.blocks), unit: l.unit ?? "", ...(l.kind === "note" ? { kind: "note" } : {}),
+        usd: l.usd ?? null, block: blockOf(l, d.blocks), unit: l.unit ?? "", in_total: !!l.in_total, ...(l.kind === "note" ? { kind: "note" } : {}),
         ...(l.conditional && l.confirmed ? { confirmed: true } : {}),
       })),
     };
@@ -558,13 +718,14 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
   }
 
   const edit = (patch: Partial<Draft>) => { setD((x) => (x ? { ...x, ...patch } : x)); setDirty(true); };
-  const setForm = (k: keyof QuoteForm, v: string) => edit({ form: { ...d.form, [k]: k === "fx_rate" ? (Number(v.replace(/,/g, "")) || null) : v } });
+  const setForm = (k: keyof QuoteForm, v: string) => edit({ form: { ...d.form,
+    [k]: k === "fx_rate" || k === "rental_months" ? (Number(v.replace(/,/g, "")) || null) : v } });
   const setLine = (i: number, patch: Partial<QuoteLine>) => edit({ lines: d.lines.map((l, j) => (j === i ? { ...l, ...patch } : l)) });
   const setWork = (patch: Partial<QuoteWork>) => edit({ work: { ...d.work, ...patch } });
   const setDelivery = (patch: Partial<QuoteDelivery>) => edit({ delivery: { ...d.delivery, ...patch } });
   const dv = DELIVERY.find((x) => x.case === d.delivery.case);
   // 고치는 중 합계 — 물류비·인건비는 납품 방식 칸 값으로 다시 계산(저장하면 서버가 같은 식으로 줄을 만든다)
-  // 합계에 들어가는 줄 = 옵션 묶음 줄 제외(사용자 2026-10-13). NEGO 는 아래에서 뺀다
+  // 합계에 들어가는 줄 = 옵션 묶음 줄은 [반영]한 것만(사용자 2026-10-13 → 2026-10-19). NEGO 는 아래에서 뺀다
   const optionIds = new Set(d.blocks.filter((b) => b.type === "option").map((b) => b.id));
   const autoBlock = d.blocks.some((b) => b.id === d.delivery.block && b.type === "items") ? d.delivery.block as string : MAIN_BLOCK;
   /** 납품 방식 칸에서 별도 묶음을 만들고 물류비·인건비를 거기에 — 소계 켬. 저장하면 서버가 B1… 로 바꾼다 */
@@ -576,14 +737,16 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
     edit({ blocks: hit ? d.blocks : [...d.blocks, { id, type: "items", title, subtotal: true }], delivery: { ...d.delivery, block: id } });
     setNewGroup(null);
   }
-  const billed = d.lines.filter((l) => !isAuto(l) && l.kind !== "note" && !optionIds.has(blockOf(l, d.blocks)));
-  const baseKrw = billed.reduce((s, l) => s + (l.qty ?? 0) * (l.unit_price ?? 0), 0)
+  const billed = d.lines.filter((l) => !isAuto(l) && l.kind !== "note" && (!optionIds.has(blockOf(l, d.blocks)) || l.in_total));
+  // 대여 견적서 — 단가 = 1대당 월 납입금, 금액 = 수량 × 단가 × 대여 개월(사용자 2026-10-22)
+  const rentMonths = d.form.purpose === "rental" ? Number(d.form.rental_months) || 0 : 0;
+  const baseKrw = billed.reduce((s, l) => s + (l.qty ?? 0) * (l.unit_price ?? 0) * monthFactor(l, rentMonths), 0)
     + (dv?.freight ? d.delivery.freight ?? 0 : 0) + (dv?.work ? (d.work.people ?? 0) * (d.work.days ?? 0) * (d.work.rate ?? WORK_RATE) : 0);
   const total = baseKrw - negoCut(d.nego, baseKrw, false);
   // 해외 견적 달러 합계(고치는 중) — 물류비·인건비는 원화라 환율이 있어야 더한다. 달러 단가 없는 줄이 있으면 null
   const fx = d.form.fx_rate;
   const autoKrw = (dv?.freight ? d.delivery.freight ?? 0 : 0) + (dv?.work ? (d.work.people ?? 0) * (d.work.days ?? 0) * (d.work.rate ?? WORK_RATE) : 0);
-  const manualUsd = billed.map((l) => ({ q: l.qty ?? 0, u: usdOf(l, fx) }));
+  const manualUsd = billed.map((l) => ({ q: (l.qty ?? 0) * monthFactor(l, rentMonths), u: usdOf(l, fx) }));
   const missingUsd = d.lines.some((l) => !isAuto(l) && l.kind !== "note" && usdOf(l, fx) == null);
   const baseUsd = missingUsd || (autoKrw > 0 && !(fx && fx > 0)) ? null
     : Math.round((manualUsd.reduce((s, x) => s + x.q * (x.u ?? 0), 0) + (autoKrw && fx ? autoKrw / fx : 0)) * 100) / 100;
@@ -597,7 +760,8 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
 
   // 왼쪽(견적 내용)을 넓게 — 품목 규격을 여러 줄로 적어도 잘 보이게(사용자 2026-10-12)
   return (
-    <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+    <div style={{ "--qs": `${split.pct}%` } as React.CSSProperties}
+         className="grid items-start gap-4 lg:grid-cols-[minmax(0,var(--qs))_12px_minmax(0,1fr)] lg:gap-x-1.5">
       <div className="flex min-w-0 flex-col gap-4">
         {/* 진행 상황 */}
         <section className="flex flex-col gap-2 rounded-xl border border-accent/30 bg-surface p-4">
@@ -649,7 +813,43 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
                 </button>
               ))}
             </div>
+            {/* 판매 / 대여(사용자 2026-10-22) — 대여면 계약 개월 수·월 납입금·중도 해지 주석 */}
+            <div className="flex overflow-hidden rounded-md border border-border text-[12px]">
+              {(["sale", "rental"] as const).map((p) => (
+                <button key={p} type="button" disabled={!!busy} onClick={() => { if ((d.form.purpose ?? "sale") !== p) void save({ purpose: p }); }}
+                        title={p === "sale" ? "판매 견적서로(바로 저장)" : "대여 견적서로 — 대여 개월 수·월 납입금·중도 해지 문구(바로 저장)"}
+                        className={cn("px-2.5 py-1", (d.form.purpose ?? "sale") === p
+                          ? (p === "rental" ? "bg-emerald-600 text-white" : "bg-accent text-white") : "text-foreground-muted")}>
+                  {p === "sale" ? "제품 판매" : "제품 대여"}
+                </button>
+              ))}
+            </div>
           </div>
+          {d.form.purpose === "rental" && (
+            <div className="grid gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/[0.05] p-3 sm:grid-cols-3">
+              <label className="flex flex-col gap-1 text-[12px] text-foreground-muted">
+                <span>대여 개월 수<span className="text-red-600"> *</span></span>
+                <input className={cn(inputCls, "text-[12.5px]")} inputMode="numeric" value={d.form.rental_months ?? ""} placeholder="예: 36 (3년)"
+                       disabled={!!busy} onChange={(e) => setForm("rental_months", e.target.value)} />
+              </label>
+              <label className="flex flex-col gap-1 text-[12px] text-foreground-muted">
+                <span>대여 시작일 <span className="text-[11px] text-foreground-subtle">· 선택 — 대여 관리의 기간</span></span>
+                <input type="date" className={cn(inputCls, "text-[12.5px]")} value={d.form.rental_start ?? ""} disabled={!!busy}
+                       onChange={(e) => setForm("rental_start", e.target.value)} />
+              </label>
+              <div className="flex flex-col gap-1 text-[12px] text-foreground-muted">
+                <span>월 납입금 <span className="text-[11px] text-foreground-subtle">· Total ÷ 개월, 천 원 올림 — 견적서 Total 옆</span></span>
+                <span className="flex h-9 items-center font-semibold text-emerald-700 dark:text-emerald-300">
+                  {!en && d.form.rental_months && (dirty ? total : q.subtotal)
+                    ? `월 ${(Math.ceil((dirty ? total : q.subtotal) / Number(d.form.rental_months) / 1000) * 1000).toLocaleString("ko-KR")}원`
+                    : "개월 수를 넣으면 계산"}
+                </span>
+              </div>
+              <p className="text-[11.5px] text-foreground-subtle sm:col-span-3">
+                단가 칸에는 <b>1대당 월 납입금</b> 또는 <b>1회 지불 금액</b>을 넣으세요. 월 납입금 줄은 <b>수량 × 월 납입금 × 대여 개월</b>로 계산되고, 품목을 <b>Service</b> 로 적거나 단위가 <b>식</b>인 줄, 배송비·운반비 줄은 1회 지불로 한 번만 더합니다. 표 아래 중도 해지 문구는 아래 [표 아래 주석]에서 고칠 수 있습니다.
+              </p>
+            </div>
+          )}
           {en && (
             <p className="rounded-lg bg-accent/[0.07] px-3 py-2 text-[12px] text-foreground">
               해외 견적서는 <b>모든 칸이 영문</b>이어야 발행됩니다. 한글로 적은 칸은 위의 <b>[AI로 영문 바꾸기]</b>로 한 번에 바꾸고 미리보기로 확인하세요.
@@ -716,7 +916,7 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
                 <tr className="whitespace-nowrap text-left text-[11.5px] text-foreground-subtle">
                   <th className="px-1.5 py-1 font-medium">구분</th><th className="w-[150px] px-1.5 py-1 font-medium">{en ? "Commodity" : "품목"}</th>
                   <th className="min-w-[360px] px-1.5 py-1 font-medium">{en ? "Specifications" : "규격"}</th>
-                  <th className="w-[84px] px-1.5 py-1 font-medium">{en ? "Qty · Unit" : "수량·단위"}</th><th className="w-[120px] px-1.5 py-1 font-medium">{en ? "Price" : "단가"}</th>
+                  <th className="w-[84px] px-1.5 py-1 font-medium">{en ? "Qty · Unit" : "수량·단위"}</th><th className="w-[120px] px-1.5 py-1 font-medium">{en ? (rentMonths ? "Price (Monthly)" : "Price") : rentMonths ? "단가 (월 납입금 또는 1회 지불)" : "단가"}</th>
                   <th className="px-1.5 py-1 text-right font-medium">{en ? "Supply amount" : "금액"}</th><th className="w-[150px] px-1.5 py-1 font-medium">{en ? "Remark" : "비고"}</th><th />
                 </tr>
               </thead>
@@ -764,12 +964,14 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
                         </div>
                       ) : (
                         <input className={cn(inputCls, "text-[12.5px]", l.unit_price == null && "border-amber-500")} inputMode="numeric"
-                               value={l.unit_price ?? ""} aria-label="단가" placeholder={l.price_status === "unset" ? "가격 미정" : "단가"} disabled={!!busy}
+                               value={l.unit_price ?? ""} aria-label="단가" placeholder={l.price_status === "unset" ? "가격 미정" : rentMonths ? "월 납입금 또는 1회 지불" : "단가"} disabled={!!busy}
                                onChange={(e) => setLine(i, { unit_price: Number(e.target.value.replace(/,/g, "")) || null })} />
                       )}
                     </td>
                     <td className="whitespace-nowrap px-1.5 py-1 text-right font-semibold">
-                      {en ? (usdOf(l, fx) == null ? "-" : usd((l.qty ?? 0) * (usdOf(l, fx) ?? 0))) : won((l.qty ?? 0) * (l.unit_price ?? 0))}
+                      {en ? (usdOf(l, fx) == null ? "-" : usd((l.qty ?? 0) * (usdOf(l, fx) ?? 0) * monthFactor(l, rentMonths)))
+                        : won((l.qty ?? 0) * (l.unit_price ?? 0) * monthFactor(l, rentMonths))}
+                      {monthFactor(l, rentMonths) > 1 && <span className="block text-[10.5px] font-normal text-foreground-subtle">× {rentMonths}개월</span>}
                     </td>
                     <td className="px-1.5 py-1">
                       {isAuto(l) ? <span className="text-foreground-muted">{l.remark}</span> : (
@@ -784,10 +986,16 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
                     </td>
                     <td className="px-1 py-1">
                       {!isAuto(l) && (
-                        <button type="button" aria-label={`${l.name} 빼기`} title="빼기" disabled={!!busy}
-                                className="text-foreground-subtle hover:text-red-600" onClick={() => edit({ lines: d.lines.filter((_, j) => j !== i) })}>
-                          <Icon name="trash" className="h-4 w-4" />
-                        </button>
+                        <div className="flex flex-col items-center gap-2">
+                          <button type="button" aria-label={`${l.name || "품목"} 크게 보기`} title="크게 보기 — 넓은 칸에서 고치고 견적서 모양 확인"
+                                  disabled={!!busy} className="text-foreground-subtle hover:text-accent" onClick={() => setBigLine(i)}>
+                            <Icon name="eye" className="h-4 w-4" />
+                          </button>
+                          <button type="button" aria-label={`${l.name} 빼기`} title="빼기" disabled={!!busy}
+                                  className="text-foreground-subtle hover:text-red-600" onClick={() => edit({ lines: d.lines.filter((_, j) => j !== i) })}>
+                            <Icon name="trash" className="h-4 w-4" />
+                          </button>
+                        </div>
                       )}
                     </td>
                   </tr>
@@ -813,13 +1021,15 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
             ))}
           </div>
           {/* 묶음(옵션·소제목·사양·문구)·NEGO — 영업팀 요청 14·9번(사용자 2026-10-13) */}
-          <QuoteBlocks blocks={d.blocks} lines={d.lines} nego={d.nego} en={en} fx={fx} busy={!!busy} draftVer={draftVer} autoBlock={autoBlock}
+          <QuoteBlocks blocks={d.blocks} lines={d.lines} nego={d.nego} en={en} fx={fx} busy={!!busy} draftVer={draftVer} autoBlock={autoBlock} months={rentMonths}
                        totalNote={d.form.total_note ?? ""}
                        footNotes={Array.isArray(d.form.foot_notes) ? d.form.foot_notes : (d.form.foot_notes ?? "").split("\n").filter((x) => x.trim())}
                        pricePicker={(onPick) => <PricePicker disabled={!!busy} onPick={onPick} />}
                        photoCell={photoCell}
                        onChange={({ total_note, foot_notes, ...rest }) => edit({
                          ...rest,
+                         // 추천 옵션(IB 등)을 화면에서 넣었다가 뺀 줄은 포함 목록에서도 뺀다 — 저장 때 다시 들어오지 않게
+                         ...(rest.lines ? { include: d.include.filter((n) => rest.lines!.some((l) => l.id === `new-opt-${n}`)) } : {}),
                          ...(total_note !== undefined || foot_notes !== undefined ? { form: {
                            ...d.form, ...(total_note !== undefined ? { total_note } : {}), ...(foot_notes !== undefined ? { foot_notes } : {}) } } : {}),
                        })}>
@@ -892,7 +1102,7 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
             </div>
           </QuoteBlocks>
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-2">
-            <span className="text-[13px] text-foreground-muted">합계(VAT 별도){optionIds.size > 0 && d.lines.some((l) => optionIds.has(blockOf(l, d.blocks))) ? " · 옵션 미포함" : ""}{d.nego?.value ? " · NEGO 차감" : ""}</span>
+            <span className="text-[13px] text-foreground-muted">합계(VAT 별도){d.lines.some((l) => optionIds.has(blockOf(l, d.blocks)) && l.kind !== "note") ? (d.lines.some((l) => optionIds.has(blockOf(l, d.blocks)) && l.kind !== "note" && !l.in_total) ? " · 미반영 옵션 제외" : " · 옵션 포함") : ""}{d.nego?.value ? " · NEGO 차감" : ""}</span>
             <span className="text-[16px] font-bold text-foreground">
               {en ? ((dirty ? totalUsd : q.subtotal_usd) == null ? "달러 단가가 빈 줄이 있습니다" : usd(dirty ? totalUsd : q.subtotal_usd)) : won(dirty ? total : q.subtotal)}
             </span>
@@ -954,6 +1164,19 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
       )}
       {saving && <DownloadDialog urlFor={(fmt) => `/api/product-recommend/quotes/${q.id}/file?fmt=${fmt}&revision=${saving.revision}`}
                                  fileName={saving.fileName} title={saving.title} onClose={() => setSaving(null)} />}
+
+      {bigLine != null && d.lines[bigLine] && (
+        <LineDialog line={d.lines[bigLine]} en={en} fx={fx} busy={!!busy} months={rentMonths} onChange={(patch) => setLine(bigLine, patch)}
+                    onClose={() => setBigLine(null)} />
+      )}
+
+      {/* 견적서 ↔ AI 대화 폭 조절(사용자 2026-10-22) — 끌어서 조절, 두 번 누르면 기본 폭, 화살표 키로도 */}
+      <div role="separator" aria-orientation="vertical" aria-label="견적서와 AI 대화 폭 조절" aria-valuenow={Math.round(split.pct)}
+           aria-valuemin={SPLIT_MIN} aria-valuemax={SPLIT_MAX} tabIndex={0} title="끌어서 폭 조절 · 두 번 누르면 기본 폭"
+           onPointerDown={split.start} onDoubleClick={split.reset} onKeyDown={split.key}
+           className="group hidden cursor-col-resize touch-none select-none items-center justify-center outline-none lg:sticky lg:top-4 lg:flex lg:h-[calc(100svh-2rem)]">
+        <span className="h-16 w-1.5 rounded-full bg-border transition-colors group-hover:bg-accent group-focus-visible:bg-accent group-active:bg-accent" />
+      </div>
 
       {/* 오른쪽: AI 와 대화 */}
       <aside className="flex flex-col overflow-hidden rounded-xl border border-border bg-surface lg:sticky lg:top-4 lg:h-[calc(100svh-2rem)]">

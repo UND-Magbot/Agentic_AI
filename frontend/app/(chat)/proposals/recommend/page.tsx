@@ -2,7 +2,7 @@ import { ProductRecommend, type RecommendTab } from "@/components/domains/sales/
 import { displayName, getCurrentUser } from "@/lib/shared/auth";
 import { getProductCorrections } from "@/lib/shared/proposal-projects";
 
-const TABS: RecommendTab[] = ["recommend", "quote", "order", "deals", "memory"];
+const TABS: RecommendTab[] = ["recommend", "quote", "order", "deals", "rentals", "units", "memory"];
 
 // ?tab=deals 처럼 탭을 골라 열 수 있다(첫 화면 '영업 건 관리' 카드 → [영업 건 관리] 탭)
 // ?tab=quote&new=manual — 첫 화면 '견적서 수기 작성' 카드 → 빈 견적서를 만들어 바로 연다

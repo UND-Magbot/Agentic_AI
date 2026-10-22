@@ -187,6 +187,8 @@ def patch(base: bytes, base_lines: list[dict[str, Any]], base_header: dict[str, 
         raise PatchError("올린 파일이 회사 견적서 양식이 아닙니다.")
     if parsed["lang"] != new_header["lang"]:
         raise PatchError("올린 파일과 지금 견적서의 언어(국내·해외)가 다릅니다.")
+    if bool(parsed["form"].get("rental_months")) != bool(new_header.get("rental_months")):
+        raise PatchError("올린 파일과 지금 견적서의 판매·대여 양식(Total 옆 월 납입금)이 다릅니다.")
     if [_kind(r) for r in parsed["rows"]] != [_kind(r) for r in base_lines]:
         raise PatchError("올린 파일의 표 줄이 작성 상태와 맞지 않습니다(엑셀에서 표 구조를 바꾼 것 같습니다).")
     en = new_header["lang"] == "en"
@@ -246,7 +248,7 @@ def patch(base: bytes, base_lines: list[dict[str, Any]], base_header: dict[str, 
             if new_lines[ni].get("photo"):
                 notes.append(f"새 줄 '{str(new_lines[ni].get('desc') or '').splitlines()[0][:20]}'의 사진은 올린 파일에 넣지 못했습니다.")
         final.append(r)
-    _formulas(ws, new_lines, final, sh.marks["total"], money)
+    _formulas(ws, new_lines, final, sh.marks["total"], money, new_header.get("rental_months"))
 
     # 머리·조건·비고·주석
     b, n = base_header, new_header
@@ -258,6 +260,10 @@ def patch(base: bytes, base_lines: list[dict[str, Any]], base_header: dict[str, 
         _set(ws, sh.marks["by"] + 1, 1, qx.who_text(n))
     if sh.marks.get("customer") and qx.customer_text(n) != qx.customer_text(b):
         _set(ws, sh.marks["customer"], 1, qx.customer_text(n))
+    if sh.marks.get("customer"):                 # Customer 칸은 올린 파일도 무조건 가운데 정렬(사용자 2026-10-22)
+        cust = ws.cell(sh.marks["customer"], 1)
+        if type(cust).__name__ != "MergedCell":
+            cust.alignment = cust.alignment.copy(horizontal="center")
     if sh.marks.get("comments") and n["comments"] != b["comments"]:
         _set(ws, sh.marks["comments"], 5, n["comments"])
     for k in ("bank", "account_no", "account_holder"):
@@ -341,21 +347,24 @@ def _update(ws, r: int, b: dict[str, Any], n: dict[str, Any], en: bool, money: s
         _set(ws, r, 7, n.get("remark") or "")
     if (n.get("photo") or "") != (b.get("photo") or ""):
         notes.append(f"'{str(n['desc']).splitlines()[0][:20]}' 사진 변경은 올린 파일에 반영하지 못했습니다.")
-    if (k == "option") != (b.get("row") == "option"):
-        _set(ws, r, 6, None if k == "option" else f"=D{r}*E{r}", money)
+    blank = k == "option" and "in_total" not in n          # 예전 옵션만 공급가액 칸을 비운다(반영/미반영 옵션은 수량×단가)
+    if blank != (b.get("row") == "option" and "in_total" not in b) or (k == "option") != (b.get("row") == "option"):
+        _set(ws, r, 6, None if blank else f"=D{r}*E{r}{qx._times(n)}", money)
 
 
-def _formulas(ws, lines: list[dict[str, Any]], rows: list[int], total_row: int, money: str) -> None:
+def _formulas(ws, lines: list[dict[str, Any]], rows: list[int], total_row: int, money: str,
+              months: int | None = None) -> None:
     """행이 움직인 뒤 금액 수식 — 품목 공급가액(수량×단가)·소계·합계. 사람이 수식 대신 값을 적은 칸은 그대로."""
     billed, block = [], []
     for ln, r in zip(lines, rows):
         k = ln.get("row")
-        if k in (None, "item"):
+        if k in (None, "item") or (k == "option" and "in_total" in ln):
             f = ws.cell(r, 6)
             if f.value is None or (isinstance(f.value, str) and f.value.startswith("=")):
-                _set(ws, r, 6, f"=D{r}*E{r}")
-            billed.append(f"F{r}")
-            block.append(f"F{r}")
+                _set(ws, r, 6, f"=D{r}*E{r}{qx._times(ln)}")      # 대여 견적서는 ×개월(사용자 2026-10-22)
+            if k != "option" or ln["in_total"]:                # 미반영 옵션은 금액만 보이고 소계·합계 밖(사용자 2026-10-19)
+                billed.append(f"F{r}")
+                block.append(f"F{r}")
         elif k == "nego":
             billed.append(f"F{r}")
         elif k == "subtotal":
@@ -363,7 +372,12 @@ def _formulas(ws, lines: list[dict[str, Any]], rows: list[int], total_row: int, 
             block = []
         elif k in ("section", "gap"):
             block = [] if k == "section" else block
-    _set(ws, total_row, 7, f"=SUM({','.join(billed)})" if billed else 0)
+    total = f"=SUM({','.join(billed)})" if billed else 0
+    if months:   # 대여 양식 — 금액 칸에 총액, 비고 칸에 월 납입금(quote_xlsx 와 같은 식)
+        _set(ws, total_row, 6, total)
+        _set(ws, total_row, 7, f"=ROUNDUP(F{total_row}/{months},{0 if money != qx.WON else -3})")
+    else:
+        _set(ws, total_row, 7, total)
 
 
 def _foot(ws, sh: _Sheet, old: list[str], new: list[str], n_rows: int) -> None:

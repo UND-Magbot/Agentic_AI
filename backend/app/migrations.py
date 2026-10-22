@@ -1003,6 +1003,93 @@ _SALES_DEALS_STMTS = [
     text("CREATE INDEX IF NOT EXISTS ix_approval_requests_deal ON approval_requests(deal_id)"),
     # 승인 요청 팝업을 이미 본 관리자(사용자 2026-10-13 승인) — 어느 기기에서든 요청마다 한 번만 띄운다
     text("ALTER TABLE approval_requests ADD COLUMN IF NOT EXISTS alerted_to BIGINT[] NOT NULL DEFAULT '{}'"),
+    # 제품 시리얼 대장(사용자 2026-10-19 승인, 영업팀 요청 20번 A/S 이력) — 부품 하나가 한 줄. 영업팀이 최종 견적서 판 기준으로
+    # 직접 등록하고(견적서·판·품목 줄 위치를 같이 저장), 시리얼이 없는 품목은 '특주'·'실주'처럼 적는다(숫자 없는 글 = 시리얼 없음).
+    # 출하 기록에 묶이면 그 출하일부터 무상 기간이 시작되고 종료일을 확정 저장한다(이후 기본값이 바뀌어도 그대로).
+    text(
+        """
+        CREATE TABLE IF NOT EXISTS product_units (
+            id              BIGSERIAL PRIMARY KEY,
+            deal_id         BIGINT      REFERENCES sales_deals(id) ON DELETE SET NULL,
+            quote_id        BIGINT      REFERENCES product_quotes(id) ON DELETE SET NULL,
+            quote_revision  INT,
+            issue_no        TEXT,
+            line_no         INT,
+            line_name       TEXT        NOT NULL DEFAULT '',
+            part_name       TEXT        NOT NULL,
+            serial          TEXT        NOT NULL,
+            no_serial       BOOLEAN     NOT NULL DEFAULT FALSE,
+            maker           TEXT        NOT NULL DEFAULT 'UND',
+            purpose         VARCHAR(12) NOT NULL DEFAULT 'S',
+            warranty_months INT,
+            warranty_start  DATE,
+            warranty_until  DATE,
+            shipment_index  INT,
+            status          VARCHAR(12) NOT NULL DEFAULT '등록',
+            note            TEXT        NOT NULL DEFAULT '',
+            created_by      BIGINT      REFERENCES users(id) ON DELETE SET NULL,
+            updated_by      BIGINT      REFERENCES users(id) ON DELETE SET NULL,
+            created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        """
+    ),
+    text("CREATE INDEX IF NOT EXISTS ix_product_units_deal ON product_units(deal_id, quote_id, quote_revision)"),
+    text("CREATE INDEX IF NOT EXISTS ix_product_units_serial ON product_units(lower(serial))"),
+    text("CREATE UNIQUE INDEX IF NOT EXISTS ux_product_units_maker_serial ON product_units(lower(maker), lower(serial)) "
+         "WHERE NOT no_serial"),
+    # 상태 = 영문 이니셜(사용자 2026-10-19) — S 판매·R 대여·D 데모·A A/S 중·E A/S 교체품·O 기타(units.UNIT_STATES).
+    # 이니셜 도입 전 한글로 저장한 값을 코드로 바꾼다.
+    text("ALTER TABLE product_units ALTER COLUMN purpose SET DEFAULT 'S'"),
+    text("UPDATE product_units SET purpose = CASE purpose WHEN '판매' THEN 'S' WHEN '대여' THEN 'R' "
+         "WHEN 'A/S 교체' THEN 'E' ELSE 'O' END WHERE purpose NOT IN ('S', 'R', 'D', 'A', 'E', 'O')"),
+    # 무상 기간 기본값 — 제품마다 정하기 나름(사용자 2026-10-19). 부품명·품목 줄·제조사에 keyword 가 들어 있으면 그 개월 수
+    # (여러 개 맞으면 긴 keyword). 시리얼 등록 때 기본값으로 채우고 건마다 고칠 수 있다. months NULL = 미정.
+    text(
+        """
+        CREATE TABLE IF NOT EXISTS warranty_policies (
+            id          BIGSERIAL PRIMARY KEY,
+            keyword     TEXT        NOT NULL,
+            months      INT,
+            note        TEXT        NOT NULL DEFAULT '',
+            sort        INT         NOT NULL DEFAULT 0,
+            updated_by  BIGINT      REFERENCES users(id) ON DELETE SET NULL,
+            updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        """
+    ),
+    # A/S 기록 — 시리얼 하나에 여러 건. 무상·유상은 접수일이 무상 기간 안인지로 제안하고 담당자가 바꾼다. 유상 A/S 견적은
+    # 영업팀이 프로그램 밖에서 수기로(사용자 2026-10-19) — 여기는 진행 상태만 쌓는다. 시리얼·고객사는 그때 값을 같이 남긴다.
+    text(
+        """
+        CREATE TABLE IF NOT EXISTS as_cases (
+            id          BIGSERIAL PRIMARY KEY,
+            unit_id     BIGINT      REFERENCES product_units(id) ON DELETE SET NULL,
+            deal_id     BIGINT      REFERENCES sales_deals(id) ON DELETE SET NULL,
+            serial      TEXT        NOT NULL DEFAULT '',
+            part_name   TEXT        NOT NULL DEFAULT '',
+            customer    TEXT,
+            received_on DATE        NOT NULL,
+            symptom     TEXT        NOT NULL DEFAULT '',
+            cause       VARCHAR(12) NOT NULL DEFAULT '확인 중',
+            in_warranty BOOLEAN,
+            charge      VARCHAR(6)  NOT NULL DEFAULT '미정',
+            status      VARCHAR(8)  NOT NULL DEFAULT '접수',
+            action      TEXT        NOT NULL DEFAULT '',
+            closed_on   DATE,
+            note        TEXT        NOT NULL DEFAULT '',
+            history     JSONB       NOT NULL DEFAULT '[]'::jsonb,
+            created_by  BIGINT      REFERENCES users(id) ON DELETE SET NULL,
+            created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        """
+    ),
+    text("CREATE INDEX IF NOT EXISTS ix_as_cases_unit ON as_cases(unit_id, received_on DESC)"),
+    text("CREATE INDEX IF NOT EXISTS ix_as_cases_status ON as_cases(status, received_on DESC)"),
+    # A/S 접수서 칸(사용자 2026-10-19) — 고객사 담당자(이름·연락처)·사진(저장소 as-cases/{id}). 접수자 = created_by.
+    text("ALTER TABLE as_cases ADD COLUMN IF NOT EXISTS contact TEXT NOT NULL DEFAULT ''"),
+    text("ALTER TABLE as_cases ADD COLUMN IF NOT EXISTS photos JSONB NOT NULL DEFAULT '[]'::jsonb"),
 ]
 
 async def run_migrations(db: AsyncSession) -> None:

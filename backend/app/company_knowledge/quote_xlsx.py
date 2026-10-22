@@ -153,7 +153,22 @@ def quote_header(form: dict[str, Any], *, lang: str, quote_no: str, day: date, p
             "notes": notes,
             # Total 아래 보조 문구·표 아래 주석(사용자 2026-10-13, 영업팀 요청 14번)
             "total_note": str(form.get("total_note") or "").strip(),
-            "foot_notes": _notes(form.get("foot_notes"))}
+            "foot_notes": _notes(form.get("foot_notes")),
+            # 대여 견적서(사용자 2026-10-22) — 계약 개월 수가 있으면 Total 옆에 월 납입금
+            "rental_months": _months(form) if form.get("purpose") == "rental" else None}
+
+
+def _months(form: dict[str, Any]) -> int | None:
+    try:
+        m = int(form.get("rental_months") or 0)
+    except (TypeError, ValueError):
+        return None
+    return m if m > 0 else None
+
+
+def _times(ln: dict[str, Any]) -> str:
+    """대여 견적서 줄의 개월 곱(단가 = 월 납입금, 사용자 2026-10-22) — '=D17*E17*12'. 판매·한 번만 내는 줄은 빈 글."""
+    return f"*{int(ln['months'])}" if ln.get("months") else ""
 
 
 def nlines(*vals: Any) -> int:
@@ -227,9 +242,9 @@ def who_text(header: dict[str, Any]) -> str:
 
 
 def customer_text(header: dict[str, Any]) -> str:
-    """Customer 칸 — 고객사 들여쓰기는 국내 최근 견적(가나테크) 8칸, 해외 기준 견적서 13칸."""
+    """Customer 칸 — 고객사·To·CC 를 줄마다 가운데 정렬(사용자 2026-10-22: 무조건 가운데)이라 들여쓰기 없이."""
     to = header["to"]
-    return f"{' ' * (13 if header['lang'] == 'en' else 8)}{header['customer']}\n  To : {to}{',' if to else ''}\n  CC : {header['cc']}"
+    return f"{header['customer']}\nTo : {to}{',' if to else ''}\nCC : {header['cc']}"
 
 
 def foot_text(header: dict[str, Any]) -> list[str]:
@@ -308,7 +323,7 @@ def build_xlsx(header: dict[str, Any], lines: list[dict[str, Any]], photos: dict
     _cell(ws, "A8", lab["customer"], size=11, h="left", border=False, wrap=False)
     ws.row_dimensions[8].height = 22
     # Comments 글자 크기 — 국내는 최근 견적(가나테크) 12pt, 해외는 해외 기준 견적서 14pt
-    _cell(ws, "A9", customer_text(header), size=11, h="left", merge="C14")
+    _cell(ws, "A9", customer_text(header), size=11, merge="C14")
     _cell(ws, "D9", lab["comments"], merge="D14")
     _cell(ws, "E9", header["comments"], size=14 if en else 12, merge="G14")
     for r in range(9, 15):
@@ -322,9 +337,11 @@ def build_xlsx(header: dict[str, Any], lines: list[dict[str, Any]], photos: dict
     _cell(ws, "A16", lab["commodity"], size=9)
     _cell(ws, "B16", lab["spec"], size=9, merge="C16")
     for col, key in (("D", "qty"), ("E", "price"), ("F", "amount"), ("G", "remark")):
-        _cell(ws, f"{col}16", lab[key], size=9)
+        # 대여 견적서 — 단가 칸은 1대당 월 납입금(사용자 2026-10-22)
+        text_ = f"{lab[key]}\n({'Monthly' if en else '월 납입금'})" if key == "price" and header.get("rental_months") else lab[key]
+        _cell(ws, f"{col}16", text_, size=9)
 
-    # 품목 — 줄 종류(row)별: 없음=품목, gap 묶음 구분, section 소제목, subtotal 소계, option 옵션(단가만·합계 제외),
+    # 품목 — 줄 종류(row)별: 없음=품목, gap 묶음 구분, section 소제목, subtotal 소계, option 옵션(in_total 반영이면 소계·합계 포함),
     # spec 사양(항목명 / 내용), text 서술형 한 칸, nego 할인(음수). 합계는 품목·NEGO 칸만 더한다(사용자 2026-10-13).
     r = 17
     billed: list[str] = []
@@ -382,10 +399,12 @@ def build_xlsx(header: dict[str, Any], lines: list[dict[str, Any]], photos: dict
         _cell(ws, f"D{r}", ln["qty"], size=9, fmt=f'#,##0_ "{ln.get("unit") or "ea"}"' if en
               else f'0" {ln["unit"]}"' if ln.get("unit") else EA)
         _cell(ws, f"E{r}", ln["unit_price"], size=9, fmt=money)
-        if kind == "option":                               # 옵션 — 공급가액 칸은 비우고 합계에서 뺀다(LG CNS 견적서)
+        if kind == "option" and "in_total" not in ln:      # 예전 옵션 — 공급가액 칸은 비우고 합계에서 뺀다(LG CNS 견적서)
             _cell(ws, f"F{r}", None, size=9)
+        elif kind == "option" and not ln["in_total"]:      # 미반영 옵션 — 공급가액은 보이고 Sub total·Total 에는 안 넣음(사용자 2026-10-19)
+            _cell(ws, f"F{r}", f"=D{r}*E{r}{_times(ln)}", size=9, fmt=money)
         else:
-            _cell(ws, f"F{r}", f"=D{r}*E{r}", size=9, fmt=money)
+            _cell(ws, f"F{r}", f"=D{r}*E{r}{_times(ln)}", size=9, fmt=money)
             billed.append(f"F{r}")
             block_cells.append(f"F{r}")
         _cell(ws, f"G{r}", ln["remark"], size=9, h="left" if pic else "center")
@@ -397,10 +416,18 @@ def build_xlsx(header: dict[str, Any], lines: list[dict[str, Any]], photos: dict
     # Total 아래 문구는 담당자가 적은 것만('* Option 미포함'도 자동으로 넣지 않음 — 사용자 2026-10-13)
     tot_lab = "\n".join(x for x in (lab["total"], header.get("total_note") or "") if x)
     ws.row_dimensions[r].height = 24 if tot_lab == lab["total"] else 16 * (tot_lab.count("\n") + 1) + 6
-    _cell(ws, f"A{r}", tot_lab, fill=YELLOW, merge=f"F{r}")
     plain = billed == [f"F{i}" for i in range(17, 17 + len(billed))]      # 묶음 없는 견적 — 예전처럼 범위 SUM
-    _cell(ws, f"G{r}", (f"=SUM(F17:F{16 + len(billed)})" if plain else f"=SUM({','.join(billed)})") if billed else 0,
-          size=9 if en else 10, fmt=money, h="right", fill=YELLOW)
+    total = (f"=SUM(F17:F{16 + len(billed)})" if plain else f"=SUM({','.join(billed)})") if billed else 0
+    months = header.get("rental_months")
+    if months:   # 대여 — 방역 로봇 3년 렌탈 견적서처럼 금액 칸에 총액, 비고 칸에 월 납입금(총액 ÷ 개월, 천 원 올림)
+        _cell(ws, f"A{r}", tot_lab, fill=YELLOW, merge=f"E{r}")
+        _cell(ws, f"F{r}", total, size=9 if en else 10, fmt=money, h="right", fill=YELLOW)
+        _cell(ws, f"G{r}", f"=ROUNDUP(F{r}/{months},{0 if en else -3})", size=9 if en else 10, fill=YELLOW,
+              fmt='"Monthly "$#,##0' if en else '"월 "#,##0"원"')
+        ws[f"G{r}"].font = Font(name=FONT, size=9 if en else 10, bold=True, color="FF0000")
+    else:
+        _cell(ws, f"A{r}", tot_lab, fill=YELLOW, merge=f"F{r}")
+        _cell(ws, f"G{r}", total, size=9 if en else 10, fmt=money, h="right", fill=YELLOW)
     r += 1
 
     # 조건 · 비고 · 발주 확인
@@ -468,8 +495,9 @@ def build_xlsx(header: dict[str, Any], lines: list[dict[str, Any]], photos: dict
 
 
 def total(lines: list[dict[str, Any]]) -> float:
-    """견적 합계 — 품목·NEGO 줄만(소계·옵션·사양·문구 줄 제외). 예전 기록(row 없음)은 모두 품목."""
-    return round(sum(ln["amount"] for ln in lines if ln.get("row") in (None, "nego")), 2)
+    """견적 합계 — 품목·Total 반영 옵션·NEGO 줄만(소계·미반영 옵션·사양·문구 줄 제외). 예전 기록(row 없음)은 모두 품목."""
+    return round(sum(ln["amount"] for ln in lines if ln.get("row") in (None, "nego")
+                     or (ln.get("row") == "option" and ln.get("in_total"))), 2)
 
 
 # ── PDF(미리보기·PDF 내려받기) ────────────────────────────────────────────────

@@ -1,10 +1,11 @@
-"""맥봇 제품 단가 DB — 회사 단가표(docs/sources/Magbot 단가표_Chris 송부용 261002.xlsx, '대표님 확인 최종 판매가' 시트) → product_prices 표.
+"""맥봇 제품 단가 DB — 회사 단가표(docs/sources/Magbot 단가표_Chris 송부용 261013.xlsx, '대표님 확인 최종 판매가' 시트) → product_prices 표.
 
 견적서 작성용(사용자 2026-10-06: ATC 유선부터 MG 까지만 따로 저장). 범위 = 단가표 'ATC_유선'·'ATC_무선'·'Tool Changer Motor K'·
-'Tool Changer Motor'·'MG' 구간. DC Motor·Pneumatic·Shape-Memory·Shiftlock 그리퍼 행은 넣지 않는다.
+'Tool Changer Motor'·'MTC'·'MG' 구간(MTC = 수동 툴체인저, 261013 단가표에서 추가). DC Motor·Pneumatic·Shape-Memory·Shiftlock 그리퍼 행은 넣지 않는다.
 
 - 한 행 = (모델, 품목) 하나. 품목은 단가표 머리 그대로: MASTER T.C · T.P · PPM/PPF(0.3m 케이블 포함) · PMM/PMF · Cable 0.3m ·
-  Cable 4m · IB · CONTROLBOX. MG 는 C열(머리 'Master T.C')이 그리퍼 본체 가격이라 품목 '본체'로 둔다.
+  Cable 4m · IB · CONTROLBOX. MG·MTC 는 C열(머리 'Master T.C')이 본체 가격이라 품목 '본체'로 둔다.
+  MTC 는 대리점가 칸이 비어 있어 고객사가만 저장한다(사용자 2026-10-19).
 - 0원 칸은 '가격 미정'(price_status='unset', 가격 NULL) — 무상이 아니다. 최종 견적에 0원·미정을 넣지 않는다(v0.8 C13).
 - 고객가·대리점가가 모두 빈 칸이면 그 모델에 해당 품목 가격이 없다는 뜻이라 행을 만들지 않는다(TCK50 의 PPM 등).
   고객가만 비고 대리점가가 0(수식 결과)이면 가격 미정으로 둔다(TCK100 의 T.P 등).
@@ -31,9 +32,10 @@ from sqlalchemy import text
 _log = logging.getLogger("company_knowledge.product_prices")
 
 DOCS = Path("/docs") if Path("/docs").is_dir() else Path(__file__).resolve().parents[3] / "docs"
-BOOK_NAME = "Magbot 단가표_Chris 송부용 261002.xlsx"
+BOOK_NAME = "Magbot 단가표_Chris 송부용 261013.xlsx"
 SHEET = "대표님 확인 최종 판매가"
-CATEGORIES = ("ATC_유선", "ATC_무선", "Tool Changer Motor K", "Tool Changer Motor", "MG")   # 저장 범위(사용자 2026-10-06)
+CATEGORIES = ("ATC_유선", "ATC_무선", "Tool Changer Motor K", "Tool Changer Motor", "MTC", "MG")   # 저장 범위(사용자 2026-10-06, MTC 2026-10-19)
+BODY_ONLY = ("MTC", "MG")   # C열 한 칸이 본체 가격인 구분 — 다른 열(T.P 대리점가 수식 0 등)은 무시
 # 단가표 1행 머리(고객사 열) → 품목 이름. 대리점가는 바로 오른쪽 열.
 ITEM_BY_HEADER = {
     "Master T.C": "MASTER T.C",
@@ -92,7 +94,7 @@ def parse_sheet(rows: list[list[Any]]) -> list[dict[str, Any]]:
         for i, item in cols:
             cust = row[i]
             dealer = row[i + 1] if i + 1 < len(row) else None
-            if category == "MG":
+            if category in BODY_ONLY:
                 if item != "MASTER T.C":
                     continue
                 item = "본체"

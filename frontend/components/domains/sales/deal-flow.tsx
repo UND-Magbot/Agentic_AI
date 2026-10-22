@@ -4,7 +4,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Field, INPUT, Muted, todayIso, won } from "@/components/domains/sales/deal-format";
+import { Field, INPUT, Muted, UnitStateBadge, dealRequest, todayIso, won } from "@/components/domains/sales/deal-format";
+import { UnitRegisterDialog } from "@/components/domains/sales/unit-register";
 import type { DealRow, DealShipment, DealStatement, DealStatementItem } from "@/lib/shared/sales-deals";
 import { cn } from "@/lib/shared/utils";
 
@@ -234,6 +235,22 @@ export function ShipForm({ deal, busy, act, initial, onSaved, onCancel, onChange
     tracking: initial?.tracking ?? "", receiver: initial?.receiver ?? last?.receiver ?? "", address: initial?.address ?? last?.address ?? "" });
   const [up, setUp] = useState<number | "set" | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // 제품 시리얼(사용자 2026-10-19) — 출하 전 등록 필수, 이 출하로 나가는 시리얼을 고른다(출하일 = 무상 기간 시작일).
+  // 여기서 등록하면 건을 다시 받아 이 칸만 새로 그린다(위 화면은 출하 저장 때 새로 받음).
+  const [unitDeal, setUnitDeal] = useState<Pick<DealRow, "units" | "unit_list">>({ units: deal.units, unit_list: deal.unit_list });
+  const [registering, setRegistering] = useState(false);
+  const usable = (unitDeal.unit_list ?? []).filter((u) => u.shipment_index == null || u.shipment_index === editIndex);
+  const [picked, setPicked] = useState<number[]>(() => usable.filter((u) => (editIndex != null ? u.shipment_index === editIndex
+    : u.quote_id === deal.units?.quote_id && u.quote_revision === deal.units?.revision)).map((u) => u.id));
+  const unitsMissing = editIndex == null && !!unitDeal.units && unitDeal.units.missing > 0;
+  const refreshUnits = async () => {
+    try {
+      const d = await dealRequest(`/${deal.id}`);
+      setUnitDeal({ units: d.units, unit_list: d.unit_list });
+      const fresh = (d.unit_list ?? []).filter((u) => u.shipment_index == null && u.quote_id === d.units?.quote_id && u.quote_revision === d.units?.revision);
+      setPicked((xs) => Array.from(new Set([...xs, ...fresh.map((u) => u.id)])));
+    } catch { /* 다음 저장 때 다시 받음 */ }
+  };
 
   // 화면에서 고친 내용을 위로 알린다(수주 진행: 대화 보내기 전에 저장)
   const report = useRef(onChange);
@@ -265,11 +282,12 @@ export function ShipForm({ deal, busy, act, initial, onSaved, onCancel, onChange
           items: `${setName.trim()} ${setQty.trim()}` + (items.length ? `\n(구성: ${items.map((l) => `${l.name} × ${l.qty}`).join(", ")})` : "").slice(0, 900),
           lines: [{ name: setName.trim(), qty: null, qty_text: setQty.trim(), photos: setPhotos }] }
       : { ...f, purpose: "판매", lines: items };
+    Object.assign(body, { unit_ids: picked.filter((id) => usable.some((u) => u.id === id)) });
     const ok = editIndex != null ? await act("shipment-edit", { ...body, index: editIndex }) : await act("shipments", body);
     if (ok) onSaved?.();
   }
   const noPhoto = mode === "set" ? (setPhotos.length ? 0 : 1) : items.filter((l) => !l.photos.length).length;
-  const canSave = !busy && up === null && (mode === "set" ? !!setName.trim() && !!setQty.trim() : items.length > 0);
+  const canSave = !busy && up === null && !unitsMissing && (mode === "set" ? !!setName.trim() && !!setQty.trim() : items.length > 0);
 
   const photoStrip = (photos: string[], remove: (p: string) => void, alt: string) => photos.length > 0 && (
     <div className="mt-2 flex flex-wrap gap-1.5">
@@ -354,6 +372,47 @@ export function ShipForm({ deal, busy, act, initial, onSaved, onCancel, onChange
         <Field label="주소" wide><input value={f.address} onChange={(e) => setF({ ...f, address: e.target.value })} className={INPUT}
                                   placeholder="예: 경기도 포천시 ○○로 12, 2동 자재 입고장" /></Field>
       </div>
+      {unitsMissing && unitDeal.units && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg bg-red-500/10 px-3 py-2 text-red-700 dark:text-red-300">
+          <span>
+            출하 전에 제품 시리얼 번호를 등록해 주세요 — <b className="font-mono">{unitDeal.units.issue_no}</b> 기준 {unitDeal.units.total}개 중 {unitDeal.units.done}개 등록.
+            시리얼이 없는 품목은 &lsquo;특주&rsquo;처럼 적으면 됩니다.
+          </span>
+          <button type="button" onClick={() => setRegistering(true)}
+                  className="ml-auto rounded-lg border border-red-500/40 px-2.5 py-1 font-semibold hover:bg-red-500/10">시리얼 등록</button>
+        </div>
+      )}
+      {usable.length > 0 && (
+        <div className="rounded-lg border border-border p-2">
+          <div className="mb-1 flex flex-wrap items-center gap-2">
+            <span className="font-semibold">이 출하로 나가는 제품 시리얼</span>
+            <span className="text-foreground-muted">{picked.filter((id) => usable.some((u) => u.id === id)).length}/{usable.length}</span>
+            <span className="text-[11.5px] text-foreground-subtle">출하일부터 무상 기간이 시작됩니다</span>
+            <button type="button" className="ml-auto text-[12px] font-semibold text-accent hover:underline"
+                    onClick={() => setPicked(picked.length >= usable.length ? [] : usable.map((u) => u.id))}>
+              {picked.length >= usable.length ? "모두 빼기" : "모두 고르기"}
+            </button>
+          </div>
+          <ul className="scroll-thin grid max-h-40 gap-x-4 gap-y-0.5 overflow-y-auto md:grid-cols-2">
+            {usable.map((u) => (
+              <li key={u.id}>
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" checked={picked.includes(u.id)}
+                         onChange={(e) => setPicked((xs) => (e.target.checked ? [...xs, u.id] : xs.filter((x) => x !== u.id)))} />
+                  <span className="truncate">{u.part_name}</span>
+                  <span className={cn("whitespace-nowrap font-mono", u.no_serial ? "text-foreground-subtle" : "text-foreground")}>{u.serial}</span>
+                  <UnitStateBadge code={u.purpose} />
+                  {u.issue_no !== deal.units?.issue_no && <span className="text-[11px] text-foreground-subtle">{u.issue_no}</span>}
+                </label>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {registering && unitDeal.units && (
+        <UnitRegisterDialog dealId={deal.id} quoteId={unitDeal.units.quote_id} revision={unitDeal.units.revision}
+                            onClose={() => setRegistering(false)} onSaved={() => void refreshUnits()} />
+      )}
       {err && <p className="text-red-600">{err}</p>}
       {noPhoto > 0 && (
         <p className="text-[12px] text-amber-700 dark:text-amber-300">

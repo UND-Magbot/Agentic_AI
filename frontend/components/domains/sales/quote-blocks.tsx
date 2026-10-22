@@ -1,14 +1,14 @@
 "use client";
 
 // 견적서 묶음(사용자 2026-10-13, 영업팀 요청 14·9번) — 기본 품목 표(B0) 아래에 붙는 묶음들과 NEGO.
-// 품목 묶음(소제목·소계) · 옵션 묶음(단가만, 합계 제외 — LG CNS 견적서) · 사양·서술형 표(항목명/내용) · 문구 줄 · NEGO(금액/%).
+// 품목 묶음(소제목·소계) · 옵션 묶음(줄마다 Total 반영/미반영 — 반영한 줄만 옵션 Sub total·Total, 사용자 2026-10-19) · 사양·서술형 표(항목명/내용) · 문구 줄 · NEGO(금액/%).
 // 저장은 견적서 작성 화면의 [변경 저장]으로 같이(blocks·nego·줄의 block). 새 묶음은 임시 id(new-…)로 두면 서버가 B1… 로 바꾼다.
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import type { QuoteBlock, QuoteLine, QuoteNego } from "@/lib/shared/product-recommend";
 import { Icon } from "@/components/shared/ui/icon";
 import { cn } from "@/lib/shared/utils";
-import { inputCls } from "./proposal-actions";
+import { inputCls, primaryBtn } from "./proposal-actions";
 
 /** 칸 높이를 내용만큼 */
 function useAutoHeight(value: string) {
@@ -46,6 +46,20 @@ export const usd = (n: number | null | undefined) =>
   (n == null ? "-" : `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 const isAuto = (l: QuoteLine) => l.kind === "work" || l.kind === "freight";
 
+// 대여 견적서 — 단가 = 1대당 월 납입금이라 금액 = 수량 × 단가 × 대여 개월(사용자 2026-10-22, 서버 quote_session.month_factor 와 같게).
+// 한 번만 내는 줄(품목 Service·단위 '식'·물류비·배송비·인건비·서술형)과 단위가 이미 기간인 줄('36 개월')은 1
+const TIME_UNITS = new Set(["개월", "월", "년", "일", "주", "month", "months", "year", "years", "day", "days", "week", "weeks"]);
+const ONCE_UNITS = new Set(["식", "lot", "lots"]);
+const FREIGHT_RE = /(물류|운송|화물|배송|운반|택배)\s*(비|료)|freight|shipping/i;
+export function monthFactor(l: QuoteLine, months: number): number {
+  if (!months || months <= 0 || isAuto(l) || l.kind === "note") return 1;
+  if ((l.commodity ?? "").trim().toLowerCase() === "service") return 1;
+  const unit = (l.unit ?? "").trim().toLowerCase();
+  if (TIME_UNITS.has(unit) || ONCE_UNITS.has(unit)) return 1;
+  if (FREIGHT_RE.test(`${l.commodity ?? ""} ${l.name ?? ""}`)) return 1;
+  return months;
+}
+
 /** 해외 견적 줄 달러 단가 — 적은 달러 단가, 없으면 원화 ÷ 환율(서버 quote_session.usd_price 와 같은 식) */
 export function usdOf(l: QuoteLine, fx: number | null): number | null {
   if (!isAuto(l) && l.usd && l.usd > 0) return l.usd;
@@ -58,7 +72,7 @@ export function blockOf(l: QuoteLine, blocks: QuoteBlock[], auto: string = MAIN_
   return l.block && blocks.some((b) => b.id === l.block) ? l.block : MAIN_BLOCK;
 }
 
-/** NEGO 할인 금액(양수) — base = 옵션 뺀 합계(견적 통화) */
+/** NEGO 할인 금액(양수) — base = 미반영 옵션 뺀 합계(견적 통화) */
 export function negoCut(nego: QuoteNego | null | undefined, base: number, en: boolean): number {
   if (!nego?.value || nego.value <= 0) return 0;
   const v = nego.mode === "percent" ? (base * nego.value) / 100 : nego.value;
@@ -79,7 +93,9 @@ const smallBtn = "rounded border border-border px-1.5 text-[11.5px] text-foregro
 type PricePick = { model: string; item: string; unit_price: number };
 
 export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, totalNote, footNotes, autoBlock, onChange, children, pricePicker,
-                             photoCell }: {
+                             photoCell, months = 0 }: {
+  /** 대여 견적서의 대여 개월 수(판매 = 0) — 줄 금액·소계에 곱한다(단가 = 월 납입금) */
+  months?: number;
   blocks: QuoteBlock[]; lines: QuoteLine[]; nego: QuoteNego | null; en: boolean; fx: number | null; busy: boolean; draftVer: number;
   totalNote: string; footNotes: string[]; autoBlock: string; children?: React.ReactNode;
   /** [단가표에서 추가] 버튼 — 고르면 그 묶음에 품목 한 줄(사용자 2026-10-13: 옵션 묶음에서도) */
@@ -104,6 +120,7 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
     onChange({ lines: [...lines, { id: `new${Date.now()}`, kind, key: kind, name: "", commodity: "", qty: kind === "note" ? null : 1,
                                    unit_price: null, remark: "", block: blockId }] });
   const [groupName, setGroupName] = useState("");
+  const [bigNote, setBigNote] = useState<number | null>(null);
   const hasOption = blocks.some((b) => b.type === "option");
   /** 사용자 지정 묶음 — 적은 이름으로 만들고 빈 항목 한 줄. < OPTION > 묶음은 하나만 */
   function addBlock(type: "items" | "option") {
@@ -119,7 +136,9 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
     <div className="flex flex-col gap-2.5">
       {extra.map((b, k) => {
         const own = lines.map((l, idx) => ({ l, idx })).filter(({ l }) => blockOf(l, blocks, autoBlock) === b.id);
-        const sub = own.reduce((s, { l }) => s + (l.kind === "note" ? 0 : (l.qty ?? 0) * ((en ? usdOf(l, fx) : l.unit_price) ?? 0)), 0);
+        const sub = own.reduce((s, { l }) => s + (l.kind === "note" || (b.type === "option" && !l.in_total) ? 0
+          : (l.qty ?? 0) * ((en ? usdOf(l, fx) : l.unit_price) ?? 0) * monthFactor(l, months)), 0);
+        const inCount = own.filter(({ l }) => l.kind !== "note" && l.in_total).length;
         return (
           <div key={b.id} className="flex flex-col gap-2 rounded-lg border border-border p-2.5">
             <div className="flex flex-wrap items-center gap-2">
@@ -147,7 +166,7 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
                   <table className="w-full min-w-[980px] table-fixed text-[12.5px]">
                     <colgroup>
                       <col className="w-[150px]" /><col /><col className="w-[64px]" /><col className="w-[64px]" />
-                      <col className="w-[130px]" /><col className="w-[112px]" /><col className="w-[180px]" /><col className="w-[30px]" />
+                      <col className="w-[130px]" /><col className="w-[112px]" /><col className="w-[180px]" /><col className={b.type === "option" ? "w-[84px]" : "w-[30px]"} />
                     </colgroup>
                     <thead>
                       <tr className="whitespace-nowrap border-b border-border text-left text-[11.5px] text-foreground-subtle">
@@ -155,10 +174,10 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
                         <th className="px-1.5 py-1.5 font-medium">{en ? "Specifications" : "규격"}</th>
                         <th className="px-1.5 py-1.5 font-medium">{en ? "Qty" : "수량"}</th>
                         <th className="px-1.5 py-1.5 font-medium">{en ? "Unit" : "단위"}</th>
-                        <th className="px-1.5 py-1.5 font-medium">{en ? "Price ($)" : "단가"}</th>
+                        <th className="px-1.5 py-1.5 font-medium">{en ? (months ? "Price ($ / month)" : "Price ($)") : months ? "단가 (월 납입금 또는 1회 지불)" : "단가"}</th>
                         <th className="px-1.5 py-1.5 text-right font-medium">{en ? "Amount" : "금액"}</th>
                         <th className="px-1.5 py-1.5 font-medium">{en ? "Remark" : "비고"}</th>
-                        <th />
+                        {b.type === "option" ? <th className="px-1 py-1.5 font-medium">Total</th> : <th />}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border align-top">
@@ -169,7 +188,7 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
                             <td className="px-1.5 py-2">{l.commodity}</td><td className="px-1.5 py-2">{l.name}</td>
                             <td className="px-1.5 py-2">{l.qty}</td><td className="px-1.5 py-2">{l.unit ?? ""}</td>
                             <td className="px-1.5 py-2">{en ? usd(unit) : won(l.unit_price)}</td>
-                            <td className="whitespace-nowrap px-1.5 py-2 text-right font-semibold">{en ? usd((l.qty ?? 0) * (unit ?? 0)) : won((l.qty ?? 0) * (l.unit_price ?? 0))}</td>
+                            <td className="whitespace-nowrap px-1.5 py-2 text-right font-semibold">{en ? usd((l.qty ?? 0) * (unit ?? 0) * monthFactor(l, months)) : won((l.qty ?? 0) * (l.unit_price ?? 0) * monthFactor(l, months))}</td>
                             <td className="px-1.5 py-2 text-[11.5px]" colSpan={2}>납품 방식에서 설정</td>
                           </tr>
                         );
@@ -224,9 +243,8 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
                                        onChange={(e) => setLine(idx, { unit_price: Number(e.target.value.replace(/,/g, "")) || null })} />
                               )}
                             </td>
-                            <td className="whitespace-nowrap px-1.5 py-1.5 text-right font-semibold leading-8">
-                              {b.type === "option" ? <span className="text-[11.5px] font-normal text-foreground-subtle">합계 제외</span>
-                                : (en ? usd((l.qty ?? 0) * (unit ?? 0)) : won((l.qty ?? 0) * (l.unit_price ?? 0)))}
+                            <td className={cn("whitespace-nowrap px-1.5 py-1.5 text-right font-semibold leading-8", b.type === "option" && !l.in_total && "text-foreground-subtle")}>
+                              {en ? usd((l.qty ?? 0) * (unit ?? 0) * monthFactor(l, months)) : won((l.qty ?? 0) * (l.unit_price ?? 0) * monthFactor(l, months))}
                             </td>
                             <td className="px-1.5 py-1.5">
                               <div className="flex flex-col gap-1">
@@ -235,12 +253,33 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
                                 {photoCell?.(l)}
                               </div>
                             </td>
-                            <td className="px-1 py-1.5 text-center">
-                              <button type="button" aria-label={`${l.name || "항목"} 빼기`} disabled={busy} className="mt-1.5 text-foreground-subtle hover:text-red-600"
-                                      onClick={() => onChange({ lines: lines.filter((_, j) => j !== idx) })}>
-                                <Icon name="trash" className="h-4 w-4" />
-                              </button>
-                            </td>
+                            {b.type === "option" ? (
+                              // 옵션 줄은 Total 반영/미반영(사용자 2026-10-19, 미반영이어도 공급가액은 견적서에 보인다) + 아래에 빼기 버튼(2026-10-22)
+                              <td className="px-1 py-1.5">
+                                <select value={l.in_total ? "in" : "out"} disabled={busy} aria-label={`${l.name || "옵션"} Total 반영`}
+                                        title="반영 = 옵션 Sub total·Total 에 포함 / 미반영 = 공급가액만 보이고 합계 제외"
+                                        onChange={(e) => setLine(idx, { in_total: e.target.value === "in" })}
+                                        className={cn("h-8 w-full rounded-md border px-1 text-[12px] font-semibold",
+                                                      l.in_total ? "border-accent/60 bg-accent/10 text-accent" : "border-border bg-surface text-foreground-muted")}>
+                                  <option value="in">반영</option>
+                                  <option value="out">미반영</option>
+                                </select>
+                                {/* 옵션 줄 빼기 — 반영/미반영 아래(사용자 2026-10-22) */}
+                                <div className="mt-1.5 text-center">
+                                  <button type="button" aria-label={`${l.name || "옵션"} 빼기`} title="이 옵션 줄 빼기" disabled={busy}
+                                          className="text-foreground-subtle hover:text-red-600" onClick={() => onChange({ lines: lines.filter((_, j) => j !== idx) })}>
+                                    <Icon name="trash" className="h-4 w-4" />
+                                  </button>
+                                </div>
+                              </td>
+                            ) : (
+                              <td className="px-1 py-1.5 text-center">
+                                <button type="button" aria-label={`${l.name || "항목"} 빼기`} disabled={busy} className="mt-1.5 text-foreground-subtle hover:text-red-600"
+                                        onClick={() => onChange({ lines: lines.filter((_, j) => j !== idx) })}>
+                                  <Icon name="trash" className="h-4 w-4" />
+                                </button>
+                              </td>
+                            )}
                           </tr>
                         );
                       })}
@@ -262,7 +301,8 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
                     </button>
                   )}
                   <span className="ml-auto text-foreground-subtle">
-                    {b.type === "option" ? "견적서엔 단가만, 공급가액 칸은 비움 · 합계·영업 건 금액에 안 들어감 · 소계 없음"
+                    {b.type === "option"
+                      ? (inCount ? `옵션 Sub total ${en ? usd(sub) : won(sub)} (반영 ${inCount}줄 · Total 에 포함)` : "반영한 옵션 없음 · 공급가액만 보이고 Sub total·Total 제외")
                       : `Sub total ${en ? usd(sub) : won(sub)} (견적서에 자동 표시)`}
                   </span>
                 </div>
@@ -317,7 +357,7 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
             사용자 지정 묶음 만들기
           </button>
           <button type="button" disabled={busy || hasOption || blocks.length >= 12} onClick={() => addBlock("option")}
-                  title={hasOption ? "< OPTION > 묶음은 하나만 둡니다" : "단가만 보이고 합계에서 빠지는 묶음"}
+                  title={hasOption ? "< OPTION > 묶음은 하나만 둡니다" : "줄마다 Total 반영/미반영을 고르는 묶음 — 반영한 줄만 옵션 Sub total·Total 에 포함"}
                   className="rounded-md border border-amber-500/60 px-2.5 py-1 text-[12.5px] font-semibold text-amber-700 hover:bg-amber-500/5 disabled:opacity-40 dark:text-amber-300">
             &lt; OPTION &gt; 묶음
           </button>
@@ -350,7 +390,7 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
                  onChange={(e) => onChange({ nego: { ...nego, label: e.target.value } })} />
           <button type="button" className={cn(smallBtn, "hover:text-red-600")} disabled={busy} onClick={() => onChange({ nego: null })}>삭제</button>
           <span className="basis-full text-[11.5px] text-foreground-subtle">
-            Total 바로 위에 &quot;NEGO&quot; 줄로 들어갑니다. %는 옵션을 뺀 합계 기준으로 계산해 견적서엔 금액으로 나옵니다. 값을 비우면 빠집니다.
+            Total 바로 위에 &quot;NEGO&quot; 줄로 들어갑니다. %는 미반영 옵션을 뺀 합계 기준으로 계산해 견적서엔 금액으로 나옵니다. 값을 비우면 빠집니다.
           </span>
         </div>
       )}
@@ -369,16 +409,62 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
                         aria-label={`주석 ${i + 1}`}
                         placeholder={en ? "예: This quotation is valid for 1 month." : "예: 본 견적은 1개월 유효하며, 상세 견적은 최종 미팅 이후 별도 제공 가능합니다."}
                         onChange={(e) => onChange({ foot_notes: footNotes.map((x, j) => (j === i ? e.target.value : x)) })} />
+              <button type="button" aria-label={`주석 ${i + 1} 크게 보기`} title="크게 보기 — 넓은 칸에서 고치고 견적서 모양 확인" disabled={busy}
+                      className="pt-1.5 text-foreground-subtle hover:text-accent" onClick={() => setBigNote(i)}>
+                <Icon name="eye" className="h-4 w-4" />
+              </button>
               <button type="button" aria-label={`주석 ${i + 1} 빼기`} disabled={busy} className="pt-1.5 text-foreground-subtle hover:text-red-600"
                       onClick={() => onChange({ foot_notes: footNotes.filter((_, j) => j !== i) })}>
                 <Icon name="trash" className="h-4 w-4" />
               </button>
             </div>
           ))}
+          {bigNote != null && bigNote < footNotes.length && (
+            <NoteDialog index={bigNote} value={footNotes[bigNote]} en={en} busy={busy} onClose={() => setBigNote(null)}
+                        onChange={(v) => onChange({ foot_notes: footNotes.map((x, j) => (j === bigNote ? v : x)) })} />
+          )}
           <button type="button" disabled={busy || footNotes.length >= 8} onClick={() => onChange({ foot_notes: [...footNotes, ""] })}
                   className="inline-flex w-fit items-center gap-1 rounded border border-border px-2 py-0.5 text-foreground-muted hover:text-foreground disabled:opacity-40">
             <Icon name="plus" className="h-3.5 w-3.5" /> 주석 추가
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 표 아래 주석 크게 보기(사용자 2026-10-22) — 넓은 칸에서 고치고, 견적서 맨 아래에 들어가는 모양(가운데 정렬, 앞에 *)을 본다 */
+function NoteDialog({ index, value, en, busy, onChange, onClose }: {
+  index: number; value: string; en: boolean; busy: boolean; onChange: (v: string) => void; onClose: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  const text = value.trim();
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-4" onClick={onClose}>
+      <div role="dialog" aria-label={`주석 ${index + 1} 크게 보기`} onClick={(e) => e.stopPropagation()}
+           className="scroll-thin max-h-full w-full max-w-[860px] overflow-y-auto rounded-2xl bg-background p-5 shadow-2xl">
+        <div className="mb-3 flex items-center gap-2">
+          <h2 className="text-[16px] font-bold">표 아래 주석 {index + 1} 크게 보기</h2>
+          <span className="text-[12px] text-foreground-muted">고친 내용은 바로 반영되고, 닫은 뒤 [변경 저장]을 눌러야 저장됩니다.</span>
+          <button type="button" onClick={onClose} aria-label="닫기"
+                  className="ml-auto grid h-8 w-8 place-items-center rounded-lg text-foreground-muted hover:bg-foreground/8"><Icon name="x" className="h-4 w-4" /></button>
+        </div>
+        <label className="flex flex-col gap-1 text-[12.5px] text-foreground-muted">
+          주석 <span className="text-[11px] text-foreground-subtle">{value.length} / 200자 · 앞의 * 는 자동으로 붙습니다</span>
+          <textarea className={cn(inputCls, "min-h-[120px] resize-y text-[13px]")} value={value} maxLength={200} disabled={busy} autoFocus
+                    placeholder={en ? "예: This quotation is valid for 1 month." : "예: 본 견적은 1개월 유효하며, 상세 견적은 최종 미팅 이후 별도 제공 가능합니다."}
+                    onChange={(e) => onChange(e.target.value)} />
+        </label>
+        <p className="mt-4 text-[12.5px] font-semibold text-foreground">견적서 맨 아래에는 이렇게 들어갑니다</p>
+        <div className="mt-1.5 rounded-lg border border-border bg-white px-4 py-3 text-center text-[11.5px] font-semibold leading-snug text-black">
+          {text ? <span className="whitespace-pre-line">* {text}</span> : <span className="font-normal text-neutral-400">(비어 있으면 견적서에 안 들어갑니다)</span>}
+        </div>
+        <div className="mt-4 flex justify-end">
+          <button type="button" onClick={onClose} className={primaryBtn}>완료</button>
         </div>
       </div>
     </div>

@@ -21,13 +21,15 @@ LABELS = ("선금", "중도금", "잔금", "전액")
 
 
 def supply_total(d: dict) -> float | None:
-    """공급가액 — 거래명세서가 있으면 그 공급가액, 없으면 견적(부가세 포함 견적이면 ÷1.1). 견적 없는 옛 출하 건은 출하 금액 합."""
-    st = d.get("statement") or {}
-    if (st.get("totals") or {}).get("supply"):
-        return float(st["totals"]["supply"])
+    """공급가액 — 견적 품목 합계(물류비·설치 인건비·Total 반영 옵션·NEGO 포함, 부가세 포함 견적이면 ÷1.1).
+    거래명세서는 제품 줄만 싣기 때문에(for_statement) 그 공급가액을 쓰면 물류비만큼 빠진다 — 견적 합계가 어디서나 기준
+    (사용자 2026-10-22). 견적 없는 옛 건만 명세서 → 옛 계산서 → 출하 금액 합."""
     q = d.get("quote") or {}
     if q.get("amount"):
         return round(float(q["amount"]) / (1 + VAT_RATE)) if q.get("vat_included") else float(q["amount"])
+    st = d.get("statement") or {}
+    if (st.get("totals") or {}).get("supply"):
+        return float(st["totals"]["supply"])
     inv = [i.get("supply") for i in d.get("invoices") or [] if i.get("supply")]      # 견적 없이 옮긴 건 — 옛 계산서 공급가액
     if inv:
         return float(sum(inv))

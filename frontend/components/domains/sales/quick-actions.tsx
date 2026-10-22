@@ -127,7 +127,7 @@ const FEATURES: {
     // 견적서 수기 작성(사용자 2026-10-08) — AI 추천이 아직 없는 제품(그리퍼·AMR 등)도 견적서부터 시작해 같은 흐름으로 관리
     href: "/proposals/recommend?tab=quote&new=manual",
     title: "견적서 수기 작성",
-    desc: "AI 추천이 아직 없는 제품(그리퍼·AMR 등)도 견적서부터 바로 — 품목을 직접 넣거나 단가표에서 고르고, 발행하면 건 번호가 붙어 영업 건 관리로 이어집니다.",
+    desc: "AI 추천이 아직 없는 제품(그리퍼·AMR 등)도 견적서부터 바로 — 제품 판매·제품 대여를 고르고 품목을 직접 넣거나 단가표에서 고르면, 발행할 때 건 번호가 붙어 판매·대여 관리로 이어집니다.",
     icon: "edit",
     steps: ["품목 입력", "견적 발행", "영업 건 관리"],
     tone: {
@@ -139,8 +139,8 @@ const FEATURES: {
     },
   },
   {
-    href: "/proposals/recommend?tab=deals",     // 회사 제품 추천 화면의 [제품 영업 건 관리] 탭(사용자 2026-10-06)
-    title: "제품 영업 건 관리",
+    href: "/proposals/recommend?tab=deals",     // 회사 제품 추천 화면의 [제품 판매 관리] 탭(사용자 2026-10-06)
+    title: "제품 판매 관리",
     desc: "제품 판매 건을 견적부터 수주·세금계산서·입금·출하까지 한 건씩 리스트로 관리합니다. 수주 확정·계산서·입금·출하를 기록하면 단계가 바뀝니다.",
     icon: "file-spreadsheet",
     steps: ["견적", "수주", "거래명세서·입금", "출하"],
@@ -152,28 +152,68 @@ const FEATURES: {
       ring: "hover:ring-amber-500/40",
     },
   },
+  {
+    href: "/proposals/recommend?tab=rentals",   // [제품 대여 관리] 탭(사용자 2026-10-22: 판매 관리 오른쪽에 따로)
+    title: "제품 대여 관리",
+    desc: "대여 견적서로 낸 건을 견적부터 수주·시리얼 등록·출하까지 한 건씩 관리하고, 대여 기간과 월 납입금을 함께 봅니다. 끝나는 날이 가까우면 붉게 표시됩니다.",
+    icon: "refresh",
+    steps: ["대여 견적", "수주", "시리얼 등록", "출하"],
+    tone: {
+      band: "from-sky-600 to-cyan-500",
+      icon: "bg-white/20 text-white",
+      chip: "bg-sky-500/10 text-sky-700 dark:text-sky-300",
+      cta: "text-sky-700 dark:text-sky-300",
+      ring: "hover:ring-sky-500/40",
+    },
+  },
+  {
+    href: "/proposals/recommend?tab=units",     // [제품·A/S] 탭(사용자 2026-10-22: A/S 건 관리 카드)
+    title: "제품 A/S건 관리",
+    desc: "시리얼 번호로 고객사·출하일·무상 기간·A/S 이력을 찾고, 접수한 A/S 를 원인·무상/유상·진행 상태와 함께 기록합니다.",
+    icon: "bug",
+    steps: ["시리얼 조회", "A/S 접수", "진행", "완료"],
+    tone: {
+      band: "from-rose-600 to-pink-500",
+      icon: "bg-white/20 text-white",
+      chip: "bg-rose-500/10 text-rose-700 dark:text-rose-300",
+      cta: "text-rose-700 dark:text-rose-300",
+      ring: "hover:ring-rose-500/40",
+    },
+  },
 ];
 
 /**
  * 기술영업 첫 화면 — 대표 기능(제안서 만들기·회사 제품 추천)을 크게, 보조 도구는 작게 따로, 추천 질문은 맨 아래 칩으로.
  * 제안서 만들기는 자료 입력 화면(/proposals/new)에서 자료 읽기 → 핵심 질문 → 컨셉 이미지 승인 → 구성 확인 → 제작으로 이어진다.
  */
-export function SalesHome({ disabled, examples, onPickExample, onRunBody, onRunConcept }: {
+export function SalesHome({ disabled, examples, onPickExample, onRunBody, onRunConcept, onOpenChat }: {
   disabled?: boolean;
   examples?: string[];
   onPickExample: (text: string) => void;
   onRunBody: (attachments: ComposerAttachment[]) => void;
   onRunConcept: (attachments: ComposerAttachment[]) => void;
+  onOpenChat: () => void;
 }) {
   return (
-    // 아래 여백 — 화면 하단에 떠 있는 입력창과 카드가 붙거나 겹치지 않게
-    // 대표 기능 4개가 한 줄에(사용자 2026-10-08: 제품 추천 옆에 견적서 수기 작성) — 넓은 화면 4열, 좁으면 2열
-    <div className="mt-6 flex w-full max-w-6xl flex-col gap-8 pb-36 text-left">
+    // 입력창은 [AI와 채팅 시작]을 눌러야 앞에 떠오른다(사용자 2026-10-22) — 그 자리만큼 카드 6개가 한 화면에 보이게 여백을 줄였다
+    // 대표 기능 6개 — 윗줄 만들기(제안서·추천·견적서), 아랫줄 관리(판매·대여·A/S)로 3열 두 줄(사용자 2026-10-22), 좁으면 2열
+    <div className="mt-4 flex w-full max-w-6xl flex-col gap-6 pb-6 text-left">
       <section aria-labelledby="sales-main">
-        <h2 id="sales-main" className="mb-3 text-[12px] font-semibold uppercase tracking-[0.14em] text-foreground-subtle">
-          대표 기능
-        </h2>
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h2 id="sales-main" className="text-[12px] font-semibold uppercase tracking-[0.14em] text-foreground-subtle">
+            대표 기능
+          </h2>
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={onOpenChat}
+            className="und-grad inline-flex items-center gap-2 rounded-xl px-4 py-2 text-[13px] font-semibold text-white shadow-[0_8px_18px_-8px_rgba(37,99,235,0.6),inset_0_1px_0_rgba(255,255,255,0.35)] transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Icon name="chat" className="h-4 w-4" />
+            AI와 채팅 시작
+          </button>
+        </div>
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {FEATURES.map((f) => (
             <Link
               key={f.href}
@@ -185,14 +225,14 @@ export function SalesHome({ disabled, examples, onPickExample, onRunBody, onRunC
                 disabled ? "pointer-events-none opacity-60" : cn("hover:-translate-y-1 hover:shadow-[0_24px_44px_-24px_rgba(15,30,70,0.55)]", f.tone.ring),
               )}
             >
-              <div className={cn("flex items-center gap-3 bg-gradient-to-r px-5 py-4 text-white", f.tone.band)}>
-                <span className={cn("grid h-10 w-10 place-items-center rounded-xl", f.tone.icon)}>
+              <div className={cn("flex items-center gap-3 bg-gradient-to-r px-5 py-3 text-white", f.tone.band)}>
+                <span className={cn("grid h-9 w-9 place-items-center rounded-xl", f.tone.icon)}>
                   <Icon name={f.icon} className="h-5 w-5" />
                 </span>
-                <span className="text-[17px] font-bold tracking-tight">{f.title}</span>
+                <span className="text-[16px] font-bold tracking-tight">{f.title}</span>
               </div>
-              <div className="flex flex-1 flex-col gap-4 px-5 py-4">
-                <p className="text-[13px] leading-relaxed text-foreground-muted">{f.desc}</p>
+              <div className="flex flex-1 flex-col gap-3 px-5 py-3">
+                <p className="text-[12.5px] leading-relaxed text-foreground-muted">{f.desc}</p>
                 <ol className="flex flex-wrap items-center gap-1.5 text-[11.5px] font-medium">
                   {f.steps.map((s, i) => (
                     <li key={s} className="flex items-center gap-1.5">

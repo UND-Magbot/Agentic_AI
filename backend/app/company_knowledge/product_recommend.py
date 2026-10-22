@@ -1043,7 +1043,7 @@ async def quote_list(*, user_id: int | None, limit: int = 100) -> list[dict[str,
     async with SessionLocal() as db:
         rows = (await db.execute(text(
             "SELECT id, recommendation_id, status, quote_no, revision, customer, total, state->>'model' AS model, "
-            "COALESCE((state->>'manual')::boolean, false) AS manual, updated_at "
+            "COALESCE((state->>'manual')::boolean, false) AS manual, COALESCE(state->'form'->>'purpose', 'sale') AS purpose, updated_at "
             f"FROM product_quotes WHERE user_id IS NOT DISTINCT FROM :u AND NOT ({_EMPTY_MANUAL}) ORDER BY updated_at DESC LIMIT :n"),
             {"u": user_id, "n": limit})).mappings().all()
     return [{**dict(r), "total": float(r["total"]) if r["total"] is not None else None, "updated_at": r["updated_at"].isoformat()}
@@ -1226,6 +1226,13 @@ def _header(parts: dict[str, Any], no: str, rev: int, day) -> dict[str, Any]:
     return header
 
 
+def _deal_rental(form: dict[str, Any]) -> dict[str, Any]:
+    """대여 견적서(사용자 2026-10-22) → 영업 건에 넘길 대여 조건(개월 수·시작일). 판매면 빈 dict."""
+    if form.get("purpose") != "rental" or not form.get("rental_months"):
+        return {}
+    return {"rental": {"months": int(form["rental_months"]), "start": form.get("rental_start") or None}}
+
+
 async def quote_issue(qid: int, *, user_id: int | None) -> dict[str, Any]:
     """[견적서 발행] — 미정 값이 없어야(C13). 발행할 때마다 새 발행번호 QT-{이니셜}{발행일}-NN(사용자 2026-10-12):
     NN 은 그 발행자의 그날 견적서 발행 순서(고객사 무관, doc_numbers). 다른 사람이 고쳐 다시 내면 그 사람 번호.
@@ -1251,11 +1258,13 @@ async def quote_issue(qid: int, *, user_id: int | None) -> dict[str, Any]:
             "owner": str(f.get("contact_name") or "").strip() or None, "vat_included": False, "initials": parts["ini"],
             "currency": qx.CURRENCY[lang], "title": "", "note": "",
             # 품목(commodity)·단위도 넘긴다 — 거래명세서 초안의 품명·단위(사용자 2026-10-13: 명세서가 견적서와 같게)
-            "items": [{"name": ln["desc"], "unit_price": ln["unit_price"], "qty": ln["qty"],
+            # 대여 견적서 줄은 단가(월 납입금) × 개월 = 1대당 계약 금액으로 영업 건에(사용자 2026-10-22)
+            "items": [{"name": ln["desc"], "unit_price": ln["unit_price"] * ln.get("months", 1), "qty": ln["qty"],
                        **({"commodity": ln["commodity"]} if ln.get("commodity") else {}),
                        **({"unit": ln["unit"]} if ln.get("unit") else {}),
                        "statement": deals.for_statement(ln)} for ln in lines
-                      if ln.get("row") in (None, "nego")]}
+                      if ln.get("row") in (None, "nego") or (ln.get("row") == "option" and ln.get("in_total"))],
+            **_deal_rental(f)}
     async with SessionLocal() as db:
         pid = (await db.execute(text("SELECT id FROM product_proposals WHERE recommendation_id = :r"),
                                 {"r": r["recommendation_id"]})).scalar() if r["recommendation_id"] else None
@@ -1519,6 +1528,9 @@ async def quote_issue_upload(*, qid: int | None, deal_id: int | None, user_id: i
         if not customer:
             raise RecommendError("고객사가 없습니다 — 견적서에 고객사를 먼저 적어 주세요.")
         lang = f.get("lang") or "ko"
+        if f.get("purpose") == "rental":     # 대여 — 파일의 단가는 월 납입금, 영업 건엔 × 개월(사용자 2026-10-22)
+            lines = [{**x, "unit_price": x["unit_price"] * qs.month_factor(f, {"commodity": str(x["name"]).split("\n")[0], "name": x["name"],
+                                                                                "unit": x.get("unit") or ""})} for x in lines]
         day = deals.kst_today()
         cur = (await db.execute(text("SELECT revision, quote_no FROM product_quotes WHERE id = :i FOR UPDATE"),
                                 {"i": r["id"]})).mappings().one()        # 동시 발행 판 중복 방지(검증 QT-040)
@@ -1566,7 +1578,7 @@ async def quote_issue_upload(*, qid: int | None, deal_id: int | None, user_id: i
                 "quote_date": day, "customer": customer, "contact": str(f.get("to") or "").strip() or None,
                 "owner": str(f.get("contact_name") or "").strip() or None, "vat_included": False, "initials": ini,
                 "currency": qx.CURRENCY[lang], "title": "", "note": "", "items": lines, "doc_no": no,
-                "file": str(upload.get("filename") or "")[:200]}, rev + 1, deal_id=r.get("deal_id") or deal_id, action="quote_upload")
+                "file": str(upload.get("filename") or "")[:200], **_deal_rental(f)}, rev + 1, deal_id=r.get("deal_id") or deal_id, action="quote_upload")
             await dn.link_deal(db, no, did)
         except DuplicateDocNo:
             await db.rollback()

@@ -22,6 +22,13 @@
 - GET  /v1/sales-deals/{id}/statement/file?fmt=pdf|xlsx → 거래명세서 내려받기
 - POST /v1/sales-deals/{id}/ship-photos          → 출하 사진 한 장 올리기(multipart) → {id}
 - GET  /v1/sales-deals/{id}/ship-photos/{pid}    → 출하 사진 보기
+제품 시리얼·A/S(사용자 2026-10-19 — sales_deals/units.py): 부품별 시리얼을 최종 견적서 판 기준으로 등록, 출하 전 필수
+- GET  /v1/sales-deals/{id}/units?quote_id&revision → 판 하나의 시리얼 등록 화면 값
+- POST /v1/sales-deals/{id}/units                → 판 하나의 시리얼 통째로 저장 {quote_id, revision, lines:[{line_no, units:[…]}]}
+- GET  /v1/sales-deals/units/search?q=           → 시리얼·부품·고객사로 찾기 / GET /units/{unit_id} → 한 개 + A/S 이력
+- GET/POST /v1/sales-deals/as-cases[/{case_id}]  → A/S 기록 목록·접수·고치기 (유상 A/S 견적은 프로그램 밖 수기 — 기록만)
+- POST /v1/sales-deals/as-cases/batch  → 한 접수서로 여러 시리얼 접수(시리얼마다 한 건)
+- GET/POST /v1/sales-deals/warranty-policies     → 무상 기간 기본값(제품마다) — 바꾸기는 관리자
 출하 받는 사람 연락처·주소가 들어 있어 영업(또는 전체) 부서 사용자만 쓸 수 있다.
 """
 from __future__ import annotations
@@ -42,6 +49,7 @@ from .api_auth import get_current_user
 from .database import get_db
 from .models import User, UserDomain, UserRole
 from .sales_deals import service as svc
+from .sales_deals import units
 from .sales_deals.quote_upload import UploadConfirmIn as QuoteUploadConfirm
 from .user_profile import get_profile
 from .storage import get_object_stream, put_object, remove_object
@@ -82,6 +90,12 @@ class ItemIn(BaseModel):
     qty: float | None = Field(default=None, gt=0, le=1_000_000)
 
 
+class RentalIn(BaseModel):
+    """대여 건 조건(사용자 2026-10-22) — [제품 대여 관리]의 [+ 새 건 등록]."""
+    months: int = Field(ge=1, le=600)
+    start: dt.date | None = None
+
+
 class DealIn(BaseModel):
     customer: str = Field(min_length=1, max_length=200)
     contact: str | None = Field(default=None, max_length=200)
@@ -93,6 +107,7 @@ class DealIn(BaseModel):
     currency: Literal["KRW", "USD"] = "KRW"
     pay_terms_text: str | None = Field(default=None, max_length=500)
     note: str | None = Field(default=None, max_length=2000)
+    rental: RentalIn | None = None      # 있으면 대여 건(대여 관리 탭), 없으면 판매 건
 
     @model_validator(mode="after")
     def _total(self) -> "DealIn":
@@ -144,6 +159,8 @@ class ShipmentIn(BaseModel):
     purpose: Literal["판매", "개발", "샘플", "기타"] = "판매"
     force: bool = False
     lines: list[ShipLineIn] = Field(default_factory=list, max_length=50)    # 제품별 출하 줄(사진 포함)
+    # 이 출하로 나가는 제품 시리얼(product_units.id, 사용자 2026-10-19) — 없으면 수주 판에서 아직 안 나간 것 전부
+    unit_ids: list[int] | None = Field(default=None, max_length=500)
 
 
 class OrderItemIn(BaseModel):
@@ -280,9 +297,11 @@ async def approval_decide(request_id: int, body: DecideIn, user: User = Depends(
 
 
 @router.get("")
-async def list_deals(user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+async def list_deals(biz: Literal["sale", "rental"] | None = None, user: User = Depends(require_sales),
+                     db: AsyncSession = Depends(get_db)) -> dict:
     # me.admin — 화면이 관리자 전용 버튼(삭제·되돌리기·취소)을 숨기는 데 쓴다(실제 막는 것은 각 API)
-    return {**await svc.list_deals(db, dt.date.today()), "me": {"admin": is_admin(user), "name": user.alias or user.username}}
+    # biz — 제품 판매 관리 / 제품 대여 관리 탭(사용자 2026-10-22)
+    return {**await svc.list_deals(db, dt.date.today(), biz), "me": {"admin": is_admin(user), "name": user.alias or user.username}}
 
 
 @router.get("/export")
@@ -341,6 +360,172 @@ async def delete_deals(body: DeleteIn, user: User = Depends(require_admin), db: 
     return {"deleted": len(nos), "deal_nos": nos}
 
 
+# ── 제품 시리얼·A/S(사용자 2026-10-19) — '/{deal_id}' 보다 먼저 둔다(units·as-cases 가 건 번호로 읽히지 않게) ──
+
+class UnitIn(BaseModel):
+    id: int | None = None
+    part_name: str = Field(default="", max_length=120)
+    serial: str = Field(default="", max_length=80)
+    maker: str = Field(default="UND", max_length=40)
+    purpose: str = Field(default="S", max_length=12)   # 상태 이니셜(units.UNIT_STATES)
+    warranty_months: int | None = Field(default=None, ge=0, le=120)
+    note: str = Field(default="", max_length=300)
+
+
+class UnitLineIn(BaseModel):
+    line_no: int = Field(ge=0, le=500)
+    units: list[UnitIn] = Field(default_factory=list, max_length=500)
+
+
+class UnitsIn(BaseModel):
+    quote_id: int
+    revision: int = Field(ge=0, le=1000)
+    lines: list[UnitLineIn] = Field(default_factory=list, max_length=100)
+
+
+class CaseIn(BaseModel):
+    received_on: dt.date | None = None
+    symptom: str | None = Field(default=None, max_length=1000)
+    cause: Literal["확인 중", "제품 결함", "고객 과실", "기타"] | None = None
+    charge: Literal["미정", "무상", "유상"] | None = None
+    status: Literal["접수", "진행 중", "완료"] | None = None
+    action: str | None = Field(default=None, max_length=1000)
+    closed_on: dt.date | None = None
+    note: str | None = Field(default=None, max_length=300)
+    # A/S 접수서(사용자 2026-10-19) — 고객사(비우면 시리얼의 고객사)·고객 담당자(이름·연락처)·사진(/as-photos 로 올린 id)
+    customer: str | None = Field(default=None, max_length=100)
+    contact: str | None = Field(default=None, max_length=200)
+    photos: list[str] | None = Field(default=None, max_length=10)
+
+
+class CaseNewIn(CaseIn):
+    unit_id: int
+
+
+class CaseBatchIn(CaseIn):
+    """한 접수서로 여러 시리얼(영업 건 상세 [A/S 접수], 사용자 2026-10-22)"""
+    unit_ids: list[int] = Field(min_length=1, max_length=50)
+
+
+class PolicyIn(BaseModel):
+    keyword: str = Field(default="", max_length=60)
+    months: int | None = Field(default=None, ge=0, le=120)
+    note: str = Field(default="", max_length=300)
+
+
+class PoliciesIn(BaseModel):
+    rows: list[PolicyIn] = Field(default_factory=list, max_length=200)
+
+
+async def _units_call(db: AsyncSession, coro):
+    try:
+        return await coro
+    except svc.DealError as e:
+        await db.rollback()
+        raise _fail(e) from e
+
+
+@router.get("/units/search")
+async def search_units(q: str = "", _: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    return {"items": await units.search_units(db, q, svc.kst_today())}
+
+
+@router.get("/units/{unit_id}")
+async def unit_detail(unit_id: int, _: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    return await _units_call(db, units.unit_detail(db, unit_id, svc.kst_today()))
+
+
+@router.get("/as-cases")
+async def list_cases(case_status: Literal["접수", "진행 중", "완료"] | None = None, user: User = Depends(require_sales),
+                     db: AsyncSession = Depends(get_db)) -> dict:
+    # admin — 화면이 [삭제]를 관리자에게만 보인다(실제 막는 것은 /as-cases/delete)
+    return {"items": await units.list_cases(db, status=case_status), "admin": is_admin(user)}
+
+
+@router.post("/as-cases/delete")
+async def delete_cases(body: DeleteIn, user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
+    """A/S 기록 지우기(관리자, 사용자 2026-10-22) — 보관함으로 옮긴다. 시리얼은 지우지 않는다."""
+    return {"deleted": await _units_call(db, units.delete_cases(db, body.ids, user.id))}
+
+
+@router.post("/as-cases", status_code=status.HTTP_201_CREATED)
+async def create_case(body: CaseNewIn, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    p = body.model_dump(exclude_unset=True)
+    return await _units_call(db, units.create_case(db, user.id, p.pop("unit_id"), p))
+
+
+@router.post("/as-cases/batch", status_code=status.HTTP_201_CREATED)
+async def create_cases(body: CaseBatchIn, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    p = body.model_dump(exclude_unset=True)
+    return {"items": await _units_call(db, units.create_cases(db, user.id, p.pop("unit_ids"), p))}
+
+
+@router.post("/as-cases/{case_id}")
+async def update_case(case_id: int, body: CaseIn, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    return await _units_call(db, units.update_case(db, user.id, case_id, body.model_dump(exclude_unset=True)))
+
+
+@router.get("/warranty-policies")
+async def get_policies(user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    return {"rows": await units.policies(db), "can_edit": is_admin(user)}
+
+
+@router.post("/warranty-policies")
+async def set_policies(body: PoliciesIn, user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
+    rows = await _units_call(db, units.save_policies(db, user.id, [r.model_dump() for r in body.rows]))
+    return {"rows": rows, "can_edit": True}
+
+
+@router.post("/as-photos")
+async def upload_as_photo(file: UploadFile = File(...), _: User = Depends(require_sales)) -> dict:
+    """A/S 접수서 사진 한 장 — 저장소에 올리고 id 를 돌려준다(접수·고치기 때 photos 에 넣는다)."""
+    ext = PurePosixPath(file.filename or "").suffix.lower()
+    if ext not in SHIP_PHOTO_TYPES:
+        raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="사진은 JPG·PNG·WEBP 만 올릴 수 있습니다.")
+    file.file.seek(0, 2)
+    size = file.file.tell()
+    file.file.seek(0)
+    if not 0 < size <= SHIP_PHOTO_MAX:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="사진은 15MB 까지 올릴 수 있습니다.")
+    pid = f"{uuid.uuid4().hex}{ext}"
+    try:
+        put_object(key=f"as-cases/{pid}", data=file.file, length=size, mime=SHIP_PHOTO_TYPES[ext])
+    except Exception as e:  # pragma: no cover — 저장소 장애
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail="사진 저장에 실패했습니다. 잠시 뒤 다시 시도해 주세요.") from e
+    return {"id": pid}
+
+
+@router.get("/as-photos/{pid}")
+async def as_photo(pid: str, _: User = Depends(require_sales)) -> StreamingResponse:
+    if not units.AS_PHOTO_ID.match(pid):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="사진을 찾을 수 없습니다.")
+    try:
+        obj = get_object_stream(f"as-cases/{pid}")
+    except Exception as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="사진을 찾을 수 없습니다.") from e
+
+    def stream():
+        try:
+            yield from obj.stream(amt=64 * 1024)
+        finally:
+            obj.close()
+            obj.release_conn()
+    return StreamingResponse(stream(), media_type=SHIP_PHOTO_TYPES["." + pid.rsplit(".", 1)[1]],
+                             headers={"Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff"})
+
+
+@router.get("/{deal_id}/units")
+async def get_units(deal_id: int, quote_id: int, revision: int, _: User = Depends(require_sales),
+                    db: AsyncSession = Depends(get_db)) -> dict:
+    return await _units_call(db, units.issue_units(db, deal_id, quote_id, revision))
+
+
+@router.post("/{deal_id}/units")
+async def save_units(deal_id: int, body: UnitsIn, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    return await _units_call(db, units.save_units(db, deal_id, user.id, body.quote_id, body.revision,
+                                                  [ln.model_dump() for ln in body.lines]))
+
+
 @router.get("/{deal_id}")
 async def get_deal(deal_id: int, _: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
     try:
@@ -389,6 +574,16 @@ class TermsIn(BaseModel):
     terms: list[TermIn] = Field(min_length=1, max_length=6)
 
 
+class RentalStartIn(BaseModel):
+    date: dt.date
+
+
+class RentalReturnIn(BaseModel):
+    """대여 건 회수 — start 회수 시작 · done 회수 완료 · cancel 기록 지우기(관리자)"""
+    step: Literal["start", "done", "cancel"]
+    date: dt.date | None = None
+
+
 class TermConfirmIn(BaseModel):
     index: int = Field(ge=0, le=10)
     date: dt.date | None = None
@@ -433,6 +628,20 @@ async def due_request(deal_id: int, body: DueExtendIn, user: User = Depends(requ
     from .sales_deals import approvals as ap
 
     return await _act(db, deal_id, ap.request_extend(db, deal_id, user.id, body.index, body.date, body.reason, body.recipients))
+
+
+@router.post("/{deal_id}/rental-start")
+async def rental_start(deal_id: int, body: RentalStartIn, user: User = Depends(require_sales),
+                       db: AsyncSession = Depends(get_db)) -> dict:
+    """대여 시작일 정하기(사용자 2026-10-22) — 끝나는 날 다시 계산."""
+    return await _act(db, deal_id, svc.set_rental_start(db, deal_id, user.id, body.date))
+
+
+@router.post("/{deal_id}/rental-return")
+async def rental_return(deal_id: int, body: RentalReturnIn, user: User = Depends(require_sales),
+                        db: AsyncSession = Depends(get_db)) -> dict:
+    """대여 건 회수 단계(사용자 2026-10-22) — 대여 중 → 회수 중 → 회수 완료."""
+    return await _act(db, deal_id, svc.set_rental_return(db, deal_id, user.id, body.step, body.date, admin=is_admin(user)))
 
 
 @router.post("/{deal_id}/confirm-term")

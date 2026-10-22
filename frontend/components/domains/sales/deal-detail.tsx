@@ -8,11 +8,15 @@ import { DealMeetingDialog, hasMeeting } from "@/components/domains/sales/deal-m
 import { DownloadDialog, PreviewDialog, savedContact } from "@/components/domains/sales/quote-workspace";
 import { Icon } from "@/components/shared/ui/icon";
 import { QuoteUploadDialog } from "@/components/domains/sales/quote-upload-dialog";
-import { ACTION_LABEL, Field, INPUT, Muted, StageChip, dealRequest, eventDetail, quoteVer, shortDate, stamp, todayIso, won } from "@/components/domains/sales/deal-format";
-import type { ApprovalAdmin, ApprovalRequest, DealEvent, DealRow, DealShipment, PoCompare } from "@/lib/shared/sales-deals";
+import { DealAsIntake } from "@/components/domains/sales/product-units-tab";
+import { SerialConfirmDialog, SerialRequiredDialog, UnitRegisterDialog } from "@/components/domains/sales/unit-register";
+import { ACTION_LABEL, Field, INPUT, Muted, StageChip, UnitStateBadge, dealRequest, eventDetail, quoteVer, shortDate, stamp, todayIso, won } from "@/components/domains/sales/deal-format";
+import type { ApprovalAdmin, ApprovalRequest, DealEvent, DealQuoteDoc, DealRow, DealShipment, PoCompare, ProductUnit } from "@/lib/shared/sales-deals";
 import { cn } from "@/lib/shared/utils";
 
 const STEPS = ["제품 추천 확정", "견적", "수주", "거래명세서", "출하", "입금 완료"] as const;
+// 대여 건 진행(사용자 2026-10-22) — 출하 = 대여 시작, 회수까지
+const RENTAL_STEPS = ["견적", "수주", "거래명세서", "대여 중(출하)", "회수 완료", "입금 완료"] as const;
 const CARRIERS = ["로젠택배", "경동택배", "직납", "배차", "기타"];
 
 
@@ -40,6 +44,11 @@ export function DealDetail({ row, admin = false, onClose, onChanged, onMeeting, 
   const [meetingOpen, setMeetingOpen] = useState(false);
   /** 지금 AI 가 품목을 대조 중인 발주서 순번 */
   const [comparing, setComparing] = useState<number | null>(null);
+  // 제품 시리얼(사용자 2026-10-19) — 경고창을 띄울 견적서 · 수주 진행 전 등록 안내 · 등록 화면(견적서 판)
+  const [serialConfirm, setSerialConfirm] = useState<DealQuoteDoc | null>(null);
+  const [serialAsk, setSerialAsk] = useState(false);
+  const [serialFor, setSerialFor] = useState<{ quoteId: number; revision: number } | null>(null);
+  const reload = () => { dealRequest(`/${deal.id}`).then(setDeal).catch(() => {}); onChanged(); };
 
   // 리스트 행에는 변경 이력이 없어 한 건을 다시 받는다
   useEffect(() => {
@@ -52,11 +61,14 @@ export function DealDetail({ row, admin = false, onClose, onChanged, onMeeting, 
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       if (photo) setPhoto(null);
+      else if (serialFor) setSerialFor(null);
+      else if (serialConfirm) setSerialConfirm(null);
+      else if (serialAsk) setSerialAsk(false);
       else onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [photo, onClose]);
+  }, [photo, onClose, serialFor, serialConfirm, serialAsk]);
 
   const act: Act = async (path, body) => {
     setBusy(true);
@@ -113,7 +125,11 @@ export function DealDetail({ row, admin = false, onClose, onChanged, onMeeting, 
 
   const reviews = deal.alerts.filter((a) => a.level === "review");
   const alerts = deal.alerts.filter((a) => a.level === "alert");
-  const done = [!!deal.proposal_id, !!deal.quote, !!deal.won, !!deal.statement, deal.shipped, deal.paid_full];
+  const isRental = deal.biz === "rental";
+  const steps: readonly string[] = isRental ? RENTAL_STEPS : STEPS;
+  const done = isRental
+    ? [!!deal.quote, !!deal.won, !!deal.statement, deal.shipped, !!deal.rental?.return?.done, deal.paid_full]
+    : [!!deal.proposal_id, !!deal.quote, !!deal.won, !!deal.statement, deal.shipped, deal.paid_full];
   const isShipOnly = deal.kind === "shipment_only";
 
   return (
@@ -146,7 +162,7 @@ export function DealDetail({ row, admin = false, onClose, onChanged, onMeeting, 
           </div>
           {!isShipOnly && (
             <ol className="mt-3 flex items-center gap-1 text-[12px]">
-              {STEPS.map((s, i) => (
+              {steps.map((s, i) => (
                 <li key={s} className={cn("flex-1 rounded-md px-2 py-1 text-center font-medium",
                   done[i] ? "bg-accent/15 text-accent" : "bg-foreground/5 text-foreground-subtle")}>
                   {done[i] ? "✓ " : ""}{s}
@@ -185,8 +201,9 @@ export function DealDetail({ row, admin = false, onClose, onChanged, onMeeting, 
 
           {!isShipOnly && <DropBlock deal={deal} busy={busy} act={act} />}
           {!isShipOnly && !deal.dropped && <WonBlock deal={deal} busy={busy} act={act} uploadPo={uploadPo} comparing={comparing} comparePo={comparePo} />}
+          {isRental && deal.won && !deal.dropped && <RentalReturn deal={deal} busy={busy} act={act} />}
           {!isShipOnly && deal.won && onOrder && deal.kind !== "sales_only" && (
-            <button type="button" onClick={() => onOrder(deal.id)}
+            <button type="button" onClick={() => (deal.units && deal.units.missing > 0 ? setSerialAsk(true) : onOrder(deal.id))}
                     className="-mb-2 flex items-center justify-between rounded-xl border border-accent/50 bg-accent/[0.06] px-4 py-2.5 text-left hover:bg-accent/10">
               <span>
                 <b className="text-[13.5px] text-accent">AI 와 수주 진행 →</b>
@@ -206,7 +223,8 @@ export function DealDetail({ row, admin = false, onClose, onChanged, onMeeting, 
 
           {deal.quote && <QuoteTable deal={deal} />}
           {(!!deal.quotes?.length || (!!deal.quote && !deal.imported && deal.kind !== "shipment_only")) && (
-            <QuoteDocs deal={deal} onQuote={onQuote} onUploaded={(d) => { setDeal(d); onChanged(); }} />
+            <QuoteDocs deal={deal} onQuote={onQuote} onUploaded={(d) => { setDeal(d); onChanged(); }} onSerial={setSerialConfirm}
+                       onSerialOpen={(quoteId, revision) => setSerialFor({ quoteId, revision })} />
           )}
           {deal.kind === "recommend" && !deal.quotes?.length && !deal.dropped && deal.recommendation_id && onQuote && (
             <StartQuote recommendationId={deal.recommendation_id} onQuote={onQuote} />
@@ -229,7 +247,7 @@ export function DealDetail({ row, admin = false, onClose, onChanged, onMeeting, 
 
           {!isShipOnly && <InvoiceHistory deal={deal} />}
           {!isShipOnly && <PaymentBlock deal={deal} busy={busy} act={act} />}
-          <ShipmentBlock deal={deal} busy={busy} act={act} onPhoto={setPhoto} />
+          <ShipmentBlock deal={deal} busy={busy} act={act} onPhoto={setPhoto} onReload={reload} />
 
           {deal.note && (
             <Section title="비고">
@@ -254,6 +272,22 @@ export function DealDetail({ row, admin = false, onClose, onChanged, onMeeting, 
 
       {meetingOpen && <DealMeetingDialog deal={deal} onClose={() => setMeetingOpen(false)}
                                          onSaved={(row) => { setDeal({ ...deal, ...row }); onChanged(); }} />}
+      {/* 제품 시리얼(사용자 2026-10-19) — 창 안 클릭이 상세 패널 닫기로 번지지 않게 */}
+      <div onClick={(e) => e.stopPropagation()}>
+        {serialConfirm && (
+          <SerialConfirmDialog deal={deal} quote={serialConfirm} onCancel={() => setSerialConfirm(null)}
+                               onConfirm={(revision) => { setSerialFor({ quoteId: serialConfirm.id, revision }); setSerialConfirm(null); }} />
+        )}
+        {serialAsk && (
+          <SerialRequiredDialog deal={deal} onCancel={() => setSerialAsk(false)}
+                                onLater={() => { setSerialAsk(false); onOrder?.(deal.id); }}
+                                onMove={() => { setSerialAsk(false); if (deal.units) setSerialFor({ quoteId: deal.units.quote_id, revision: deal.units.revision }); }} />
+        )}
+        {serialFor && (
+          <UnitRegisterDialog dealId={deal.id} quoteId={serialFor.quoteId} revision={serialFor.revision}
+                              onClose={() => setSerialFor(null)} onSaved={reload} />
+        )}
+      </div>
       {photo && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-black/80 p-4" onClick={(e) => { e.stopPropagation(); setPhoto(null); }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -493,6 +527,91 @@ function issuedVersions(deal: DealRow) {
     key: `${q.id}:${h.revision}`, quote_id: q.id, revision: h.revision, no: h.issue_no ?? h.quote_no ?? null,
     issued_at: h.issued_at, total: h.total, currency: h.currency, uploaded: !!h.uploaded,
   }))).sort((a, b) => b.issued_at.localeCompare(a.issued_at));
+}
+
+/** 대여 회수(사용자 2026-10-22) — 출하(대여 시작) 뒤 [회수 시작] → 회수 중 → [회수 완료] → 회수 완료(시리얼 출하 상태 → 회수).
+ *  기록 취소는 관리자만. 입금은 결제 회차 칸에서 따로 확인한다. */
+function RentalReturn({ deal, busy, act }: { deal: DealRow; busy: boolean; act: Act }) {
+  const admin = useContext(AdminCtx);
+  const r = deal.rental;
+  const ret = r?.return ?? {};
+  const [asking, setAsking] = useState<"start" | "done" | null>(null);
+  const [date, setDate] = useState(todayIso());
+  // 대여 시작일 — 담당자가 정한다(출하일과 따로, 사용자 2026-10-22). 바꾸면 끝나는 날 다시 계산
+  const [startEdit, setStartEdit] = useState<string | null>(null);
+  const saveStart = async () => {
+    if (startEdit && (await act("rental-start", { date: startEdit }))) setStartEdit(null);
+  };
+  const go = async (step: "start" | "done" | "cancel") => {
+    if (await act("rental-return", { step, ...(step === "cancel" ? {} : { date }) })) setAsking(null);
+  };
+  const left = r?.end ? Math.round((Date.parse(r.end) - Date.parse(todayIso())) / 86_400_000) : null;
+  return (
+    <Section title="대여 · 회수">
+      <div className="flex flex-col gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="w-[110px] shrink-0 text-foreground-muted">대여 시작일</span>
+          {startEdit === null ? (
+            <>
+              <b className={cn(!r?.start && "text-amber-700 dark:text-amber-300")}>{r?.start ?? "미정"}</b>
+              <button type="button" disabled={busy} onClick={() => setStartEdit(r?.start ?? deal.shipments[0]?.date ?? todayIso())}
+                      className="rounded-md border border-border px-2 py-0.5 text-[12px] font-semibold text-accent hover:bg-accent/8">
+                {r?.start ? "바꾸기" : "정하기"}
+              </button>
+            </>
+          ) : (
+            <>
+              <input type="date" value={startEdit} onChange={(e) => setStartEdit(e.target.value)} className={cn(INPUT, "h-8 w-auto")} />
+              <PrimaryBtn disabled={busy || !startEdit} onClick={() => void saveStart()}>저장</PrimaryBtn>
+              <button type="button" onClick={() => setStartEdit(null)} className="text-[12px] text-foreground-subtle hover:underline">취소</button>
+              <span className="text-[11.5px] text-foreground-subtle">끝나는 날 = 시작일 + {r?.months}개월 − 1일로 다시 계산</span>
+            </>
+          )}
+        </div>
+        <Grid rows={[
+          ["대여 기간", r ? `${r.months}개월${r.start ? ` · ${r.start} ~ ${r.end}` : " · 시작일 미정"}` : null],
+          ["월 납입금", r?.monthly ? `${r.monthly.toLocaleString("ko-KR")}원` : null],
+          ["출하일", deal.shipments[0]?.date ?? (deal.shipped ? "출하함" : "출하 전")],
+          ["회수", ret.done ? `완료 ${ret.done}${ret.started && ret.started !== ret.done ? ` (시작 ${ret.started})` : ""}`
+            : ret.started ? `회수 중 · ${ret.started} 시작` : "—"],
+        ]} />
+        {!ret.started && deal.shipped && left != null && left <= 30 && (
+          <p className={cn("rounded-lg px-3 py-1.5 text-[12.5px]", left < 0 ? "bg-red-500/10 text-red-700 dark:text-red-300" : "bg-amber-500/10 text-amber-800 dark:text-amber-200")}>
+            {left < 0 ? `대여 기간이 ${-left}일 지났습니다 — 회수를 시작하세요.` : `대여 끝나는 날까지 ${left}일 남았습니다.`}
+          </p>
+        )}
+        {!asking && (
+          <div className="flex flex-wrap items-center gap-2">
+            {!deal.shipped && <Muted>출하(대여 시작)를 기록하면 [회수 시작]을 누를 수 있습니다.</Muted>}
+            {deal.shipped && !ret.started && <PrimaryBtn disabled={busy} onClick={() => { setDate(todayIso()); setAsking("start"); }}>회수 시작</PrimaryBtn>}
+            {deal.shipped && !ret.done && (
+              <button type="button" disabled={busy} onClick={() => { setDate(todayIso()); setAsking("done"); }}
+                      className={cn("h-8 rounded-lg px-3 text-[12.5px] font-semibold disabled:opacity-50",
+                        ret.started ? "bg-emerald-600 text-white" : "border border-border text-foreground-muted hover:bg-foreground/5")}>
+                회수 완료
+              </button>
+            )}
+            {admin && (ret.started || ret.done) && (
+              <button type="button" disabled={busy} onClick={() => void go("cancel")}
+                      className="text-[12px] text-foreground-subtle hover:underline">회수 기록 취소(관리자)</button>
+            )}
+          </div>
+        )}
+        {asking && (
+          <FormBox onCancel={() => setAsking(null)} onSave={() => void go(asking)} canSave={!!date && !busy} busy={busy}>
+            <Field label={asking === "start" ? "회수 시작일" : "회수 완료일"}>
+              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={INPUT} />
+            </Field>
+            <p className="mt-1 text-[11.5px] text-foreground-subtle">
+              {asking === "start"
+                ? "고객에게서 제품을 가져오기 시작하면 누르세요. 단계가 '회수 중'이 됩니다."
+                : "제품을 다 받았으면 누르세요. 단계가 '회수 완료'가 되고, 이 건 시리얼의 출하 상태가 '회수'로 바뀌어 'AI 대여 나간 제품' 목록에서 빠집니다."}
+            </p>
+          </FormBox>
+        )}
+      </div>
+    </Section>
+  );
 }
 
 function WonBlock({ deal, busy, act, uploadPo, comparing, comparePo }: {
@@ -821,7 +940,9 @@ function PaymentBlock({ deal, busy, act }: { deal: DealRow; busy: boolean; act: 
 
 // ── 출하 ──────────────────────────────────────────────────────────────────
 
-function ShipmentBlock({ deal, busy, act, onPhoto }: { deal: DealRow; busy: boolean; act: Act; onPhoto: (n: string) => void }) {
+function ShipmentBlock({ deal, busy, act, onPhoto, onReload }: {
+  deal: DealRow; busy: boolean; act: Act; onPhoto: (n: string) => void; onReload: () => void;
+}) {
   const last = deal.shipments[deal.shipments.length - 1];
   const [open, setOpen] = useState(false);
   const [f, setF] = useState({ date: todayIso(), carrier: CARRIERS[0], tracking: "", items: "", qty_text: "",
@@ -835,16 +956,30 @@ function ShipmentBlock({ deal, busy, act, onPhoto }: { deal: DealRow; busy: bool
     setOpen(true);
   };
   const save = async () => { if (await act("shipments", f)) setOpen(false); };
+  // [A/S 접수] — 이 건에서 출하한 시리얼을 골라 [제품·A/S] 탭과 같은 접수서로(사용자 2026-10-22)
+  const [asOpen, setAsOpen] = useState(false);
+  const shipped = (deal.unit_list ?? []).filter((u) => u.shipment_index != null);
+  // 수주 판에서 아직 안 나간 시리얼(서버가 이 출하에 묶는 것과 같은 범위)
+  const pending = (deal.unit_list ?? []).filter((u) => u.shipment_index == null && deal.units
+    && u.quote_id === deal.units.quote_id && u.quote_revision === deal.units.revision);
 
   return (
     <Section title={`출하${deal.shipments.length ? ` ${deal.shipments.length}회` : ""}`}
+             aside={shipped.length > 0 && !asOpen && (
+               <button type="button" onClick={() => setAsOpen(true)} disabled={busy}
+                       className="inline-flex items-center gap-1 rounded-lg border border-accent/50 px-2.5 py-1 text-[12px] font-semibold text-accent hover:bg-accent/5 disabled:opacity-40">
+                 <Icon name="plus" className="h-3.5 w-3.5" /> A/S 접수
+               </button>
+             )}
              action={!open && deal.kind !== "shipment_only" && !deal.pay_case && <AddBtn onClick={start} disabled={busy}>+ 출하 기록</AddBtn>}>
+      {asOpen && <DealAsIntake units={shipped} onDone={(changed) => { setAsOpen(false); if (changed) onReload(); }} />}
       {deal.shipments.length === 0 && !open && (
         <Muted>{deal.shipped ? "비고에 '출하완료'만 적혀 있음(출하시트에서 짝을 찾지 못함)" : "출하 기록 없음"}</Muted>
       )}
       {deal.shipments.map((s, i) => (
         <EntryCard key={i} onRemove={deal.kind === "shipment_only" ? undefined : () => act("remove", { kind: "shipments", index: i })} busy={busy}>
-          <ShipmentInfo s={s} dealId={deal.id} onPhoto={onPhoto} />
+          <ShipmentInfo s={s} dealId={deal.id} onPhoto={onPhoto}
+                        units={(deal.unit_list ?? []).filter((u) => u.shipment_index === i)} />
         </EntryCard>
       ))}
       {open && (
@@ -870,13 +1005,30 @@ function ShipmentBlock({ deal, busy, act, onPhoto }: { deal: DealRow; busy: bool
             <Field label="받는 사람·연락처"><input value={f.receiver} onChange={(e) => set({ receiver: e.target.value })} className={INPUT} /></Field>
             <Field label="주소" wide><input value={f.address} onChange={(e) => set({ address: e.target.value })} className={INPUT} /></Field>
           </div>
+          {/* 저장하면 수주 판에서 아직 안 나간 시리얼이 모두 이 출하로 묶인다 — 무엇이 나가는지 상태 코드와 함께(사용자 2026-10-22) */}
+          {pending.length > 0 && (
+            <div className="mt-2 rounded-lg border border-border px-2.5 py-2 text-[12.5px]">
+              <div className="mb-1 font-semibold text-foreground-muted">이 출하로 나가는 제품 시리얼 {pending.length}개 <span className="font-normal text-foreground-subtle">· 출하일부터 무상 기간이 시작됩니다</span></div>
+              <ul className="flex flex-col gap-1">
+                {pending.map((u) => (
+                  <li key={u.id} className="flex min-w-0 items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate">{u.part_name}</span>
+                    <span className={cn("whitespace-nowrap font-mono", u.no_serial ? "text-foreground-subtle" : "text-foreground")}>{u.serial}</span>
+                    <UnitStateBadge code={u.purpose} />
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </FormBox>
       )}
     </Section>
   );
 }
 
-function ShipmentInfo({ s, dealId, onPhoto }: { s: DealShipment; dealId: number; onPhoto: (name: string) => void }) {
+function ShipmentInfo({ s, dealId, onPhoto, units = [] }: {
+  s: DealShipment; dealId: number; onPhoto: (name: string) => void; units?: ProductUnit[];
+}) {
   return (
     <>
       <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -908,6 +1060,21 @@ function ShipmentInfo({ s, dealId, onPhoto }: { s: DealShipment; dealId: number;
           ))}
         </ul>
       ) : null}
+      {/* 이 출하로 나간 제품 시리얼과 상태 코드(사용자 2026-10-22) — 출하일부터 무상 기간 */}
+      {units.length > 0 && (
+        <div className="mb-2 rounded-lg border border-border px-2.5 py-2">
+          <div className="mb-1 text-[12px] font-semibold text-foreground-muted">나간 제품 시리얼 {units.length}개</div>
+          <ul className="flex flex-col gap-1">
+            {units.map((u) => (
+              <li key={u.id} className="flex min-w-0 items-center gap-2">
+                <span className="min-w-0 flex-1 truncate">{u.part_name}</span>
+                <span className={cn("whitespace-nowrap font-mono", u.no_serial ? "text-foreground-subtle" : "text-foreground")}>{u.serial}</span>
+                <UnitStateBadge code={u.purpose} />
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <Grid rows={[
         ["품목", s.lines?.length ? null : s.items],
         ["수량", s.qty_text],
@@ -933,8 +1100,12 @@ function ShipmentInfo({ s, dealId, onPhoto }: { s: DealShipment; dealId: number;
 
 // ── 견적서 발행본(사용자 2026-10-07: 발행한 견적은 영업 건에서 관리, 견적서 탭은 작성 중인 것만) ──
 
-function QuoteDocs({ deal, onQuote, onUploaded }: {
+function QuoteDocs({ deal, onQuote, onUploaded, onSerial, onSerialOpen }: {
   deal: DealRow; onQuote?: (quoteId: number) => void; onUploaded: (d: DealRow) => void;
+  /** [제품 시리얼 등록] — 경고창부터(사용자 2026-10-19) */
+  onSerial: (q: DealQuoteDoc) => void;
+  /** 수주 판 등록 현황 줄의 [등록 →] — 수주 판이라 경고창 없이 바로 */
+  onSerialOpen: (quoteId: number, revision: number) => void;
 }) {
   const [saving, setSaving] = useState<{ quote: number; revision: number; fileName: string; title: string } | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -948,6 +1119,26 @@ function QuoteDocs({ deal, onQuote, onUploaded }: {
           <Icon name="paperclip" className="h-3.5 w-3.5" /> 견적서 파일 첨부
         </button>
       </div>
+      {!!deal.as_open && (
+        <p className="mb-2 rounded-lg bg-amber-500/10 px-3 py-1.5 text-[12.5px] text-amber-800 dark:text-amber-200">
+          🔧 {deal.as_active ? `A/S 진행 중 ${deal.as_active}건` : ""}{deal.as_active && deal.as_open > deal.as_active ? " · " : ""}
+          {deal.as_open > (deal.as_active ?? 0) ? `A/S 접수 ${deal.as_open - (deal.as_active ?? 0)}건` : ""} (전체 {deal.as_total}건)
+          — 내용은 [제품·A/S] 탭에서 시리얼로 확인하고, [A/S 들어감 확인]·[A/S 완료]로 진행을 바꿉니다.
+        </p>
+      )}
+      {deal.units && (
+        <div className={cn("mb-2 flex flex-wrap items-center gap-2 rounded-lg px-3 py-1.5 text-[12.5px]",
+          deal.units.missing > 0 ? "bg-amber-500/10 text-amber-800 dark:text-amber-200" : "bg-emerald-500/10 text-emerald-800 dark:text-emerald-200")}>
+          <span>
+            제품 시리얼 — <b className="font-mono">{deal.units.issue_no}</b> 기준 {deal.units.total}개 중 <b>{deal.units.done}개</b> 등록
+            {deal.units.missing > 0 ? " (출하 전에 모두 등록해야 합니다)" : ""}
+          </span>
+          <button type="button" onClick={() => onSerialOpen(deal.units!.quote_id, deal.units!.revision)}
+                  className="ml-auto font-semibold underline-offset-2 hover:underline">
+            {deal.units.missing > 0 ? "등록 →" : "보기·고치기 →"}
+          </button>
+        </div>
+      )}
       {(deal.quotes ?? []).map((q) => (
         <div key={q.id} className="mb-2 rounded-xl border border-border p-3">
           <div className="mb-1.5 flex flex-wrap items-center gap-2">
@@ -958,6 +1149,13 @@ function QuoteDocs({ deal, onQuote, onUploaded }: {
               <button type="button" onClick={() => onQuote(q.id)}
                       className="ml-auto rounded-lg border border-accent/50 px-2.5 py-1 text-[12px] font-semibold text-accent hover:bg-accent/5">
                 {q.status === "issued" ? "견적서 고치기 →" : "이어서 작성 →"}
+              </button>
+            )}
+            {q.issues.length > 0 && (
+              <button type="button" onClick={() => onSerial(q)}
+                      className={cn("rounded-lg border border-border px-2.5 py-1 text-[12px] font-semibold text-foreground-muted hover:text-foreground",
+                        !onQuote && "ml-auto")}>
+                제품 시리얼 등록
               </button>
             )}
           </div>
@@ -1174,11 +1372,18 @@ function EventList({ events }: { events: DealEvent[] }) {
 }
 
 
-function Section({ title, children, action }: { title: string; children: React.ReactNode; action?: React.ReactNode }) {
+function Section({ title, children, action, aside }: {
+  title: string; children: React.ReactNode; action?: React.ReactNode;
+  /** 제목 바로 오른쪽 버튼(예: 출하 옆 [A/S 접수]) */
+  aside?: React.ReactNode;
+}) {
   return (
     <section>
-      <div className="mb-2 flex items-center justify-between">
-        <h3 className="text-[12px] font-semibold uppercase tracking-[0.1em] text-foreground-subtle">{title}</h3>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="flex items-center gap-2">
+          <h3 className="text-[12px] font-semibold uppercase tracking-[0.1em] text-foreground-subtle">{title}</h3>
+          {aside}
+        </span>
         {action}
       </div>
       {children}

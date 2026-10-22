@@ -297,6 +297,8 @@ export type QuoteLine = {
   usd?: number | null;
   /** 묶음 id(없으면 기본 묶음 B0, 사용자 2026-10-13) */
   block?: string | null;
+  /** < OPTION > 묶음 줄 — Total 반영(true)/미반영. 반영한 줄만 옵션 Sub total·Total 에 들어감(사용자 2026-10-19) */
+  in_total?: boolean;
   /** 액세서리 조건부 수량(v1.2) — 담당자가 확인(confirmed)해야 발행 가능. basis = 계산 근거 */
   conditional?: boolean; confirmed?: boolean; basis?: string;
 };
@@ -311,7 +313,10 @@ export type QuoteForm = {
   total_note?: string; foot_notes?: string[] | string;
   /** 해외 견적서 담당자 'Mr. Alex Jeon' — 영문 이름·호칭(Mr./Ms.), 기본은 내 정보(사용자 2026-10-14) */
   contact_name_en?: string; contact_honorific?: string;
+  /** 판매 / 대여(사용자 2026-10-22) — 대여면 계약 개월 수로 Total 옆 월 납입금, 시작일은 영업 건 대여 기간(YYYY-MM-DD) */
+  purpose?: QuotePurpose; rental_months?: number | null; rental_start?: string;
 };
+export type QuotePurpose = "sale" | "rental";
 /** 해외 견적서의 한글 칸(원문은 칸에 그대로) — en: AI·담당자 영어(null = 아직 번역 전, 미리보기·발행 때 번역),
  *  by: ai|user, name: 이름·회사명(확인 필요), keep: [한글 그대로](번역 안 함, 발행 막지 않음) — 사용자 2026-10-14 */
 export type QuoteHangulCell = { path: string; label: string; text: string; name: boolean; en: string | null; by: "ai" | "user" | null; keep: boolean };
@@ -346,6 +351,7 @@ export type QuoteSession = {
 export type QuoteListItem = {
   id: number; recommendation_id: number | null; status: "draft" | "issued"; quote_no: string | null; revision: number;
   customer: string | null; total: number | null; model: string | null; updated_at: string; manual?: boolean;
+  purpose?: QuotePurpose;
 };
 
 /** 테스트용 정답지 샘플(제품 추천 질문 모두 채우기) — quotable: 유선 자동 툴체인저라 견적 단가가 있음. */

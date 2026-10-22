@@ -1236,6 +1236,23 @@ async def _stream_meeting(
     )
 
 
+async def _stream_rentals(text_: str, user_id: int | None):
+    """대여 나간 제품 목록 — 영업부(또는 전체 권한)만. 기준일은 한국 날짜."""
+    from .database import SessionLocal
+    from .models import User, UserDomain, UserRole
+    from .sales_deals import rental_query as _rq
+    from .sales_deals.service import kst_today
+
+    async with SessionLocal() as db:
+        user = await db.get(User, user_id) if user_id else None
+        if user is None or not (user.role == UserRole.superadmin or user.domain in (UserDomain.sales, UserDomain.all)):
+            yield "대여 제품 목록은 영업부만 볼 수 있습니다."
+            return
+        since = _rq.since_date(text_, kst_today())
+        data = await _rq.rented_units(db, since)
+    yield _rq.answer(data, since)
+
+
 @app.post("/v1/generate")
 async def generate(req: GenerateRequest, _auth: None = Depends(require_internal_token)):
     msgs = [m.model_dump() for m in req.messages]
@@ -1256,6 +1273,17 @@ async def generate(req: GenerateRequest, _auth: None = Depends(require_internal_
         )
         return StreamingResponse(
             _stream_codex(codex_intent, req, msgs),
+            media_type="text/plain; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+
+    # ── 대여 나간 제품 묻기 fast-path(사용자 2026-10-22) — 시리얼·프로젝트를 DB 에서 바로 읽어 표로. LLM 우회(지어내지 않게).
+    from .sales_deals import rental_query as _rq
+
+    if _rq.detect(msgs):
+        logger.warning("[rental] TAKING FAST-PATH: user_id=%s", req.user_id)
+        return StreamingResponse(
+            _stream_rentals(msgs[-1].get("content") or "", req.user_id),
             media_type="text/plain; charset=utf-8",
             headers={"Cache-Control": "no-store"},
         )

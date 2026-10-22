@@ -62,6 +62,16 @@ def _norm(t: str) -> str:
     return re.sub(r"\s+", " ", t or "").strip().lower()
 
 
+def _sum_rows(formula: Any) -> set[int] | None:
+    """Total 칸 수식(=SUM(F17:F20,F23)) → 더하는 행 번호. 수식이 아니면 None(알 수 없음)."""
+    if not (isinstance(formula, str) and formula.startswith("=")):
+        return None
+    out: set[int] = set()
+    for a, b in re.findall(r"\$?F\$?(\d+)(?::\$?F\$?(\d+))?", formula.upper()):
+        out.update(range(int(a), int(b or a) + 1))
+    return out
+
+
 # ── 읽기 ─────────────────────────────────────────────────────────────────────
 
 def parse(data: bytes) -> dict[str, Any] | None:
@@ -126,6 +136,9 @@ def parse(data: bytes) -> dict[str, Any] | None:
 
     rows: list[dict[str, Any]] = []
     nums: list[int] = []                                     # rows 와 같은 순서의 엑셀 행 번호
+    # 대여 양식(사용자 2026-10-22) — 비고 칸이 월 납입금 =ROUNDUP(F30/36,-3), 총액 SUM 은 금액 칸
+    rent = re.match(r"=ROUNDUP\(\$?F\$?\d+/(\d+)", str(ws.cell(total, 7).value or "").upper().replace(" ", ""))
+    in_sum = _sum_rows(ws.cell(total, 6 if rent else 7).value)   # Total 에 더하는 행 — 금액은 있어도 빠진 줄 = 미반영 옵션
     for r in range(head + 1, total):
         nums.append(r)
         a_end = span(r, 1)
@@ -156,12 +169,16 @@ def parse(data: bytes) -> dict[str, Any] | None:
         m = _UNIT_RE.search(ws.cell(r, 4).number_format or "")
         unit = m.group(1) if m else ""
         f_raw = ws.cell(r, 6).value
-        rows.append({"row": "option" if f_raw in (None, "") else "item", "commodity": a, "desc": desc, "qty": qty,
+        # 공급가액 칸이 빈 줄 = 예전 옵션, 금액은 있는데 Total 에 안 더하는 줄 = 미반영 옵션(사용자 2026-10-19)
+        flag = {} if f_raw in (None, "") or in_sum is None or r in in_sum else {"in_total": False}
+        rows.append({"row": "option" if f_raw in (None, "") or flag else "item", **flag, "commodity": a, "desc": desc, "qty": qty,
                      "unit": "" if unit.lower() in ("ea", "") else unit, "unit_price": price,
                      "remark": _s(ws.cell(r, 7).value)})
 
     t = _s(ws.cell(total, 1).value).split("\n", 1)
     form["total_note"] = t[1].strip() if len(t) > 1 else ""
+    if rent:                                                  # 대여 견적서 — 월 납입금 식의 개월 수
+        form.update(purpose="rental", rental_months=int(rent[1]))
     r = find(1, {lab["delivery"]}, total)
     pos["delivery"] = r
     if r:
@@ -269,8 +286,10 @@ def _sections(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[st
         title = g[0]["text"] if g[0]["row"] == "section" else ""
         body = g[1:] if title else g
         kinds = {r["row"] for r in body}
-        if title == qs.OPTION_TITLE or (kinds and kinds <= {"option"}):
+        if title == qs.OPTION_TITLE or (kinds and kinds <= {"option"}) or any(r.get("in_total") is False for r in body):
             typ = "option"
+            # 옵션 묶음에서 Total 에 더하는 줄 = 반영 옵션
+            body = [{**r, "row": "option", "in_total": True} if r["row"] == "item" else r for r in body]
         elif kinds and kinds <= {"spec"}:
             typ = "spec"
         elif kinds and kinds <= {"text"} and not title:
@@ -317,6 +336,8 @@ def merge(state: dict[str, Any], parsed: dict[str, Any]) -> tuple[dict[str, Any]
             changes.append(f"새 묶음: {sec['title'] or {'option': '< OPTION >', 'spec': '사양', 'text': '문구'}.get(sec['type'], '품목')}")
         used.add(b["id"])
         nb = {"id": b["id"], "type": sec["type"], "title": sec["title"]}
+        if sec["type"] == "option" and (b.get("title") or qs.OPTION_TITLE) == (sec["title"] or qs.OPTION_TITLE):
+            nb["title"] = b.get("title") or ""             # '< OPTION >' 와 빈 제목은 같은 제목(견적서엔 둘 다 < OPTION >)
         if sec["type"] == "items":
             nb["subtotal"] = bool(b.get("subtotal"))
         if sec["type"] == "spec":
@@ -380,7 +401,7 @@ def merge(state: dict[str, Any], parsed: dict[str, Any]) -> tuple[dict[str, Any]
         new_nego = {"mode": "percent", "value": float(m.group(1)), "label": ""} if m else \
             {"mode": "amount", "value": cut, "label": (lab.group(1).strip() if lab else "")[:40]}
         st["nego"] = new_nego
-        if m and not _same_num(qs.nego_amount(st, sum(r["amount"] for r in _render(st) if not r.get("row"))), cut):
+        if m and not _same_num(qs.nego_amount(st, sum(r["amount"] for r in _render(st) if not r.get("row") or r.get("in_total"))), cut):
             st["nego"] = {"mode": "amount", "value": cut, "label": ""}
         if (old_nego or {}) != st["nego"]:
             changes.append(f"NEGO: {qs.nego_label(state) if old_nego else '없음'} → {qs.nego_label(st)} {cut:,.2f}".rstrip("0").rstrip("."))
@@ -400,6 +421,9 @@ def merge(state: dict[str, Any], parsed: dict[str, Any]) -> tuple[dict[str, Any]
         if _norm(pf[k]) != _norm(now):
             f[k] = qs.clean_comments(pf[k]) if k == "comments" else pf[k]
             changes.append(f"{labels[k]}: {now[:20] or '(없음)'} → {pf[k][:20] or '(없음)'}")
+    if pf.get("rental_months") and (f.get("purpose") != "rental" or f.get("rental_months") != pf["rental_months"]):
+        changes.append(f"대여 개월 수: {f.get('rental_months') or '(없음)'} → {pf['rental_months']}")
+        f.update(purpose="rental", rental_months=pf["rental_months"])
     if "notes" in pf:
         scope = qx._SCOPE[lang]
         pogo = any(ln.get("key") in ("PPM", "PPF") for ln in st["lines"])
@@ -423,7 +447,7 @@ def _new_line(st: dict[str, Any], n: dict[str, Any], blk: str, en: bool, changes
     qty = n["qty"] or 1
     ln = {"id": qs._new_id(st), "kind": "extra", "key": "extra", "name": qs.clean_spec(n["desc"]) or n["commodity"] or "항목",
           "commodity": n["commodity"][:60], "qty": int(round(qty)), "remark": n["remark"][:100], "block": blk,
-          "price_status": "set", "unit_price": None if en else n["unit_price"]}
+          "price_status": "set", "unit_price": None if en else n["unit_price"], **({"in_total": True} if n.get("in_total") else {})}
     if en:
         ln["usd"] = n["unit_price"]
     if n["unit"]:
@@ -461,6 +485,9 @@ def _update_line(st: dict[str, Any], ln: dict[str, Any], o: dict[str, Any], n: d
         return ln
     if (ln.get("block") or qs.MAIN_BLOCK) != blk:
         ln["block"] = blk
+    if "in_total" in n and n["in_total"] != bool(ln.get("in_total")):
+        ln["in_total"] = n["in_total"]
+        changes.append(f"{name} 옵션 {'Total 반영' if n['in_total'] else 'Total 미반영'}")
     if n["commodity"] != (o.get("commodity") or ""):
         ln["commodity"] = n["commodity"][:60]
         changes.append(f"{name} 품목: {o.get('commodity') or '(없음)'} → {n['commodity'] or '(없음)'}")

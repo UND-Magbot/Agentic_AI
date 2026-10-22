@@ -46,8 +46,8 @@ async def run() -> None:
         kept = (await db.execute(text("SELECT COUNT(*) FROM trash_bin WHERE source_table = 'sales_deals'"))).scalar()
         check(data["counts"]["imported"] == 0 and not any(str(r["deal_no"] or "").startswith(("S25-", "S26-")) for r in rows)
               and kept >= 190, "옛 번호 건은 리스트에 없고 보관함에", f"{data['counts']} 보관 {kept}")
-        ups = [r["updated_at"] for r in rows]
-        check(ups == sorted(ups, reverse=True), "최근에 바뀐 건이 위(사용자 2026-10-08)")
+        cre = [r["created_at"] for r in rows]
+        check(cre == sorted(cre, reverse=True), "새로 만든 건이 위(사용자 2026-10-22)")
 
         # ── 새 건 → 맨 위 ──
         new_id = await svc.create_deal(db, uid, {
@@ -189,8 +189,7 @@ async def run() -> None:
         await svc.set_dropped(db, t_id, uid, True, "고객 일정 취소")
         data = await svc.list_deals(db, TODAY)
         row = next(r for r in data["rows"] if r["id"] == t_id)
-        check(row["stage"] == "드랍" and row["drop_reason"] == "고객 일정 취소" and data["rows"][0]["id"] == t_id,
-              "드랍 → 드랍 단계, 맨 위(최근 변경)")
+        check(row["stage"] == "드랍" and row["drop_reason"] == "고객 일정 취소", "드랍 → 드랍 단계(줄 위치는 그대로, 2026-10-22)")
         check(set(data["kpi"]) >= {"won_by_quarter", "won_total", "sales", "year"}, "리스트에 분기 수주·올해 매출")
         await svc.set_dropped(db, t_id, uid, False, None)
         check((await svc.get_deal(db, t_id, TODAY))["stage"] == "출하 후 입금 대기", "되살리기 → 원래 단계")

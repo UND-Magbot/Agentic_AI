@@ -4,7 +4,7 @@
 import { useState } from "react";
 import { Field, INPUT, dealRequest, todayIso, won } from "@/components/domains/sales/deal-format";
 import { InitialsPrompt } from "@/components/domains/sales/initials-prompt";
-import type { DealRow } from "@/lib/shared/sales-deals";
+import type { DealBiz, DealRow } from "@/lib/shared/sales-deals";
 import { cn } from "@/lib/shared/utils";
 
 // 기존 관리 시트에서 가장 많이 쓰던 결제조건 문구
@@ -22,8 +22,10 @@ const num = (s: string) => {
   return s.trim() && Number.isFinite(n) ? n : null;
 };
 
-export function DealNewForm({ owners, onClose, onCreated }: {
+export function DealNewForm({ owners, biz = "sale", onClose, onCreated }: {
   owners: string[];
+  /** rental = [제품 대여 관리]에서 연 창 — 대여 개월 수·시작일을 받아 대여 건으로(사용자 2026-10-22) */
+  biz?: DealBiz;
   onClose: () => void;
   onCreated: (row: DealRow) => void;
 }) {
@@ -40,10 +42,13 @@ export function DealNewForm({ owners, onClose, onCreated }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [needIni, setNeedIni] = useState(false);
+  const rental = biz === "rental";
+  const [months, setMonths] = useState("");
+  const [rentStart, setRentStart] = useState("");
 
   const total = lines.reduce((sum, l) => sum + (num(l.unit_price) ?? 0) * (num(l.qty) ?? 0), 0);
   const filled = lines.filter((l) => l.name.trim());
-  const canSave = customer.trim() && quoteDate && filled.length > 0 && !busy;
+  const canSave = customer.trim() && quoteDate && filled.length > 0 && !busy && (!rental || (num(months) ?? 0) >= 1);
 
   const setLine = (key: number, patch: Partial<Line>) =>
     setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
@@ -57,6 +62,7 @@ export function DealNewForm({ owners, onClose, onCreated }: {
         title: title.trim() || null, quote_date: quoteDate, vat_included: vatIncluded, currency,
         pay_terms_text: payTerms.trim() || null, note: note.trim() || null,
         items: filled.map((l) => ({ name: l.name.trim(), unit_price: num(l.unit_price), qty: num(l.qty) })),
+        ...(rental ? { rental: { months: Math.round(num(months) ?? 0), start: rentStart || null } } : {}),
       });
       onCreated(row);
     } catch (e) {
@@ -70,10 +76,10 @@ export function DealNewForm({ owners, onClose, onCreated }: {
 
   return (
     <div className="fixed inset-0 z-40 grid place-items-center bg-black/30 p-4" onClick={onClose}>
-      <div role="dialog" aria-label="새 제품 영업 건 등록" onClick={(e) => e.stopPropagation()}
+      <div role="dialog" aria-label={rental ? "새 제품 대여 건 등록" : "새 제품 판매 건 등록"} onClick={(e) => e.stopPropagation()}
            className="scroll-thin max-h-full w-full max-w-[760px] overflow-y-auto rounded-2xl bg-background p-5 shadow-2xl">
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-[17px] font-bold">새 건 등록 (견적)</h2>
+          <h2 className="text-[17px] font-bold">{rental ? "새 대여 건 등록 (견적)" : "새 건 등록 (견적)"}</h2>
           <button type="button" onClick={onClose} aria-label="닫기"
                   className="grid h-8 w-8 place-items-center rounded-lg text-foreground-muted hover:bg-foreground/8">✕</button>
         </div>
@@ -89,7 +95,23 @@ export function DealNewForm({ owners, onClose, onCreated }: {
           <Field label="건명 (비우면 첫 품목으로)" wide>
             <input value={title} onChange={(e) => setTitle(e.target.value)} className={INPUT} />
           </Field>
+          {rental && (
+            <>
+              <Field label="대여 개월 수 *">
+                <input value={months} onChange={(e) => setMonths(e.target.value)} inputMode="numeric" placeholder="예: 36 (3년)" className={INPUT} />
+              </Field>
+              <Field label="대여 시작일 (모르면 비워 두기)">
+                <input type="date" value={rentStart} onChange={(e) => setRentStart(e.target.value)} className={INPUT} />
+              </Field>
+            </>
+          )}
         </div>
+        {rental && (
+          <p className="mt-2 text-[11.5px] text-foreground-subtle">
+            대여 끝나는 날(시작일 + 개월 수)과 월 납입금(합계 ÷ 개월, 천 원 올림)은 저장할 때 계산합니다
+            {(num(months) ?? 0) >= 1 && total > 0 && currency === "KRW" ? ` — 지금 합계면 월 ${(Math.ceil(total / Math.round(num(months) ?? 1) / 1000) * 1000).toLocaleString("ko-KR")}원` : ""}.
+          </p>
+        )}
 
         <h3 className="mb-2 mt-5 text-[12px] font-semibold uppercase tracking-[0.1em] text-foreground-subtle">견적 품목</h3>
         <div className="flex flex-col gap-2">

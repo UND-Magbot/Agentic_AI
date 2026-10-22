@@ -121,13 +121,14 @@ check({"Delivery Schedule", "Payment Terms", "Total Amount", "Purchase Order Con
       and we["E17"].number_format == qx.USD_CENTS and he["currency"] == "USD" and he["fx_rate"] == 1380
       and "Mr. Gildong Hong (" in we["A4"].value and "이사" not in we["A4"].value,
       "영문 양식: 같은 구성, 문구 영어, 달러 서식, 영문 계좌·예금주, 담당자 'Mr. 영문 이름'(해외 기준 견적서, 2026-10-14)")
-# 해외 기준 견적서 배치(사용자 2026-10-14) — 줄마다 앞 한 칸·국가명 앞 줄바꿈, 고객사 13칸 들여쓰기, Comments 14pt, 수량 서식, A열 15
+# 해외 기준 견적서 배치(사용자 2026-10-14) — 줄마다 앞 한 칸·국가명 앞 줄바꿈, Comments 14pt, 수량 서식, A열 15
+# Customer 칸은 국내·해외 모두 들여쓰기 없이 가운데 정렬(사용자 2026-10-22)
 a4 = we["A4"].value.split("\n")
 check(all(x.startswith(" ") for x in a4) and any(x.strip().startswith("Republic of Korea") for x in a4)
-      and we["A9"].value.startswith(" " * 13 + form["customer"]) and we["E9"].font.sz == 14
+      and we["A9"].value.startswith(form["customer"]) and we["A9"].alignment.horizontal == "center" and we["E9"].font.sz == 14
       and we["D17"].number_format == '#,##0_ "ea"' and we.column_dimensions["A"].width == 15.0
-      and ws["A9"].value.startswith(" " * 8 + form["customer"]) and ws["E9"].font.sz == 12 and ws.column_dimensions["A"].width == 13.58,
-      "영문 배치 = 해외 기준 견적서(주소 줄바꿈·들여쓰기·14pt·'#,##0_ \"ea\"'·A열 15), 국내 양식은 그대로", str(a4))
+      and ws["A9"].value.startswith(form["customer"]) and ws["A9"].alignment.horizontal == "center" and ws["E9"].font.sz == 12 and ws.column_dimensions["A"].width == 13.58,
+      "영문 배치 = 해외 기준 견적서(주소 줄바꿈·Customer 가운데·14pt·'#,##0_ \"ea\"'·A열 15), 국내 양식은 그대로", str(a4))
 whole = [{**en_lines[0], "unit_price": 1000.0, "amount": 1000.0, "qty": 2, "unit": "sets"}]
 ww = openpyxl.load_workbook(io.BytesIO(qx.build_xlsx(he, whole))).active
 check(ww["E17"].number_format == qx.USD_WHOLE and ww["D17"].number_format == '#,##0_ "sets"',

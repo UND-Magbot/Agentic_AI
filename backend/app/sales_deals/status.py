@@ -14,7 +14,10 @@ UNPAID_DAYS = 30      # 거래명세서 발급(이관 건은 옛 계산서 기�
 # 세금계산서는 이 프로그램 밖에서 처리한다(사용자 2026-10-07) — '청구 중' 단계는 없앴다(계산서 기록이 있던 이관 건은 '수주').
 # 이름은 남은 일이 보이게(사용자 2026-10-07): 출하했지만 완납 전 = 출하 후 입금 대기, 예전 엑셀의 견적 없는 출하 = 출하 기록만 (이전)
 # 실주는 없앴다 — 수주까지 못 간 건은 모두 드랍(사용자 2026-10-08)
-STAGES = ["제품 추천 확정", "견적", "수주", "출하 후 입금 대기", "완료 (출하·완납)", "드랍", "출하 기록만 (이전)"]
+STAGES = ["제품 추천 확정", "견적", "수주", "출하 후 입금 대기", "완료 (출하·완납)", "드랍", "출하 기록만 (이전)",
+          # 대여 건만(사용자 2026-10-22) — 출하하면 대여 중, [회수 시작] → 회수 중, [회수 완료] → 회수 완료. 입금은 알림으로 따로
+          "대여 중", "회수 중", "회수 완료"]
+RENTAL_STAGES = ["견적", "수주", "대여 중", "회수 중", "회수 완료", "드랍"]
 
 
 def _days(since: str | None, today: dt.date) -> int | None:
@@ -33,6 +36,11 @@ def derive(d: dict, today: dt.date) -> dict:
         stage = "출하 기록만 (이전)"
     elif d["kind"] == "recommend":                   # 최종 제안 확정 — 견적서 발행 전
         stage = "제품 추천 확정"
+    elif (d.get("quote") or {}).get("biz") == "rental":
+        # 대여 — 대여료는 매달 들어오므로 입금은 단계가 아니라 알림(미입금·예정일 지남)으로 본다
+        ret = ((d.get("quote") or {}).get("rental") or {}).get("return") or {}
+        stage = ("회수 완료" if ret.get("done") else "회수 중" if ret.get("started") else "대여 중" if shipped
+                 else "수주" if d["won"] else "견적")
     elif d["paid_full"] and (shipped or not d.get("pay_case")):
         stage = "완료 (출하·완납)"                  # 결제 방식을 고른 건(선입금)은 출하까지 끝나야 완료
     elif shipped:
@@ -58,6 +66,13 @@ def derive(d: dict, today: dt.date) -> dict:
         n = _days(last, today)
         if n is not None and n > UNPAID_DAYS:
             alerts.append({"code": "UNPAID", "level": "alert", "text": f"계산서 발행 후 {n}일 미입금(이전 기록)"})
+    rent = quote.get("rental") or {}
+    if stage == "대여 중" and not rent.get("start"):   # 출하했는데 대여 시작일을 안 정함(사용자 2026-10-22)
+        alerts.append({"code": "RENTAL_START", "level": "review", "text": "대여 시작일을 정해 주세요 — 끝나는 날·회수 알림의 기준입니다"})
+    if stage == "대여 중" and rent.get("end"):         # 대여 기간이 끝났는데 회수를 시작하지 않음(사용자 2026-10-22)
+        n = _days(rent["end"], today)
+        if n is not None and n > 0:
+            alerts.append({"code": "RENTAL_END", "level": "alert", "text": f"대여 기간 끝남({rent['end']}, {n}일 지남) — 회수 필요"})
     from .flow import overdue                         # 예정 입금일이 지난 회차(사용자 2026-10-08: 팝업·리스트 강조)
     # 출하는 입금 확인과 상관없이 할 수 있다(사용자 2026-10-08) — '입금 확인 전 출하' 알림은 없앴다
 

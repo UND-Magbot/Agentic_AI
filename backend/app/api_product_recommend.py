@@ -285,6 +285,7 @@ class QuoteLineIn(BaseModel):
     unit: str | None = Field(default=None, max_length=10)          # 수량 단위(MD·식·개월 …, 비우면 ea)
     kind: Literal["extra", "note"] | None = None                  # note = 서술형 줄(항목명 commodity / 내용 name, 가격 없음)
     block: str | None = Field(default=None, max_length=20)        # 묶음 id(B0·B1… 또는 화면의 새 묶음 임시 id, 사용자 2026-10-13)
+    in_total: bool | None = None                                  # 옵션 묶음 줄 — Total 반영(True)/미반영(사용자 2026-10-19)
 
 
 class QuoteSpecRowIn(BaseModel):
@@ -325,7 +326,7 @@ class QuoteDeliveryIn(BaseModel):
 
 class QuoteEditIn(BaseModel):
     """왼쪽 화면 직접 수정 — 머리(form)·품목(lines, 물류비·인건비 줄 제외)·납품 방식(delivery)·설치 인원·일수·단가(work)·넣을 옵션."""
-    form: dict[str, Any] = Field(default_factory=dict, max_length=30)
+    form: dict[str, Any] = Field(default_factory=dict, max_length=40)   # 머리 칸 27개(대여 칸 포함, 2026-10-22)
     lines: list[QuoteLineIn] | None = Field(default=None, max_length=60)
     delivery: QuoteDeliveryIn | None = None
     work: QuoteWorkIn | None = None

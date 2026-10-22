@@ -656,6 +656,19 @@ export function ChatWindow({
   // 프로젝트에서 첫 발화로 진입한 경우, mount 시점에 send() 가 즉시 호출되며 messages 가 채워진다.
   // 그 한 프레임 사이에 환영(빈) 화면이 깜빡이는 걸 방지하기 위해 별도 placeholder 를 렌더한다.
   const isStartingFromProject = isEmpty && Boolean(initialUserMessage?.trim());
+  // 기술영업 첫 화면 — 입력창은 [AI와 채팅 시작]을 눌러야 맨 앞에 떠오른다(사용자 2026-10-22). 첫 메시지를 보내면 평소 채팅 화면으로.
+  const salesHome = isEmpty && !isStartingFromProject && lockedDomain?.key === "sales";
+  const [chatOpen, setChatOpen] = useState(false);
+  const chatOverlayRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!chatOpen) return;
+    chatOverlayRef.current?.querySelector("textarea")?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setChatOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [chatOpen]);
 
   // 모드별 표시 props.
   const accent = lockedDomain?.accent ?? NEUTRAL_ACCENT;
@@ -695,6 +708,7 @@ export function ChatWindow({
               // 기술영업은 추천 질문을 대표 기능·보조 도구 아래 칩으로 따로 그린다(SalesHome)
               examples={lockedDomain.key === "sales" ? undefined : lockedDomain.examples}
               onPickExample={(t) => void send(t)}
+              dense={lockedDomain.key === "sales"}
             >
               {lockedDomain.key === "finance" && (
                 <>
@@ -725,6 +739,7 @@ export function ChatWindow({
                   onPickExample={(t) => void send(t)}
                   onRunBody={(atts) => void send(PROPOSAL_BODY_PROMPT, { attachments: atts })}
                   onRunConcept={(atts) => void send(CONCEPT_MAP_PROMPT, { attachments: atts })}
+                  onOpenChat={() => setChatOpen(true)}
                 />
               )}
             </EmptyState>
@@ -841,16 +856,56 @@ export function ChatWindow({
           </div>
         )}
       </div>
-      <Composer
-        accent={accent}
-        placeholder={placeholder}
-        disabled={streaming}
-        compact={!isEmpty}
-        modelLabel={modelLabel}
-        streaming={streaming}
-        onSubmit={(t, atts) => send(t, { attachments: atts })}
-        onStop={stop}
-      />
+      {!salesHome && (
+        <Composer
+          accent={accent}
+          placeholder={placeholder}
+          disabled={streaming}
+          compact={!isEmpty}
+          modelLabel={modelLabel}
+          streaming={streaming}
+          onSubmit={(t, atts) => send(t, { attachments: atts })}
+          onStop={stop}
+        />
+      )}
+      {salesHome && chatOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="AI와 채팅"
+          className="fixed inset-0 z-50 flex items-end justify-center bg-foreground/30 backdrop-blur-sm"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setChatOpen(false);
+          }}
+        >
+          <div ref={chatOverlayRef} className="anim-fade-in-up w-full max-w-3xl pb-4">
+            <div className="mb-2 flex items-center justify-between px-5 text-white">
+              <span className="text-[14px] font-semibold drop-shadow">AI와 채팅 — 무엇이든 물어보세요</span>
+              <button
+                type="button"
+                onClick={() => setChatOpen(false)}
+                aria-label="닫기"
+                className="grid h-8 w-8 place-items-center rounded-md bg-black/20 text-white hover:bg-black/35"
+              >
+                <span className="text-[18px] leading-none">×</span>
+              </button>
+            </div>
+            <Composer
+              accent={accent}
+              placeholder={placeholder}
+              disabled={streaming}
+              compact
+              modelLabel={modelLabel}
+              streaming={streaming}
+              onSubmit={(t, atts) => {
+                setChatOpen(false);
+                return send(t, { attachments: atts });
+              }}
+              onStop={stop}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

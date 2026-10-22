@@ -6,7 +6,9 @@ import { cookies } from "next/headers";
 const TOKEN_COOKIE = "und_cortex_token";
 const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:8002";
 
-export type DealStage = "제품 추천 확정" | "견적" | "수주" | "출하 후 입금 대기" | "완료 (출하·완납)" | "드랍" | "출하 기록만 (이전)";
+export type DealStage = "제품 추천 확정" | "견적" | "수주" | "출하 후 입금 대기" | "완료 (출하·완납)" | "드랍" | "출하 기록만 (이전)"
+  /** 대여 건만(사용자 2026-10-22) — 출하하면 대여 중, [회수 시작] → 회수 중, [회수 완료] → 회수 완료 */
+  | "대여 중" | "회수 중" | "회수 완료";
 
 export interface DealAlert {
   code: string;
@@ -199,6 +201,9 @@ export interface DealRow {
   dropped: boolean;
   drop_reason: string | null;
   kind: "recommend" | "quote" | "sales_only" | "shipment_only";
+  /** 판매 / 대여(대여 견적서로 낸 건, 사용자 2026-10-22) — rental = 계약 개월 수·시작일·끝나는 날·월 납입금 */
+  biz: DealBiz;
+  rental: DealRental | null;
   legacy_no: string | null;
   /** 회사 제품 추천의 [최종 제안 확정] 기록 — 있으면 [미팅 정보]로 미팅 내용·최종 추천·근거·대화를 본다. */
   proposal_id: number | null;
@@ -225,6 +230,15 @@ export interface DealRow {
   statement?: DealStatement | null;
   /** 이 건으로 만든 견적서(한 건 상세에서만) — 발행한 판 목록. 발행본 관리는 영업 건에서(견적서 탭은 작성 중인 것만). */
   quotes?: DealQuoteDoc[];
+  /** 수주 판의 제품 시리얼 등록 현황(한 건 상세에서만, 사용자 2026-10-19) — 수주 판이 없거나 대상 품목이 없으면 null */
+  units?: UnitSummary | null;
+  /** 이 건의 제품 시리얼 전부 — 출하 창 체크 목록 */
+  unit_list?: ProductUnit[];
+  /** A/S 진행 중(완료 아님)·전체 건수(사용자 2026-10-19) — 단계와 따로(출하·완납 뒤에도 A/S 는 생김) */
+  as_open?: number;
+  /** [A/S 들어감 확인]을 누른 '진행 중' 건수(사용자 2026-10-22) — 있으면 리스트의 그 줄을 연하게 */
+  as_active?: number;
+  as_total?: number;
   /** 입금 예정일 연장 요청(회차별 최근 것, 한 건 상세에서만) */
   due_requests?: ApprovalRequest[];
   pay_case?: PayCase | null;
@@ -261,7 +275,7 @@ export interface DealKpi {
 
 export interface DealListData {
   today: string;
-  summary: Record<DealStage | "확인 필요" | "알림", number>;
+  summary: Record<DealStage | "확인 필요" | "알림" | "A/S 진행 중", number>;
   counts: { total: number; imported: number };
   rows: DealRow[];
   kpi: DealKpi;
@@ -296,3 +310,107 @@ export type ApprovalRequest = {
   to_me: boolean; created_at: string; decided_at: string | null;
 };
 export type ApprovalAdmin = { id: number; name: string; role: string };
+
+// ── 제품 시리얼·A/S(사용자 2026-10-19, 영업팀 요청 20번) ──
+
+/** 수주 판의 시리얼 등록 현황 — 품목 줄마다 수량만큼 적으면 그 줄은 끝. '특주'처럼 적은 것도 등록으로 본다. */
+export interface UnitSummary {
+  quote_id: number;
+  revision: number;
+  issue_no: string | null;
+  total: number;
+  done: number;
+  missing: number;
+  missing_lines: string[];
+}
+
+/** 부품 하나 = 한 줄. no_serial = 숫자 없는 글('특주' 등) — 시리얼이 없는 품목. */
+export interface ProductUnit {
+  id: number;
+  deal_id: number | null;
+  quote_id: number | null;
+  quote_revision: number | null;
+  issue_no: string | null;
+  line_no: number | null;
+  line_name: string;
+  part_name: string;
+  serial: string;
+  no_serial: boolean;
+  maker: string;
+  /** 상태 이니셜(unit-states.ts UNIT_STATES 의 code) */
+  purpose: string;
+  /** 이 제품의 프로젝트(영업 건) — 시리얼 찾기·상세에서 [프로젝트 건 열기](사용자 2026-10-22). 검색·상세 응답에만 */
+  deal_title?: string | null;
+  deal_display_no?: string | null;
+  deal_biz?: DealBiz;
+  warranty_months: number | null;
+  warranty_start: string | null;
+  warranty_until: string | null;
+  shipment_index: number | null;
+  status: string;
+  note: string;
+  customer?: string | null;
+  deal_no?: string | null;
+  as_count?: number;
+  as_open?: number;
+  warranty_state?: string;
+}
+
+export interface WarrantyPolicy { id?: number; keyword: string; months: number | null; note: string }
+
+/** 견적서 판 하나의 시리얼 등록 화면 값 */
+export interface IssueUnits {
+  quote_id: number;
+  revision: number;
+  issue_no: string | null;
+  issued_at: string | null;
+  total: number | null;
+  currency: string | null;
+  customer: string | null;
+  won: boolean;
+  is_won_issue: boolean;
+  /** 대여 건이면 새 칸 상태 기본이 R(대여) */
+  biz?: DealBiz;
+  won_issue_no: string | null;
+  /** 이 건에서 이미 시리얼을 등록한 다른 판 */
+  other_issues: string[];
+  lines: { line_no: number; name: string; qty: number; part: string; suggest_months: number | null; units: ProductUnit[] }[];
+  summary: Omit<UnitSummary, "quote_id" | "revision" | "issue_no">;
+  policies: WarrantyPolicy[];
+}
+
+export interface AsCase {
+  id: number;
+  unit_id: number | null;
+  deal_id: number | null;
+  serial: string;
+  part_name: string;
+  customer: string | null;
+  /** 고객사 담당자(이름·연락처) — A/S 접수서 */
+  contact: string;
+  /** 사진 id — /api/sales-deals/as-photos/{id} */
+  photos: string[];
+  /** 접수자(우리 쪽, 로그인 사용자) */
+  received_by: string | null;
+  received_on: string;
+  symptom: string;
+  cause: "확인 중" | "제품 결함" | "고객 과실" | "기타";
+  in_warranty: boolean | null;
+  charge: "미정" | "무상" | "유상";
+  status: "접수" | "진행 중" | "완료";
+  action: string;
+  closed_on: string | null;
+  note: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UnitDetail extends ProductUnit {
+  shipment: { date: string | null; carrier: string | null; tracking: string[] | null; receiver: string | null } | null;
+  cases: AsCase[];
+}
+
+export type DealBiz = "sale" | "rental";
+export type DealRental = { months: number; start: string | null; end: string | null; monthly: number | null;
+  /** 회수 — started 회수 시작일, done 회수 완료일 */
+  return?: { started?: string; done?: string } };
