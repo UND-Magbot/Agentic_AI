@@ -1109,9 +1109,11 @@ def render_lines(state: dict[str, Any], lang: str, fx_rate: float | None) -> lis
         if rows:
             sections.append((b, rows))
     multi = len(sections) > 1
-    # 대여 견적서는 품목 + < OPTION > 이어도 품목 묶음에 Sub total(사용자 2026-10-22). 판매는 LG CNS 견적서처럼 품목 묶음 둘 이상일 때만
-    subtotals = (sum(1 for b, _ in sections if b["type"] == "items") > 1
-                 or (is_rental(state) and any(b["type"] == "option" for b, _ in sections)))
+    # 품목 묶음에 Sub total — 품목 묶음이 둘 이상이거나, < OPTION > 묶음에 Total 반영 줄이 있을 때(판매·대여 모두).
+    # 반영 줄이 없는 OPTION 은 Sub total 을 셀 묶음으로 치지 않는다(사용자 2026-10-23: 미반영이면 기본 품목·OPTION 둘 다 Sub total 없음)
+    option_in = any(ln.get("in_total") and ln.get("kind") != "note"
+                    for b, _ in sections if b["type"] == "option" for ln in groups[b["id"]])
+    subtotals = sum(1 for b, _ in sections if b["type"] == "items") > 1 or option_in
     out: list[dict[str, Any]] = []
     for b, rows in sections:
         rows = [r if r.get("row") else {**r, "block": b["id"]} for r in rows]

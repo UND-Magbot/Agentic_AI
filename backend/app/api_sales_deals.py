@@ -22,9 +22,9 @@
 - GET  /v1/sales-deals/{id}/statement/file?fmt=pdf|xlsx → 거래명세서 내려받기
 - POST /v1/sales-deals/{id}/ship-photos          → 출하 사진 한 장 올리기(multipart) → {id}
 - GET  /v1/sales-deals/{id}/ship-photos/{pid}    → 출하 사진 보기
-제품 시리얼·A/S(사용자 2026-10-19 — sales_deals/units.py): 부품별 시리얼을 최종 견적서 판 기준으로 등록, 출하 전 필수
-- GET  /v1/sales-deals/{id}/units?quote_id&revision → 판 하나의 시리얼 등록 화면 값
-- POST /v1/sales-deals/{id}/units                → 판 하나의 시리얼 통째로 저장 {quote_id, revision, lines:[{line_no, units:[…]}]}
+제품 S/N·A/S(사용자 2026-10-19 — sales_deals/units.py): 부품별 S/N 을 출하 기록 작성 때 수주 판 품목 줄마다 등록(2026-10-23), 출하 전 필수
+- GET  /v1/sales-deals/{id}/units?quote_id&revision → 판 하나의 S/N 등록 화면 값
+- POST /v1/sales-deals/{id}/units                → 판 하나의 S/N 저장 {quote_id, revision, lines:[{line_no, units:[…]}], partial?}(partial = 보낸 줄만)
 - GET  /v1/sales-deals/units/search?q=           → 시리얼·부품·고객사로 찾기 / GET /units/{unit_id} → 한 개 + A/S 이력
 - GET/POST /v1/sales-deals/as-cases[/{case_id}]  → A/S 기록 목록·접수·고치기 (유상 A/S 견적은 프로그램 밖 수기 — 기록만)
 - POST /v1/sales-deals/as-cases/batch  → 한 접수서로 여러 시리얼 접수(시리얼마다 한 건)
@@ -146,6 +146,8 @@ class ShipLineIn(BaseModel):
     qty: float | None = Field(default=None, ge=0, le=1_000_000)
     qty_text: str | None = Field(default=None, max_length=30)      # 세트로 묶어 보낼 때 '1 SET'(예전 출하 시트 표기)
     photos: list[str] = Field(default_factory=list, max_length=20)
+    # 수주 판의 몇 번째 품목 줄인지(사용자 2026-10-23) — 이 줄의 S/N 을 출하 수량만큼 등록했는지 서버가 확인한다
+    line_no: int | None = Field(default=None, ge=0, le=500)
 
 
 class ShipmentIn(BaseModel):
@@ -381,6 +383,10 @@ class UnitsIn(BaseModel):
     quote_id: int
     revision: int = Field(ge=0, le=1000)
     lines: list[UnitLineIn] = Field(default_factory=list, max_length=100)
+    # 출하 기록의 품목 줄마다 [S/N 등록](사용자 2026-10-23) — 보낸 줄만 바꾸고 다른 줄은 그대로
+    partial: bool = False
+    # 이미 남긴 출하 기록에 S/N 등록(사용자 2026-10-23) — 그 출하 번호(0부터). 보낸 줄의 안 묶인 S/N 을 그 출하로 묶는다
+    shipment_index: int | None = Field(default=None, ge=0, le=500)
 
 
 class CaseIn(BaseModel):
@@ -523,7 +529,8 @@ async def get_units(deal_id: int, quote_id: int, revision: int, _: User = Depend
 @router.post("/{deal_id}/units")
 async def save_units(deal_id: int, body: UnitsIn, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
     return await _units_call(db, units.save_units(db, deal_id, user.id, body.quote_id, body.revision,
-                                                  [ln.model_dump() for ln in body.lines]))
+                                                  [ln.model_dump() for ln in body.lines], partial=body.partial,
+                                                  shipment_index=body.shipment_index))
 
 
 @router.get("/{deal_id}")

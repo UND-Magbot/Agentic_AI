@@ -6,6 +6,37 @@ export function cn(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(" ");
 }
 
+/**
+ * 대화창 맨 아래로 — 그 대화창(가장 가까운 스크롤 칸) 하나만 움직인다.
+ * scrollIntoView 는 바깥 페이지 스크롤까지 같이 옮겨, [변경 저장] 뒤 화면이 맨 위로 올라가는 문제가 있었다(사용자 2026-10-23).
+ */
+export function scrollChatToEnd(marker: HTMLElement | null): void {
+  let box = marker?.parentElement ?? null;
+  while (box && !(/(auto|scroll)/.test(getComputedStyle(box).overflowY) && box.scrollHeight > box.clientHeight)) {
+    box = box.parentElement;
+  }
+  // 대화창이 넘치지 않으면(스크롤 칸 없음) 아무것도 움직이지 않는다 — 페이지 스크롤 칸까지 올라가면 그만둔다
+  if (!box || box === document.scrollingElement || box.classList.contains("und-page-bg")) return;
+  box.scrollTo({ top: box.scrollHeight, behavior: "smooth" });
+}
+
+/**
+ * 버튼을 누른 자리 그대로 — 작업(저장 등) 뒤 위쪽 내용 높이가 바뀌어도 그 버튼이 화면의 같은 높이에 있게
+ * 바깥 스크롤 칸을 그만큼 되돌린다(사용자 2026-10-23: [변경 저장] 뒤 창이 그대로 있게).
+ */
+export async function keepInPlace<T>(el: HTMLElement, work: () => Promise<T>): Promise<T> {
+  const top = el.getBoundingClientRect().top;
+  const result = await work();
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    if (!el.isConnected) return;
+    let box: HTMLElement | null = el.parentElement;
+    while (box && !(/(auto|scroll)/.test(getComputedStyle(box).overflowY) && box.scrollHeight > box.clientHeight)) box = box.parentElement;
+    const diff = el.getBoundingClientRect().top - top;
+    if (box && Math.abs(diff) >= 1) box.scrollTop += diff;
+  }));
+  return result;
+}
+
 export function formatRelativeTime(iso: string, now: Date = new Date()): string {
   const then = new Date(iso);
   const diffMs = now.getTime() - then.getTime();

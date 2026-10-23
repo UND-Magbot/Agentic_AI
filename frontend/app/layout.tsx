@@ -1,11 +1,21 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist, Geist_Mono, Noto_Sans_KR } from "next/font/google";
 import { AltEnterNewline } from "@/components/shared/alt-enter-newline";
 import "./globals.css";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
   subsets: ["latin"],
+});
+
+// 한글 글꼴 — 지정하지 않으면 Windows 기본(맑은 고딕)으로 나와 흐릿하고 굵기 단계가 적다(사용자 2026-10-23: 더 선명하게).
+// 영문·숫자는 Geist, 한글은 Noto Sans KR 로 이어서 쓴다.
+const notoKr = Noto_Sans_KR({
+  variable: "--font-kr",
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700", "800"],
+  display: "swap",
+  preload: false,
 });
 
 const geistMono = Geist_Mono({
@@ -37,7 +47,7 @@ export default function RootLayout({
   return (
     <html
       lang="ko"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} ${notoKr.variable} h-full antialiased`}
       suppressHydrationWarning
     >
       <head>

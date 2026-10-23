@@ -175,14 +175,16 @@ check(qs.month_factor(R36, {"name": "운반비", "unit": "ea"}) == 1 and qs.mont
       "운반비·택배비 줄(올린 파일 등)도 한 번")
 check(qs.month_factor(R36, {"name": "운반 로봇 AMR", "commodity": "물류 로봇"}) == 36, "'운반 로봇'·'물류 로봇' 제품은 월 납입금 × 개월")
 
-# 10) 대여 견적서 품목 + < OPTION > — 품목 묶음에도 Sub total + 회색 줄(사용자 2026-10-22). 판매는 예전대로 없음
+# 10) 품목 + < OPTION > — 판매·대여 같은 규칙: OPTION 미반영이면 Sub total 없이 회색 줄만, 반영이면 둘 다 Sub total(사용자 2026-10-23)
 OPT = [ROBOT, {"op": "add", "name": "추가 Tool Plate", "commodity": "Magbot ATC", "qty": 1, "unit_price": 40_000, "option": True},
        {"op": "delivery", "case": 5}]
-for purpose, want in (("rental", ["subtotal", "gap", "section", "option", "gap"]), ("sale", ["gap", "section", "option", "gap"])):
-    s = qs.draft_state({}, model="", payload_kg=None, form={**R36, "purpose": purpose}, manual=True)
-    s, _ = qs.apply_ops(s, OPT, None)
-    rows = [r.get("row") for r in qs.render_lines(s, "ko", None)]
-    check(rows[1:] == want, f"{'대여' if purpose == 'rental' else '판매'} 품목 + OPTION → 품목 뒤 {' · '.join(map(str, want[:2]))}", str(rows))
+for purpose in ("rental", "sale"):
+    for in_total, want in ((False, ["gap", "section", "option", "gap"]), (True, ["subtotal", "gap", "section", "option", "subtotal", "gap"])):
+        ops = [*OPT[:1], {**OPT[1], "in_total": in_total}, *OPT[2:]]
+        s = qs.draft_state({}, model="", payload_kg=None, form={**R36, "purpose": purpose}, manual=True)
+        s, _ = qs.apply_ops(s, ops, None)
+        rows = [r.get("row") for r in qs.render_lines(s, "ko", None)]
+        check(rows[1:] == want, f"{'대여' if purpose == 'rental' else '판매'} 품목 + OPTION({'반영' if in_total else '미반영'}) → {' · '.join(map(str, want))}", str(rows))
 
 for label in PASS:
     print("PASS", label)

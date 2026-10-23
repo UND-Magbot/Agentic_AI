@@ -155,9 +155,9 @@ const FEATURES: {
   {
     href: "/proposals/recommend?tab=rentals",   // [제품 대여 관리] 탭(사용자 2026-10-22: 판매 관리 오른쪽에 따로)
     title: "제품 대여 관리",
-    desc: "대여 견적서로 낸 건을 견적부터 수주·시리얼 등록·출하까지 한 건씩 관리하고, 대여 기간과 월 납입금을 함께 봅니다. 끝나는 날이 가까우면 붉게 표시됩니다.",
+    desc: "대여 견적서로 낸 건을 견적부터 수주·출하(S/N 등록)까지 한 건씩 관리하고, 대여 기간과 월 납입금을 함께 봅니다. 끝나는 날이 가까우면 붉게 표시됩니다.",
     icon: "refresh",
-    steps: ["대여 견적", "수주", "시리얼 등록", "출하"],
+    steps: ["대여 견적", "수주", "출하·S/N 등록", "대여 중"],
     tone: {
       band: "from-sky-600 to-cyan-500",
       icon: "bg-white/20 text-white",
@@ -169,9 +169,9 @@ const FEATURES: {
   {
     href: "/proposals/recommend?tab=units",     // [제품·A/S] 탭(사용자 2026-10-22: A/S 건 관리 카드)
     title: "제품 A/S건 관리",
-    desc: "시리얼 번호로 고객사·출하일·무상 기간·A/S 이력을 찾고, 접수한 A/S 를 원인·무상/유상·진행 상태와 함께 기록합니다.",
+    desc: "S/N으로 고객사·출하일·무상 기간·A/S 이력을 찾고, 접수한 A/S 를 원인·무상/유상·진행 상태와 함께 기록합니다.",
     icon: "bug",
-    steps: ["시리얼 조회", "A/S 접수", "진행", "완료"],
+    steps: ["S/N 조회", "A/S 접수", "진행", "완료"],
     tone: {
       band: "from-rose-600 to-pink-500",
       icon: "bg-white/20 text-white",

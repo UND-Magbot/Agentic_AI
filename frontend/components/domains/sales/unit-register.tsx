@@ -1,217 +1,140 @@
-// 제품 시리얼 등록(사용자 2026-10-19, 영업팀 요청 20번) — 영업팀이 최종 고객과 협의된 견적서 판 기준으로 부품마다 직접 적는다.
-// 입구 두 곳: 영업 건 견적서 카드의 [제품 시리얼 등록](경고창 먼저) · [AI 와 수주 진행 →](수주 판에 빈 칸이 있으면 이동을 묻는다).
-// 빈 칸 = 미등록. 시리얼이 없는 품목은 '특주'처럼 적는다(숫자 없는 글 = 시리얼 없음). 출하 기록 전에 다 적어야 한다.
+// 출하 품목의 S/N 등록(사용자 2026-10-19 → 2026-10-23 변경) — 출하 기록을 쓰며 수주 판의 품목 줄마다 [S/N 등록]을 눌러
+// 한 개씩 확인하며 적는다. 견적서 카드에서 따로 등록하던 창(경고창·수주 진행 전 안내)은 없앴다.
+// 빈 칸 = 미등록. S/N이 없는 품목은 '특주'처럼 적는다(숫자 없는 글 = S/N 없음).
+// 여러 S/N을 줄바꿈으로 복사해 한 칸에 붙여 넣으면 그 칸부터 아래 칸으로 나눠 들어간다(모자라면 칸을 더 만든다).
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useState } from "react";
 import { Icon } from "@/components/shared/ui/icon";
-import { useDragMove } from "@/components/shared/ui/use-drag-move";
-import { Muted, won } from "@/components/domains/sales/deal-format";
-import { PreviewDialog } from "@/components/domains/sales/quote-workspace";
-import type { DealQuoteDoc, DealRow, IssueUnits } from "@/lib/shared/sales-deals";
+import { ITEM_BTN, primaryBtn, secondaryBtn } from "@/components/domains/sales/proposal-actions";
+import { HEAD_FIELD, ROW_ICON_BTN, ROW_LABEL } from "@/components/domains/sales/quote-styles";
+import type { IssueUnits, ProductUnit, UnitSummary } from "@/lib/shared/sales-deals";
 import { UNIT_STATES } from "@/lib/shared/unit-states";
 import { cn } from "@/lib/shared/utils";
 
-const BACKDROP = "anim-fade-in fixed inset-0 z-[60] grid place-items-center bg-black/40 px-4";
-const PANEL = "anim-fade-in-up w-full rounded-2xl border border-border bg-surface-raised p-5 text-[13px] shadow-[0_30px_70px_-30px_rgba(15,30,70,0.55)]";
-const CELL = "h-8 w-full rounded-md border border-border bg-surface px-2 text-[12.5px] outline-none focus:border-accent disabled:opacity-60";
+export type SnLine = IssueUnits["lines"][number];
+
 const MAKERS = ["UND", "Dobot", "Realman", "Doosan", "Universal Robots"];
 
-/** 이 견적서에서 시리얼을 적을 판 — 수주 중인 판이 이 견적서에 있으면 그 판, 없으면 가장 최근 판. */
-function defaultRevision(deal: DealRow, quote: DealQuoteDoc): number {
-  const wonIssue = deal.won ? quote.issues.find((h) => (h.issue_no ?? h.quote_no) === deal.display_no) : undefined;
-  return wonIssue?.revision ?? Math.max(...quote.issues.map((h) => h.revision));
+/** 이 출하에 묶을 수 있는 부품 — 아직 안 나갔거나, 고치는 출하에 묶여 있는 것 */
+export function usableUnits(ln: SnLine, editIndex?: number): ProductUnit[] {
+  return ln.units.filter((u) => u.shipment_index == null || u.shipment_index === editIndex);
 }
 
-/** [제품 시리얼 등록] 경고창 — 누를 수는 있지만 최종 협의된 견적서인지 한 번 확인(사용자 2026-10-19). */
-export function SerialConfirmDialog({ deal, quote, onCancel, onConfirm }: {
-  deal: DealRow; quote: DealQuoteDoc; onCancel: () => void; onConfirm: (revision: number) => void;
-}) {
-  const [rev, setRev] = useState(() => defaultRevision(deal, quote));
-  const issue = quote.issues.find((h) => h.revision === rev) ?? quote.issues[quote.issues.length - 1];
-  const no = issue?.issue_no ?? issue?.quote_no ?? quote.quote_no ?? "견적서";
-  const wonNo = deal.won ? deal.display_no : null;
-  const wonHere = quote.issues.some((h) => (h.issue_no ?? h.quote_no) === wonNo);
-  return (
-    <div role="alertdialog" aria-modal="true" aria-labelledby="serial-confirm-title" className={BACKDROP}
-         onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
-      <div className={cn(PANEL, "max-w-[460px]")}>
-        <h3 id="serial-confirm-title" className="flex items-center gap-2 text-[15px] font-semibold text-amber-700 dark:text-amber-300">
-          <span aria-hidden>⚠</span> 제품 시리얼 번호 등록
-        </h3>
-        <p className="mt-2 leading-relaxed text-foreground">
-          시리얼 번호는 <b>고객과 최종 협의된 견적서</b> 기준으로 등록하셔야 합니다. 이 견적서가 맞나요?
-        </p>
-        <div className="mt-3 rounded-xl border border-border bg-surface p-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <b className="font-mono">{no}</b>
-            {quote.issues.length > 1 ? (
-              <select value={rev} onChange={(e) => setRev(Number(e.target.value))} aria-label="견적서 판"
-                      className="h-7 rounded-md border border-border bg-surface px-1.5 text-[12px]">
-                {[...quote.issues].reverse().map((h) => (
-                  <option key={h.revision} value={h.revision}>v{h.revision + 1} · {h.issue_no ?? h.quote_no ?? ""}</option>
-                ))}
-              </select>
-            ) : <span className="text-[12px] text-foreground-muted">v{(issue?.revision ?? 0) + 1}</span>}
-          </div>
-          {issue && (
-            <p className="mt-1 text-[12px] text-foreground-muted">
-              발행 {issue.issued_at.slice(0, 10)} · 합계 {issue.currency === "USD" ? `$${issue.total.toLocaleString("en-US")}` : `${won(issue.total)}원`}
-            </p>
-          )}
-        </div>
-        {wonNo && (!wonHere || (issue?.issue_no ?? issue?.quote_no) !== wonNo) && (
-          <p className="mt-2 rounded-lg bg-red-500/10 px-3 py-2 text-[12.5px] text-red-700 dark:text-red-300">
-            수주 중인 견적서는 <b className="font-mono">{wonNo}</b> 입니다. 다른 판에 등록하면 출하 확인에 반영되지 않습니다.
-          </p>
-        )}
-        <div className="mt-4 flex justify-end gap-2">
-          <button type="button" onClick={onCancel}
-                  className="h-9 rounded-lg border border-border px-4 text-[13px] font-semibold text-foreground-muted hover:text-foreground">취소</button>
-          <button type="button" autoFocus onClick={() => onConfirm(issue?.revision ?? rev)}
-                  className="h-9 rounded-lg bg-accent px-4 text-[13px] font-semibold text-white hover:brightness-105">맞습니다, 등록</button>
-        </div>
-      </div>
-    </div>
-  );
+/** 품목 줄 이름을 한 줄로('ATC_CORE\n- TCV1 MASTER' → 'ATC_CORE TCV1 MASTER') — 출하 줄 이름·짝 찾기에 같이 쓴다 */
+export function flatName(name: string): string {
+  return name.replace(/\s*\n\s*-?\s*/g, " ").trim();
 }
 
-/** [AI 와 수주 진행 →] 을 눌렀는데 수주 판에 빈 시리얼이 있을 때(사용자 2026-10-19). */
-export function SerialRequiredDialog({ deal, onMove, onLater, onCancel }: {
-  deal: DealRow; onMove: () => void; onLater: () => void; onCancel: () => void;
+/** 수주 판의 S/N 칸 값 */
+export async function loadSnView(dealId: number, src: Pick<UnitSummary, "quote_id" | "revision">): Promise<IssueUnits | null> {
+  const r = await fetch(`/api/sales-deals/${dealId}/units?quote_id=${src.quote_id}&revision=${src.revision}`, { cache: "no-store" });
+  return r.ok ? ((await r.json()) as IssueUnits) : null;
+}
+
+/** 이미 남긴 출하 기록 하나에서 S/N 을 적을 줄과 개수 — 출하 줄을 품목 줄에 맞추고(줄 번호, 없으면 이름),
+ *  맞는 줄이 없으면(세트로 묶은 출하·예전 기록) 품목 줄 전부를 앞선 출하로 안 나간 만큼. */
+export function shipmentSnLines(view: IssueUnits, lines: { name: string; qty: number | null; line_no?: number }[], index: number) {
+  const need = new Map<number, number>();
+  for (const l of lines) {
+    const ln = view.lines.find((x) => (l.line_no != null ? x.line_no === l.line_no : flatName(x.name) === flatName(l.name)));
+    if (ln && (l.qty ?? 0) > 0) need.set(ln.line_no, (need.get(ln.line_no) ?? 0) + Math.ceil(l.qty ?? 0));
+  }
+  if (need.size === 0) {
+    for (const ln of view.lines) {
+      const elsewhere = ln.units.filter((u) => u.shipment_index != null && u.shipment_index !== index).length;
+      if (ln.qty - elsewhere > 0) need.set(ln.line_no, ln.qty - elsewhere);
+    }
+  }
+  return [...need].map(([no, n]) => ({ line: view.lines.find((x) => x.line_no === no)!, need: n }));
+}
+
+/** 품목 줄 오른쪽 [S/N 등록] 버튼 — 적은 개수/출하 수량, 다 적으면 초록 */
+export function SnButton({ count, need, open, disabled, onClick, tall }: {
+  count: number; need: number; open: boolean; disabled?: boolean; onClick: () => void;
+  /** 입력칸과 같은 40px 높이(출하 작성 품목 줄) */
+  tall?: boolean;
 }) {
-  const u = deal.units;
-  if (!u) return null;
+  const done = need > 0 && count >= need;
   return (
-    <div role="alertdialog" aria-modal="true" aria-labelledby="serial-required-title" className={BACKDROP}
-         onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
-      <div className={cn(PANEL, "max-w-[440px]")}>
-        <h3 id="serial-required-title" className="text-[15px] font-semibold text-foreground">시리얼 번호를 등록하셔야 합니다</h3>
-        <p className="mt-2 leading-relaxed text-foreground">
-          <b className="font-mono">{u.issue_no}</b> 기준 제품 {u.total}개 중 <b>{u.done}개</b>만 등록되어 있습니다. 등록 화면으로 이동하시겠습니까?
-        </p>
-        <p className="mt-1 text-[12px] text-foreground-muted">출하 기록 전에는 꼭 등록해야 합니다. 시리얼이 없는 품목은 &lsquo;특주&rsquo;처럼 적으면 됩니다.</p>
-        <div className="mt-4 flex justify-end gap-2">
-          <button type="button" onClick={onLater}
-                  className="h-9 rounded-lg border border-border px-4 text-[13px] font-semibold text-foreground-muted hover:text-foreground">나중에 하고 수주 진행</button>
-          <button type="button" autoFocus onClick={onMove}
-                  className="h-9 rounded-lg bg-accent px-4 text-[13px] font-semibold text-white hover:brightness-105">이동</button>
-        </div>
-      </div>
-    </div>
+    <button type="button" onClick={onClick} disabled={disabled} aria-expanded={open}
+            className={cn("inline-flex shrink-0 items-center gap-1 whitespace-nowrap border font-semibold disabled:opacity-40",
+              tall ? "h-10 rounded-[10px] bg-surface-raised px-3 text-[12.5px]" : "rounded-lg px-2 py-1 text-[12px]",
+              done ? "border-emerald-500/40 text-emerald-700 hover:bg-emerald-500/10 dark:text-emerald-300"
+                : "border-red-500/40 text-red-700 hover:bg-red-500/10 dark:text-red-300")}>
+      {done ? "✓ " : ""}S/N 등록 <span className="font-mono">{Math.min(count, need)}/{need}</span>
+    </button>
   );
 }
 
 type Draft = { key: string; id?: number; part_name: string; serial: string; maker: string; purpose: string; months: string; note: string;
-               shipped?: string | null };
-type Line = IssueUnits["lines"][number];
+               locked: boolean };
 
 let seq = 0;
-// 새 칸 상태 — 대여 건은 R(대여), 판매 건은 S(판매)(사용자 2026-10-22)
-const blank = (ln: Line, purpose = "S"): Draft => ({ key: `n${++seq}`, part_name: ln.part, serial: "", maker: "UND", purpose,
-                                      months: ln.suggest_months == null ? "" : String(ln.suggest_months), note: "" });
+const blank = (ln: SnLine, purpose: string): Draft => ({ key: `n${++seq}`, part_name: ln.part, serial: "", maker: "UND", purpose,
+                                                        months: ln.suggest_months == null ? "" : String(ln.suggest_months), note: "",
+                                                        locked: false });
+const fromUnit = (u: ProductUnit): Draft => ({ key: `u${u.id}`, id: u.id, part_name: u.part_name, serial: u.serial, maker: u.maker,
+                                               purpose: u.purpose, months: u.warranty_months == null ? "" : String(u.warranty_months),
+                                               note: u.note, locked: u.shipment_index != null });
 
-/** 줄마다 등록한 부품 + 수량까지 빈 칸 */
-function drafts(v: IssueUnits): Record<number, Draft[]> {
-  return Object.fromEntries(v.lines.map((ln) => {
-    const have: Draft[] = ln.units.map((u) => ({ key: `u${u.id}`, id: u.id, part_name: u.part_name, serial: u.serial, maker: u.maker,
-                                                  purpose: u.purpose, months: u.warranty_months == null ? "" : String(u.warranty_months),
-                                                  note: u.note, shipped: u.warranty_start }));
-    return [ln.line_no, [...have, ...Array.from({ length: Math.max(0, ln.qty - have.length) }, () => blank(ln, v.biz === "rental" ? "R" : "S"))]];
-  }));
-}
-
-/** 시리얼 등록 화면 — 견적서 판 하나의 품목 줄마다 수량만큼 칸. 줄바꿈으로 여러 개를 붙여 넣으면 아래 칸으로 나눠 들어간다. */
-export function UnitRegisterDialog({ dealId, quoteId, revision, onClose, onSaved }: {
-  dealId: number; quoteId: number; revision: number; onClose: () => void; onSaved: () => void;
+/** 품목 줄 하나의 S/N 칸 — 출하 수량만큼. 저장하면 이 줄만 바뀐다(다른 줄 S/N은 그대로). */
+export function SnPanel({ dealId, view, line, need, editIndex, bindIndex, onSaved, onClose }: {
+  dealId: number; view: IssueUnits; line: SnLine; need: number; editIndex?: number;
+  /** 이미 남긴 출하 기록에 적을 때 — 저장하면 그 출하로 바로 묶인다(그 출하일부터 무상 기간) */
+  bindIndex?: number;
+  onSaved: (v: IssueUnits) => void; onClose: () => void;
 }) {
-  const [view, setView] = useState<IssueUnits | null>(null);
-  const [rows, setRows] = useState<Record<number, Draft[]>>({});
-  const [error, setError] = useState<string | null>(null);
+  const purpose = view.biz === "rental" ? "R" : "S";      // 대여 건은 R(대여), 판매 건은 S(판매)(사용자 2026-10-22)
+  // 앞선 출하로 이미 나간 부품 — 보기만(지울 수 없음)
+  const earlier = line.units.filter((u) => u.shipment_index != null && u.shipment_index !== editIndex);
+  const [rows, setRows] = useState<Draft[]>(() => {
+    const have = usableUnits(line, editIndex).map(fromUnit);
+    return [...have, ...Array.from({ length: Math.max(0, need - have.length) }, () => blank(line, purpose))];
+  });
   const [busy, setBusy] = useState(false);
-  const [preview, setPreview] = useState(false);
-  const drag = useDragMove();
-  // 견적서 보기가 떠 있으면 Esc 는 그것만 닫는다(영업 건 상세의 Esc 가 등록 창까지 닫지 않게 먼저 잡음)
-  useEffect(() => {
-    if (!preview) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      e.stopPropagation();
-      setPreview(false);
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [preview]);
-  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const filled = rows.filter((d) => d.serial.trim()).length;
 
-  useEffect(() => {
-    let alive = true;
-    fetch(`/api/sales-deals/${dealId}/units?quote_id=${quoteId}&revision=${revision}`, { cache: "no-store" })
-      .then(async (r) => {
-        const d = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(typeof d?.detail === "string" ? d.detail : "시리얼 등록 화면을 열지 못했습니다.");
-        return d as IssueUnits;
-      })
-      .then((v) => { if (alive) { setView(v); setRows(drafts(v)); } })
-      .catch((e) => { if (alive) setError(e instanceof Error ? e.message : "시리얼 등록 화면을 열지 못했습니다."); });
-    return () => { alive = false; };
-  }, [dealId, quoteId, revision]);
+  const setRow = (key: string, patch: Partial<Draft>) => setRows((r) => r.map((d) => (d.key === key ? { ...d, ...patch } : d)));
 
-  const count = useMemo(() => {
-    if (!view) return { total: 0, done: 0 };
-    let total = 0, done = 0;
-    for (const ln of view.lines) {
-      total += ln.qty;
-      done += Math.min(ln.qty, (rows[ln.line_no] ?? []).filter((d) => d.serial.trim()).length);
-    }
-    return { total, done };
-  }, [view, rows]);
-
-  const setRow = (lineNo: number, key: string, patch: Partial<Draft>) =>
-    setRows((r) => ({ ...r, [lineNo]: r[lineNo].map((d) => (d.key === key ? { ...d, ...patch } : d)) }));
-
-  /** 여러 줄을 붙여 넣으면 그 칸부터 아래로 하나씩(모자라면 칸을 더 만든다) */
-  const pasteMany = (ln: Line, key: string, text: string): boolean => {
+  /** 여러 줄을 붙여 넣으면 그 칸부터 아래로 하나씩(출하한 칸은 건너뛰고, 모자라면 칸을 더 만든다) */
+  const pasteMany = (key: string, text: string): boolean => {
     const vals = text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
     if (vals.length < 2) return false;
     setRows((r) => {
-      const list = [...r[ln.line_no]];
+      const list = [...r];
       let i = list.findIndex((d) => d.key === key);
       for (const v of vals) {
-        while (i < list.length && list[i].shipped) i++;
-        if (i >= list.length) list.push(blank(ln, view?.biz === "rental" ? "R" : "S"));
+        while (i < list.length && list[i].locked) i++;
+        if (i >= list.length) list.push(blank(line, purpose));
         list[i] = { ...list[i], serial: v };
         i++;
       }
-      return { ...r, [ln.line_no]: list };
+      return list;
     });
     return true;
   };
 
   const save = async () => {
-    if (!view) return;
     setBusy(true);
     setError(null);
     try {
-      const body = {
-        quote_id: quoteId, revision,
-        lines: view.lines.map((ln) => ({
-          line_no: ln.line_no,
-          units: (rows[ln.line_no] ?? []).filter((d) => d.serial.trim()).map((d) => ({
-            id: d.id ?? null, part_name: d.part_name, serial: d.serial, maker: d.maker, purpose: d.purpose,
-            warranty_months: d.months.trim() === "" ? null : Number(d.months), note: d.note,
-          })),
-        })),
-      };
+      const toUnit = (d: Draft) => ({ id: d.id ?? null, part_name: d.part_name, serial: d.serial, maker: d.maker, purpose: d.purpose,
+                                       warranty_months: d.months.trim() === "" ? null : Number(d.months), note: d.note });
+      const units = [
+        ...earlier.map((u) => toUnit(fromUnit(u))),
+        ...rows.filter((d) => d.serial.trim()).map(toUnit),
+      ];
       const r = await fetch(`/api/sales-deals/${dealId}/units`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quote_id: view.quote_id, revision: view.revision, partial: true, lines: [{ line_no: line.line_no, units }],
+                               shipment_index: bindIndex ?? null }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(typeof d?.detail === "string" ? d.detail : Array.isArray(d?.detail) ? "입력값을 확인해 주세요(무상 기간은 0~120개월)." : "저장하지 못했습니다.");
-      setView(d as IssueUnits);
-      setRows(drafts(d as IssueUnits));
-      setSaved(true);
-      onSaved();
+      onSaved(d as IssueUnits);
+      onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : "저장하지 못했습니다.");
     } finally {
@@ -219,123 +142,81 @@ export function UnitRegisterDialog({ dealId, quoteId, revision, onClose, onSaved
     }
   };
 
+  // 견적서 품목 줄과 같은 두 단 카드(사용자 2026-10-23) — 좁은 칸에서 S/N·부품명이 잘리지 않게
   return (
-    <div role="dialog" aria-modal="true" aria-labelledby="unit-reg-title" className={BACKDROP}
-         onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
-      {preview && (
-        <div className="relative z-[70]" onMouseDown={(e) => e.stopPropagation()}>
-          <PreviewDialog url={`/api/sales-deals/${dealId}/quote-file?quote=${quoteId}&revision=${revision}&fmt=pdf`}
-                         title="견적서" sub={view ? `${view.issue_no ?? ""} · v${view.revision + 1} · 발행본 그대로` : `v${revision + 1} · 발행본 그대로`}
-                         onClose={() => setPreview(false)} movable />
-        </div>
+    <div className="mt-3 rounded-xl border border-accent/30 bg-accent/[0.03] p-3.5" onKeyDown={(e) => { if (e.key === "Escape" && !busy) { e.stopPropagation(); onClose(); } }}>
+      <div className="mb-3 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <b className="text-[13.5px] font-extrabold">S/N 등록</b>
+        <span className="text-[12px] text-foreground-muted">이 출하 {need}개 중 <b className={filled >= need ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>{Math.min(filled, need)}개</b> 적음</span>
+        {line.suggest_months != null && <span className="text-[11.5px] text-foreground-subtle">무상 기간 기본 {line.suggest_months}개월</span>}
+        <span className="ml-auto text-[11.5px] text-foreground-subtle">S/N이 없는 품목은 &lsquo;특주&rsquo;처럼 적습니다</span>
+      </div>
+      {earlier.length > 0 && (
+        <p className="mb-2 text-[11.5px] text-foreground-subtle">
+          앞선 출하로 나간 S/N: {earlier.map((u) => u.serial).join(", ")}
+        </p>
       )}
-      <div className={cn(PANEL, "flex max-h-[90vh] max-w-[1080px] flex-col")} style={drag.style}>
-        {/* 머리를 잡아 끌어 옮기기 — 견적서 보기와 나란히 놓고 맞춰 볼 수 있게(사용자 2026-10-19) */}
-        <div className={cn("flex items-start justify-between gap-3", drag.handleClass)} {...drag.handle}
-             title="잡고 끌어 옮기기 · 두 번 누르면 가운데로">
-          <div>
-            <div className="flex flex-wrap items-center gap-3">
-              <h2 id="unit-reg-title" className="text-[15px] font-semibold text-foreground">제품 시리얼 번호 등록</h2>
-              {/* 견적서 작성 화면은 최신 편집본이라 수주 판과 다를 수 있다 — 이 판의 발행본을 그대로 띄워 맞춰 본다(사용자 2026-10-19) */}
-              <button type="button" onClick={() => setPreview(true)}
-                      className="inline-flex items-center gap-1 rounded-md border border-accent/40 px-2 py-0.5 text-[12px] font-semibold text-accent hover:bg-accent/10">
-                <Icon name="eye" className="h-3.5 w-3.5" /> 이 판 견적서 보기
+      <ul className="flex flex-col gap-2">
+        {rows.map((d, i) => (
+          <li key={d.key} className="@container rounded-xl border border-border bg-surface-raised p-3">
+            {/* 윗줄: 번호 · S/N · 부품명 · 빼기 — 아랫줄은 칸이 넓으면 한 줄, 좁으면 메모만 따로(상세 패널·수주 진행 폭 둘 다) */}
+            <div className="grid grid-cols-[24px_minmax(0,1fr)_minmax(0,1.3fr)_40px] items-end gap-2.5">
+              <span className="grid h-10 place-items-center font-mono text-[12px] font-bold text-foreground-subtle">{i + 1}</span>
+              <label className={ROW_LABEL}><span>S/N</span>
+                <input className={cn(HEAD_FIELD, "font-mono")} value={d.serial} maxLength={80} placeholder="S/N 또는 특주" aria-label={`${i + 1}번 S/N`}
+                       autoFocus={i === rows.findIndex((x) => !x.serial.trim())} disabled={busy}
+                       onPaste={(e) => { if (pasteMany(d.key, e.clipboardData.getData("text"))) e.preventDefault(); }}
+                       onChange={(e) => setRow(d.key, { serial: e.target.value })} />
+              </label>
+              <label className={ROW_LABEL}><span>부품명</span>
+                <input className={HEAD_FIELD} value={d.part_name} maxLength={120} aria-label={`${i + 1}번 부품명`} disabled={busy}
+                       onChange={(e) => setRow(d.key, { part_name: e.target.value })} />
+              </label>
+              <button type="button" disabled={busy || d.locked} aria-label={`${i + 1}번 칸 빼기`}
+                      title={d.locked ? "출하한 부품은 뺄 수 없습니다" : "빼기"}
+                      onClick={() => setRows((r) => r.filter((x) => x.key !== d.key))}
+                      className={cn(ROW_ICON_BTN, "hover:text-red-600")}>
+                <Icon name="trash" className="h-4 w-4" />
               </button>
             </div>
-            <p className="mt-1 text-[12.5px] text-foreground-muted">
-              {view ? <><b className="font-mono text-foreground">{view.issue_no}</b> v{view.revision + 1} · {view.customer ?? "고객사 없음"} — </> : null}
-              부품마다 적습니다. 시리얼이 없는 품목은 &lsquo;특주&rsquo;처럼 적고, 빈 칸은 미등록으로 봅니다.
-            </p>
-          </div>
-          <button type="button" onClick={onClose} disabled={busy} aria-label="닫기"
-                  className="grid h-7 w-7 shrink-0 place-items-center rounded-sm text-foreground-subtle hover:bg-foreground/5 hover:text-foreground">
-            <Icon name="x" className="h-4 w-4" />
+            <div className="ml-[34px] mt-2.5 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_76px] gap-2.5 @md:mr-[50px] @md:grid-cols-[100px_104px_76px_minmax(0,1fr)]">
+              <label className={ROW_LABEL}><span>제조사</span>
+                <input className={HEAD_FIELD} value={d.maker} maxLength={40} list="sn-makers" aria-label={`${i + 1}번 제조사`} disabled={busy}
+                       onChange={(e) => setRow(d.key, { maker: e.target.value })} />
+              </label>
+              <label className={ROW_LABEL}><span>상태</span>
+                <select className={cn(HEAD_FIELD, "px-2")} value={d.purpose} aria-label={`${i + 1}번 상태`} disabled={busy}
+                        onChange={(e) => setRow(d.key, { purpose: e.target.value })}>
+                  {UNIT_STATES.map((s) => <option key={s.code} value={s.code} title={s.en}>{s.code} · {s.label}</option>)}
+                </select>
+              </label>
+              <label className={ROW_LABEL}><span>무상(개월)</span>
+                <input className={cn(HEAD_FIELD, "text-right")} value={d.months} inputMode="numeric" placeholder="미정" aria-label={`${i + 1}번 무상 기간(개월)`} disabled={busy}
+                       onChange={(e) => setRow(d.key, { months: e.target.value.replace(/\D/g, "").slice(0, 3) })} />
+              </label>
+              <label className={cn(ROW_LABEL, "col-span-3 @md:col-span-1")}><span>메모</span>
+                <input className={HEAD_FIELD} value={d.note} maxLength={300} aria-label={`${i + 1}번 메모`} disabled={busy}
+                       onChange={(e) => setRow(d.key, { note: e.target.value })} />
+              </label>
+            </div>
+          </li>
+        ))}
+      </ul>
+      <datalist id="sn-makers">{MAKERS.map((m) => <option key={m} value={m} />)}</datalist>
+      {error && <p className="mt-2 rounded-lg bg-red-500/10 px-3 py-1.5 text-[12px] text-red-700 dark:text-red-300">{error}</p>}
+      <div className="mt-2.5">
+        <button type="button" disabled={busy} onClick={() => setRows((r) => [...r, blank(line, purpose)])} className={ITEM_BTN}>
+          <Icon name="plus" className="h-3.5 w-3.5 text-accent" /> 칸 추가 <span className="font-normal text-foreground-muted">(한 품목을 부품 여러 개로 나눌 때)</span>
+        </button>
+      </div>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <span className="text-[11.5px] text-foreground-subtle">여러 S/N을 줄바꿈으로 복사해 한 칸에 붙여 넣으면 아래 칸으로 나눠 들어갑니다.</span>
+        <span className="ml-auto flex gap-2">
+          <button type="button" onClick={onClose} disabled={busy} className={secondaryBtn}>닫기</button>
+          <button type="button" onClick={() => void save()} disabled={busy} className={primaryBtn}>
+            <Icon name="check" className="h-4 w-4" /> {busy ? "저장 중…" : "S/N 저장"}
           </button>
-        </div>
-
-        {view && (
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-[12.5px]">
-            <span className={cn("rounded-full px-2.5 py-0.5 font-semibold",
-              count.done >= count.total ? "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300" : "bg-amber-500/12 text-amber-700 dark:text-amber-300")}>
-              {count.total}개 중 {count.done}개 적음
-            </span>
-            {view.is_won_issue && <span className="rounded bg-blue-500/12 px-1.5 text-[11.5px] font-semibold text-blue-700 dark:text-blue-300">수주 중인 판</span>}
-            {!view.is_won_issue && view.won_issue_no && (
-              <span className="text-red-700 dark:text-red-300">수주 중인 판은 <b className="font-mono">{view.won_issue_no}</b> — 출하 확인은 그 판 기준입니다.</span>
-            )}
-            {view.other_issues.length > 0 && (
-              <span className="text-foreground-subtle">다른 판({view.other_issues.join(", ")})에도 등록한 시리얼이 있습니다.</span>
-            )}
-          </div>
-        )}
-
-        <div className="scroll-thin mt-3 min-h-0 flex-1 overflow-y-auto">
-          {!view && !error && <Muted>불러오는 중…</Muted>}
-          {view && view.lines.length === 0 && <Muted>이 견적서 판에는 시리얼을 적을 제품 줄이 없습니다(설치비·물류비 등만 있음).</Muted>}
-          {view?.lines.map((ln) => {
-            const list = rows[ln.line_no] ?? [];
-            const filled = list.filter((d) => d.serial.trim()).length;
-            return (
-              <section key={ln.line_no} className="mb-3 rounded-xl border border-border p-3">
-                <div className="mb-2 flex flex-wrap items-baseline gap-2">
-                  <b className="whitespace-pre-line text-[13px]">{ln.name}</b>
-                  <span className="text-[12px] text-foreground-muted">수량 {ln.qty}</span>
-                  <span className={cn("text-[12px] font-semibold", filled >= ln.qty ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300")}>
-                    {Math.min(filled, ln.qty)}/{ln.qty}
-                  </span>
-                  {ln.suggest_months != null && <span className="text-[11.5px] text-foreground-subtle">무상 기간 기본 {ln.suggest_months}개월</span>}
-                </div>
-                <div className="grid grid-cols-[minmax(140px,1.4fr)_minmax(150px,1.4fr)_minmax(90px,0.8fr)_112px_86px_minmax(100px,1fr)_28px] items-center gap-1.5 text-[11.5px] text-foreground-muted max-md:hidden">
-                  <span>부품명</span><span>시리얼</span><span>제조사</span><span>상태</span><span>무상(개월)</span><span>메모</span><span />
-                </div>
-                {list.map((d, i) => (
-                  <div key={d.key} className="mt-1 grid grid-cols-[minmax(140px,1.4fr)_minmax(150px,1.4fr)_minmax(90px,0.8fr)_112px_86px_minmax(100px,1fr)_28px] items-center gap-1.5 max-md:grid-cols-2">
-                    <input className={CELL} value={d.part_name} maxLength={120} aria-label={`${i + 1}번 부품명`} disabled={busy}
-                           onChange={(e) => setRow(ln.line_no, d.key, { part_name: e.target.value })} />
-                    <input className={cn(CELL, "font-mono")} value={d.serial} maxLength={80} placeholder="시리얼 또는 특주" aria-label={`${i + 1}번 시리얼`}
-                           disabled={busy}
-                           onPaste={(e) => { if (pasteMany(ln, d.key, e.clipboardData.getData("text"))) e.preventDefault(); }}
-                           onChange={(e) => setRow(ln.line_no, d.key, { serial: e.target.value })} />
-                    <input className={CELL} value={d.maker} maxLength={40} list="unit-makers" aria-label={`${i + 1}번 제조사`} disabled={busy}
-                           onChange={(e) => setRow(ln.line_no, d.key, { maker: e.target.value })} />
-                    <select className={cn(CELL, "px-1")} value={d.purpose} aria-label={`${i + 1}번 상태`} disabled={busy}
-                            onChange={(e) => setRow(ln.line_no, d.key, { purpose: e.target.value })}>
-                      {UNIT_STATES.map((s) => <option key={s.code} value={s.code} title={s.en}>{s.code} · {s.label}</option>)}
-                    </select>
-                    <input className={CELL} value={d.months} inputMode="numeric" placeholder="미정" aria-label={`${i + 1}번 무상 기간(개월)`} disabled={busy}
-                           onChange={(e) => setRow(ln.line_no, d.key, { months: e.target.value.replace(/\D/g, "").slice(0, 3) })} />
-                    <input className={CELL} value={d.note} maxLength={300} aria-label={`${i + 1}번 메모`} disabled={busy}
-                           placeholder={d.shipped ? `출하 ${d.shipped}` : ""}
-                           onChange={(e) => setRow(ln.line_no, d.key, { note: e.target.value })} />
-                    <button type="button" disabled={busy || !!d.shipped} aria-label={`${i + 1}번 칸 지우기`}
-                            title={d.shipped ? "출하한 부품은 지울 수 없습니다" : "칸 지우기"}
-                            onClick={() => setRows((r) => ({ ...r, [ln.line_no]: r[ln.line_no].filter((x) => x.key !== d.key) }))}
-                            className="grid h-7 w-7 place-items-center rounded text-foreground-subtle hover:bg-foreground/5 hover:text-foreground disabled:opacity-30">
-                      <Icon name="trash" className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                ))}
-                <button type="button" disabled={busy} onClick={() => setRows((r) => ({ ...r, [ln.line_no]: [...(r[ln.line_no] ?? []), blank(ln, view?.biz === "rental" ? "R" : "S")] }))}
-                        className="mt-1.5 inline-flex items-center gap-1 rounded border border-border px-2 py-0.5 text-[12px] text-foreground-muted hover:text-foreground">
-                  <Icon name="plus" className="h-3.5 w-3.5" /> 부품 추가 (한 줄을 여러 부품으로 나눌 때)
-                </button>
-              </section>
-            );
-          })}
-          <datalist id="unit-makers">{MAKERS.map((m) => <option key={m} value={m} />)}</datalist>
-        </div>
-
-        {error && <p className="mt-2 rounded-lg bg-red-500/10 px-3 py-2 text-[12.5px] text-red-700 dark:text-red-300">{error}</p>}
-        {saved && !error && <p className="mt-2 text-[12.5px] text-emerald-700 dark:text-emerald-300">저장했습니다.</p>}
-        <div className="mt-3 flex items-center justify-end gap-2">
-          <span className="mr-auto text-[11.5px] text-foreground-subtle">여러 시리얼을 줄바꿈으로 복사해 붙여 넣으면 아래 칸으로 나눠 들어갑니다.</span>
-          <button type="button" onClick={onClose} disabled={busy}
-                  className="h-9 rounded-lg border border-border px-4 text-[13px] font-semibold text-foreground-muted hover:text-foreground">닫기</button>
-          <button type="button" onClick={() => void save()} disabled={busy || !view}
-                  className="h-9 rounded-lg bg-accent px-5 text-[13px] font-semibold text-white hover:brightness-105 disabled:opacity-60">
-            {busy ? "저장 중…" : "저장"}
-          </button>
-        </div>
+        </span>
       </div>
     </div>
   );

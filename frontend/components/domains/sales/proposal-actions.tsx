@@ -23,8 +23,11 @@ export const primaryBtn =
   "und-grad inline-flex items-center gap-2 rounded-xl px-4 py-2 text-[13px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60";
 export const secondaryBtn =
   "inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2 text-[13px] font-medium text-foreground hover:bg-foreground/5 disabled:cursor-not-allowed disabled:opacity-60";
+// 견적서 품목 칸 버튼 — 모두 흰 버튼, 아이콘·점에만 색(무지개 테두리 정리, 사용자 2026-10-23)
+export const ITEM_BTN =
+  "inline-flex h-9 items-center gap-1.5 rounded-[10px] border border-border-strong bg-surface-raised px-3 text-[12.5px] font-semibold text-foreground hover:bg-foreground/[0.04] disabled:opacity-40";
 export const inputCls =
-  "w-full rounded-lg border border-foreground/15 bg-background px-2.5 py-1.5 text-[13px] text-foreground placeholder:text-foreground-subtle/70 focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/40";
+  "w-full rounded-lg border border-border-strong bg-surface-raised px-2.5 py-1.5 text-[13px] text-foreground placeholder:text-foreground-subtle/70 focus:border-accent focus:outline-none focus:ring-[3px] focus:ring-accent/15";
 
 export async function postAction(projectId: number, action: string, body?: unknown) {
   const r = await fetch(`/api/proposal-projects/${projectId}/${action}`, {

@@ -820,7 +820,7 @@ export function AtcMeetingUpload({ busy, onStart }: { busy: boolean; onStart: (f
           onDragOver={(e) => { e.preventDefault(); setOver(true); }}
           onDragLeave={() => setOver(false)}
           onDrop={(e) => { e.preventDefault(); setOver(false); pick(e.dataTransfer.files?.[0]); }}
-          className={cn("flex cursor-pointer flex-col items-center gap-2 rounded-xl border-2 border-dashed px-4 py-8 text-center transition-colors",
+          className={cn("relative flex cursor-pointer flex-col items-center gap-2 rounded-xl border-2 border-dashed px-4 py-8 text-center transition-colors",
             over ? "border-accent bg-accent/[0.06]" : "border-border hover:border-foreground/25")}>
           <input type="file" accept={ACCEPT} className="sr-only" disabled={busy}
                  onChange={(e) => pick(e.target.files?.[0] ?? undefined)} />

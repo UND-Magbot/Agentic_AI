@@ -50,7 +50,7 @@ export interface DealShipment {
   source: DealSource | null;
   forced?: boolean;
   /** 제품별 출하 줄(사진 포함, 2026-10-07 이후 출하) — 사진은 /api/sales-deals/{id}/ship-photos/{photo} */
-  lines?: { name: string; qty: number | null; qty_text?: string | null; photos: string[] }[];
+  lines?: { name: string; qty: number | null; qty_text?: string | null; photos: string[]; line_no?: number }[];
 }
 
 export interface DealInvoice {

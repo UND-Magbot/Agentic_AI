@@ -4,9 +4,12 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Field, INPUT, Muted, UnitStateBadge, dealRequest, todayIso, won } from "@/components/domains/sales/deal-format";
-import { UnitRegisterDialog } from "@/components/domains/sales/unit-register";
-import type { DealRow, DealShipment, DealStatement, DealStatementItem } from "@/lib/shared/sales-deals";
+import { Icon } from "@/components/shared/ui/icon";
+import { Field, INPUT, Muted, todayIso, won } from "@/components/domains/sales/deal-format";
+import { SnButton, SnPanel, flatName, loadSnView, usableUnits, type SnLine } from "@/components/domains/sales/unit-register";
+import { ITEM_BTN, primaryBtn, secondaryBtn } from "@/components/domains/sales/proposal-actions";
+import { AMOUNT_BOX, HEAD_FIELD, ROW_BTN, ROW_CARD, ROW_FIELD, ROW_ICON_BTN, ROW_LABEL } from "@/components/domains/sales/quote-styles";
+import type { DealRow, DealShipment, DealStatement, DealStatementItem, IssueUnits } from "@/lib/shared/sales-deals";
 import { cn } from "@/lib/shared/utils";
 
 export type Act = (path: string, body: unknown) => Promise<boolean>;
@@ -116,7 +119,6 @@ export function StatementItems({ deal, st, onChange, withNote = false }: {
     const { parts: back, ...rest } = st;
     onChange({ ...rest, items: back ?? [] });
   }
-  const heads = ["품명", "규격", "수량", "단가", "금액", ...(withNote ? ["비고"] : []), ""];
 
   return (
     <>
@@ -130,39 +132,51 @@ export function StatementItems({ deal, st, onChange, withNote = false }: {
           </button>
         ))}
       </div>
-      <table className="w-full border-collapse">
-        <thead>
-          <tr className="border-b border-border text-left text-foreground-muted">
-            {heads.map((h, k) => <th key={k} className="py-1 pr-1.5 font-semibold">{h}</th>)}
-          </tr>
-        </thead>
-        <tbody>
-          {st.items.map((it, i) => (
-            <tr key={i} className="border-b border-border/60">
-              <td className="py-1 pr-1.5"><input value={it.name} onChange={(e) => setItem(i, { name: e.target.value })} aria-label="품명" placeholder="예: TCV1 MASTER T.C" className={cn(INPUT, "h-8")} /></td>
-              <td className="py-1 pr-1.5"><input value={it.spec} onChange={(e) => setItem(i, { spec: e.target.value })} aria-label="규격" placeholder="예: Payload 10Kg" className={cn(INPUT, "h-8")} /></td>
-              <td className={cn("py-1 pr-1.5", isSet ? "w-24" : "w-16")}>
-                <span className="flex items-center gap-1">
-                  <input value={it.qty ?? ""} inputMode="numeric" aria-label="수량" className={cn(INPUT, "h-8 text-right")}
+      {/* 품목 줄 — 견적서 작성과 같은 두 단 카드(좁은 칸에서도 품명·규격이 다 보이게, 사용자 2026-10-23) */}
+      <ul className="flex flex-col gap-2.5">
+        {st.items.map((it, i) => (
+          <li key={i} className={ROW_CARD}>
+            <div className="grid gap-2.5 sm:grid-cols-2">
+              <label className={ROW_LABEL}>품명
+                <input value={it.name} onChange={(e) => setItem(i, { name: e.target.value })} placeholder="예: TCV1 MASTER T.C" className={HEAD_FIELD} />
+              </label>
+              <label className={ROW_LABEL}>규격
+                <input value={it.spec} onChange={(e) => setItem(i, { spec: e.target.value })} placeholder="예: Payload 10Kg" className={HEAD_FIELD} />
+              </label>
+            </div>
+            <div className="mt-2.5 flex flex-wrap items-end gap-2.5">
+              <label className={ROW_LABEL}>수량
+                <span className="flex items-center gap-1.5">
+                  <input value={it.qty ?? ""} inputMode="numeric" className={cn(ROW_FIELD, "w-[72px] text-right")}
                          onChange={(e) => {
                            const qty = toNum(e.target.value);
                            // 세트 수량을 바꾸면 단가 = 구성 합계 ÷ 수량(공급가액은 그대로)
                            setItem(i, isSet && qty ? { qty, unit_price: Math.round(partsSum / qty) } : { qty });
                          }} />
-                  {it.unit && <span className="shrink-0 font-semibold text-foreground-muted">{it.unit}</span>}
+                  {it.unit && <span className="shrink-0 text-[12.5px] font-semibold text-foreground-muted">{it.unit}</span>}
                 </span>
-              </td>
-              <td className="w-28 py-1 pr-1.5"><input value={it.unit_price ?? ""} inputMode="numeric" aria-label="단가" onChange={(e) => setItem(i, { unit_price: toNum(e.target.value) })} className={cn(INPUT, "h-8 text-right")} /></td>
-              <td className="w-28 py-1 pr-1.5 text-right tabular-nums">{won(lineAmount(it))}</td>
-              {withNote && <td className="w-28 py-1 pr-1.5"><input value={it.note} onChange={(e) => setItem(i, { note: e.target.value })} aria-label="비고" placeholder="예: 납품 후 설치" className={cn(INPUT, "h-8")} /></td>}
-              <td className="py-1">
-                {!isSet && <button type="button" className="text-foreground-subtle hover:text-red-600" aria-label="줄 빼기"
-                                   onClick={() => onChange({ ...st, items: st.items.filter((_, j) => j !== i) })}>✕</button>}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+              </label>
+              <label className={ROW_LABEL}>단가
+                <input value={it.unit_price ?? ""} inputMode="numeric" onChange={(e) => setItem(i, { unit_price: toNum(e.target.value) })}
+                       className={cn(ROW_FIELD, "w-[130px] text-right")} />
+              </label>
+              <div className={cn(ROW_LABEL, "ml-auto flex-1 items-end")}>
+                <span>금액</span>
+                <span className={AMOUNT_BOX}>{won(lineAmount(it))}</span>
+              </div>
+              {!isSet && (
+                <button type="button" className={cn(ROW_ICON_BTN, "hover:border-red-400/60 hover:bg-red-500/5 hover:text-red-600")} aria-label="줄 빼기" title="이 줄 빼기"
+                        onClick={() => onChange({ ...st, items: st.items.filter((_, j) => j !== i) })}><Icon name="trash" className="h-4 w-4" /></button>
+              )}
+            </div>
+            {withNote && (
+              <label className={cn(ROW_LABEL, "mt-2.5")}>비고
+                <input value={it.note} onChange={(e) => setItem(i, { note: e.target.value })} placeholder="예: 납품 후 설치" className={HEAD_FIELD} />
+              </label>
+            )}
+          </li>
+        ))}
+      </ul>
       {isSet && (
         <div className="flex flex-col gap-1 text-[11.5px] text-foreground-subtle">
           <p>구성(명세서에는 세트 한 줄로만 나옵니다): {parts.map((x) => `${x.name}${x.spec ? ` ${x.spec}` : ""} × ${x.qty ?? "-"}`).join(", ")} · 합계 {won(partsSum)}원</p>
@@ -171,10 +185,17 @@ export function StatementItems({ deal, st, onChange, withNote = false }: {
           )}
         </div>
       )}
-      <div className="flex flex-wrap items-center gap-3">
-        {!isSet && <SmallBtn onClick={() => onChange({ ...st, items: [...st.items, { name: "", spec: "", qty: 1, unit_price: null, note: "" }] })}>+ 품목</SmallBtn>}
-        <span className="ml-auto text-foreground-muted">공급가액 {won(supply)} · 부가세 {won(Math.round(supply * 0.1))} ·</span>
-        <b>합계 {won(supply + Math.round(supply * 0.1))}원</b>
+      {!isSet && (
+        <button type="button" className={cn(ITEM_BTN, "self-start")} onClick={() => onChange({ ...st, items: [...st.items, { name: "", spec: "", qty: 1, unit_price: null, note: "" }] })}>
+          <Icon name="plus" className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" /> 품목 추가
+        </button>
+      )}
+      {/* 합계 막대 — 견적서 작성과 같은 모양(사용자 2026-10-23) */}
+      <div className="flex flex-wrap items-end gap-x-6 gap-y-1 rounded-xl border border-blue-500/20 bg-gradient-to-b from-blue-500/[0.06] to-blue-500/[0.02] px-4 py-3">
+        <span className="flex flex-col"><span className="text-[12px] font-semibold text-foreground-muted">공급가액</span><b className="text-[14px]">{won(supply)}원</b></span>
+        <span className="flex flex-col"><span className="text-[12px] font-semibold text-foreground-muted">부가세</span><b className="text-[14px]">{won(Math.round(supply * 0.1))}원</b></span>
+        <span className="ml-auto flex flex-col items-end"><span className="text-[12px] font-semibold text-foreground-muted">합계</span>
+          <b className="text-[22px] font-extrabold tracking-tight">{won(supply + Math.round(supply * 0.1))}원</b></span>
       </div>
     </>
   );
@@ -182,7 +203,8 @@ export function StatementItems({ deal, st, onChange, withNote = false }: {
 
 // ── 출하: 제품별 수량·사진 + 배송 정보 ────────────────────────────────────────
 
-type ShipLine = { name: string; qty: number | null; photos: string[] };
+/** line_no = 수주 판의 몇 번째 품목 줄인지 — 있으면 그 줄 오른쪽에 [S/N 등록](사용자 2026-10-23) */
+type ShipLine = { name: string; qty: number | null; photos: string[]; line_no?: number };
 /** 출하 작성 내용 — 수주 진행 대화(AI)가 채우고, 화면에서 고친 것은 대화 전에 저장(order_state.ship). */
 export type ShipDraft = Partial<{
   mode: "items" | "set"; date: string; carrier: string; tracking: string; receiver: string; address: string;
@@ -214,7 +236,7 @@ export function shipmentDraft(s: DealShipment): ShipDraft {
     mode: set ? "set" : "items", date: s.date ?? undefined, carrier: s.carrier ?? undefined, tracking: s.tracking.join(", "),
     receiver: s.receiver ?? "", address: s.address ?? "",
     ...(set ? { set_name: lines[0].name, set_qty: lines[0].qty_text ?? "1 SET", set_photos: lines[0].photos }
-      : { lines: lines.map((l) => ({ name: l.name, qty: l.qty, photos: l.photos })) }),
+      : { lines: lines.map((l) => ({ name: l.name, qty: l.qty, photos: l.photos, line_no: l.line_no })) }),
   };
 }
 
@@ -235,22 +257,43 @@ export function ShipForm({ deal, busy, act, initial, onSaved, onCancel, onChange
     tracking: initial?.tracking ?? "", receiver: initial?.receiver ?? last?.receiver ?? "", address: initial?.address ?? last?.address ?? "" });
   const [up, setUp] = useState<number | "set" | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  // 제품 시리얼(사용자 2026-10-19) — 출하 전 등록 필수, 이 출하로 나가는 시리얼을 고른다(출하일 = 무상 기간 시작일).
-  // 여기서 등록하면 건을 다시 받아 이 칸만 새로 그린다(위 화면은 출하 저장 때 새로 받음).
-  const [unitDeal, setUnitDeal] = useState<Pick<DealRow, "units" | "unit_list">>({ units: deal.units, unit_list: deal.unit_list });
-  const [registering, setRegistering] = useState(false);
-  const usable = (unitDeal.unit_list ?? []).filter((u) => u.shipment_index == null || u.shipment_index === editIndex);
-  const [picked, setPicked] = useState<number[]>(() => usable.filter((u) => (editIndex != null ? u.shipment_index === editIndex
-    : u.quote_id === deal.units?.quote_id && u.quote_revision === deal.units?.revision)).map((u) => u.id));
-  const unitsMissing = editIndex == null && !!unitDeal.units && unitDeal.units.missing > 0;
-  const refreshUnits = async () => {
-    try {
-      const d = await dealRequest(`/${deal.id}`);
-      setUnitDeal({ units: d.units, unit_list: d.unit_list });
-      const fresh = (d.unit_list ?? []).filter((u) => u.shipment_index == null && u.quote_id === d.units?.quote_id && u.quote_revision === d.units?.revision);
-      setPicked((xs) => Array.from(new Set([...xs, ...fresh.map((u) => u.id)])));
-    } catch { /* 다음 저장 때 다시 받음 */ }
-  };
+  // S/N(사용자 2026-10-23) — 출하 기록을 쓰며 품목마다 등록한다. 품목은 수주 판의 품목 줄(설치비·물류비·서술형 줄 빼고)에서 딸려 온다.
+  const [view, setView] = useState<IssueUnits | null>(null);
+  const [snOpen, setSnOpen] = useState<number | null>(null);
+  const src = deal.units ? { quote_id: deal.units.quote_id, revision: deal.units.revision } : null;
+  useEffect(() => {
+    if (!src) return;
+    let alive = true;
+    loadSnView(deal.id, src)
+      .then((v) => {
+        if (!alive || !v) return;
+        setView(v);
+        // 새 출하는 수주 판 품목으로 채우고, 남긴 출하(고치기)는 이름이 같은 품목 줄에 짝을 지어 준다
+        setLines((xs) => (initial?.lines?.length
+          ? xs.map((l) => (l.line_no != null ? l : { ...l, line_no: v.lines.find((ln) => flatName(ln.name) === flatName(l.name))?.line_no }))
+          : v.lines.length ? v.lines.map((ln) => ({ name: flatName(ln.name), qty: ln.qty, photos: [], line_no: ln.line_no })) : xs));
+      })
+      .catch(() => { /* 품목은 기본 줄 그대로 */ });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deal.id, !!src, src?.quote_id, src?.revision]);
+  const snLine = (no: number | undefined): SnLine | undefined => (no == null ? undefined : view?.lines.find((ln) => ln.line_no === no));
+  // 이 출하에서 품목 줄마다 적어야 할 S/N 개수 — 품목별: 출하 수량, 세트: 수주 수량 중 앞선 출하로 안 나간 만큼
+  const need = new Map<number, number>();
+  if (view) {
+    if (mode === "set") {
+      for (const ln of view.lines) need.set(ln.line_no, Math.max(0, ln.qty - (ln.units.length - usableUnits(ln, editIndex).length)));
+    } else {
+      for (const l of lines) {
+        if (snLine(l.line_no) && (l.qty ?? 0) > 0) need.set(l.line_no!, (need.get(l.line_no!) ?? 0) + Math.ceil(l.qty ?? 0));
+      }
+    }
+  }
+  const snCount = (no: number) => usableUnits(snLine(no)!, editIndex).length;
+  const snShort = view ? [...need].filter(([no, n]) => n > 0 && snCount(no) < n).map(([no]) => flatName(snLine(no)!.name)) : [];
+  // 고칠 때는 이 출하에 이미 묶인 S/N 을 늘 포함 — 이름으로 짝을 못 찾은 예전 줄의 S/N 이 풀리지 않게
+  const bound = view && editIndex != null ? view.lines.flatMap((ln) => ln.units.filter((u) => u.shipment_index === editIndex).map((u) => u.id)) : [];
+  const unitIds = view ? [...new Set([...[...need.keys()].flatMap((no) => usableUnits(snLine(no)!, editIndex).map((u) => u.id)), ...bound])] : null;
 
   // 화면에서 고친 내용을 위로 알린다(수주 진행: 대화 보내기 전에 저장)
   const report = useRef(onChange);
@@ -282,12 +325,18 @@ export function ShipForm({ deal, busy, act, initial, onSaved, onCancel, onChange
           items: `${setName.trim()} ${setQty.trim()}` + (items.length ? `\n(구성: ${items.map((l) => `${l.name} × ${l.qty}`).join(", ")})` : "").slice(0, 900),
           lines: [{ name: setName.trim(), qty: null, qty_text: setQty.trim(), photos: setPhotos }] }
       : { ...f, purpose: "판매", lines: items };
-    Object.assign(body, { unit_ids: picked.filter((id) => usable.some((u) => u.id === id)) });
+    if (unitIds) Object.assign(body, { unit_ids: unitIds });
     const ok = editIndex != null ? await act("shipment-edit", { ...body, index: editIndex }) : await act("shipments", body);
     if (ok) onSaved?.();
   }
   const noPhoto = mode === "set" ? (setPhotos.length ? 0 : 1) : items.filter((l) => !l.photos.length).length;
-  const canSave = !busy && up === null && !unitsMissing && (mode === "set" ? !!setName.trim() && !!setQty.trim() : items.length > 0);
+  // 순서를 건너뛴 출하 안내(사용자 2026-10-23) — 정상 순서는 거래명세서 → 입금 확인 → 출하. 막지는 않는다(출하는 언제든, 2026-10-08)
+  const skipped = editIndex != null || !deal.flow?.steps.length ? [] : [
+    ...(deal.statement ? [] : ["거래명세서 발급"]),
+    ...(deal.flow.terms ?? []).filter((t) => !t.confirmed && (/^(선금|전액)$/.test(t.label) || /발주|계약|출하\s*전|납품\s*전/.test(t.when)))
+      .map((t) => `${t.label} ${t.pct}% 입금 확인`),
+  ];
+  const canSave = !busy && up === null && (editIndex != null || snShort.length === 0) && (mode === "set" ? !!setName.trim() && !!setQty.trim() : items.length > 0);
 
   const photoStrip = (photos: string[], remove: (p: string) => void, alt: string) => photos.length > 0 && (
     <div className="mt-2 flex flex-wrap gap-1.5">
@@ -302,127 +351,171 @@ export function ShipForm({ deal, busy, act, initial, onSaved, onCancel, onChange
     </div>
   );
   const photoBtn = (target: number | "set") => (
-    <label className={cn("cursor-pointer rounded-lg border border-border px-2 py-1 font-semibold text-accent hover:bg-accent/5",
-      up !== null && "pointer-events-none opacity-50")}>
-      {up === target ? "올리는 중…" : "+ 사진"}
+    <label className={cn(ROW_BTN, "cursor-pointer text-accent", up !== null && "pointer-events-none opacity-50")}>
+      <Icon name="plus" className="h-3.5 w-3.5" /> {up === target ? "올리는 중…" : "사진"}
       <input type="file" accept=".jpg,.jpeg,.png,.webp" multiple className="hidden"
              onChange={(e) => { const fs = e.target.files; if (fs?.length) void addPhotos(target, fs); e.target.value = ""; }} />
     </label>
   );
 
+  const snBtn = (no: number) => (
+    <SnButton tall count={snCount(no)} need={need.get(no) ?? 0} open={snOpen === no} disabled={busy || !need.get(no)}
+              onClick={() => setSnOpen(snOpen === no ? null : no)} />
+  );
+  const snBox = (no: number) => view && snOpen === no && (
+    <SnPanel key={no} dealId={deal.id} view={view} line={snLine(no)!} need={need.get(no) ?? 0} editIndex={editIndex} bindIndex={editIndex}
+             onSaved={setView} onClose={() => setSnOpen(null)} />
+  );
+  const field = (label: string, input: React.ReactNode) => <label className={ROW_LABEL}><span>{label}</span>{input}</label>;
+
+  // 견적서·거래명세서 작성과 같은 짜임(사용자 2026-10-23) — ① 출하 품목 ② 배송, 흰 40px 칸·테두리 버튼
   return (
     <div className="flex flex-col gap-3 text-[12.5px]">
-      {editIndex != null && (
-        <p className="rounded-lg bg-sky-500/10 px-3 py-2 text-sky-800 dark:text-sky-200">이미 남긴 출하 기록을 고칩니다 — 저장하면 이 기록이 바뀝니다(새 출하가 늘어나지 않음).</p>
-      )}
-      <div className="flex flex-wrap items-center gap-1.5">
-        <span className="font-semibold">출하 품목</span>
-        {([["items", "품목별"], ["set", "세트로 묶어서 (예: 1 SET)"]] as const).map(([k, label]) => (
-          <button key={k} type="button" onClick={() => setMode(k)} aria-pressed={mode === k}
-                  className={cn("rounded-full border px-2.5 py-0.5 text-[12px] font-semibold",
-                    mode === k ? "border-accent bg-accent/10 text-accent" : "border-border text-foreground-muted hover:bg-foreground/5")}>
-            {label}
-          </button>
-        ))}
-      </div>
-      {mode === "set" ? (
-        <div className="rounded-lg border border-border p-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <input value={setName} onChange={(e) => setSetName(e.target.value)} aria-label="세트 이름" placeholder="예: TCV1 툴체인저(ATC)" className={cn(INPUT, "h-8 min-w-0 flex-1")} />
-            <input value={setQty} onChange={(e) => setSetQty(e.target.value)} aria-label="세트 수량" placeholder="예: 1" className={cn(INPUT, "h-8 w-24 text-right")} />
-            {photoBtn("set")}
-          </div>
-          {photoStrip(setPhotos, (p) => setSetPhotos((xs) => xs.filter((q) => q !== p)), `${setName} 출하 사진`)}
-          {items.length > 0 && (
-            <p className="mt-1.5 text-[11.5px] text-foreground-subtle">구성(참고로 함께 남김): {items.map((l) => `${l.name} × ${l.qty}`).join(", ")}</p>
-          )}
-        </div>
-      ) : (
-        <>
-          <ul className="flex flex-col gap-2">
-            {lines.map((l, i) => (
-              <li key={i} className="rounded-lg border border-border p-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <input value={l.name} onChange={(e) => setLines((xs) => xs.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))}
-                         aria-label="제품" placeholder="예: TCV1 MASTER T.C" className={cn(INPUT, "h-8 min-w-0 flex-1")} />
-                  <input value={l.qty ?? ""} inputMode="numeric" aria-label="수량"
-                         onChange={(e) => setLines((xs) => xs.map((x, j) => (j === i ? { ...x, qty: Number(e.target.value) || 0 } : x)))}
-                         className={cn(INPUT, "h-8 w-20 text-right")} />
-                  {photoBtn(i)}
-                </div>
-                {photoStrip(l.photos, (p) => setLines((xs) => xs.map((x, j) => (j === i ? { ...x, photos: x.photos.filter((q) => q !== p) } : x))),
-                            `${l.name} 출하 사진`)}
-              </li>
-            ))}
-          </ul>
-          <SmallBtn onClick={() => setLines((xs) => [...xs, { name: "", qty: 1, photos: [] }])}>+ 제품 줄</SmallBtn>
-        </>
-      )}
-      <div className="grid gap-2 md:grid-cols-3">
-        <Field label="출하일"><input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} className={INPUT} /></Field>
-        <Field label="배송">
-          <select value={f.carrier} onChange={(e) => setF({ ...f, carrier: e.target.value })} className={INPUT}>
-            {CARRIERS.map((c) => <option key={c}>{c}</option>)}
-          </select>
-        </Field>
-        <Field label="운송장 번호 (여러 개는 쉼표로)"><input value={f.tracking} onChange={(e) => setF({ ...f, tracking: e.target.value })} className={INPUT}
-                                                    placeholder="예: 1234-5678-9012, 2345-6789-0123" /></Field>
-        <Field label="받는 사람·연락처"><input value={f.receiver} onChange={(e) => setF({ ...f, receiver: e.target.value })} className={INPUT}
-                                         placeholder="예: 김철수 과장 010-1234-5678" /></Field>
-        <Field label="주소" wide><input value={f.address} onChange={(e) => setF({ ...f, address: e.target.value })} className={INPUT}
-                                  placeholder="예: 경기도 포천시 ○○로 12, 2동 자재 입고장" /></Field>
-      </div>
-      {unitsMissing && unitDeal.units && (
-        <div className="flex flex-wrap items-center gap-2 rounded-lg bg-red-500/10 px-3 py-2 text-red-700 dark:text-red-300">
-          <span>
-            출하 전에 제품 시리얼 번호를 등록해 주세요 — <b className="font-mono">{unitDeal.units.issue_no}</b> 기준 {unitDeal.units.total}개 중 {unitDeal.units.done}개 등록.
-            시리얼이 없는 품목은 &lsquo;특주&rsquo;처럼 적으면 됩니다.
-          </span>
-          <button type="button" onClick={() => setRegistering(true)}
-                  className="ml-auto rounded-lg border border-red-500/40 px-2.5 py-1 font-semibold hover:bg-red-500/10">시리얼 등록</button>
-        </div>
-      )}
-      {usable.length > 0 && (
-        <div className="rounded-lg border border-border p-2">
-          <div className="mb-1 flex flex-wrap items-center gap-2">
-            <span className="font-semibold">이 출하로 나가는 제품 시리얼</span>
-            <span className="text-foreground-muted">{picked.filter((id) => usable.some((u) => u.id === id)).length}/{usable.length}</span>
-            <span className="text-[11.5px] text-foreground-subtle">출하일부터 무상 기간이 시작됩니다</span>
-            <button type="button" className="ml-auto text-[12px] font-semibold text-accent hover:underline"
-                    onClick={() => setPicked(picked.length >= usable.length ? [] : usable.map((u) => u.id))}>
-              {picked.length >= usable.length ? "모두 빼기" : "모두 고르기"}
-            </button>
-          </div>
-          <ul className="scroll-thin grid max-h-40 gap-x-4 gap-y-0.5 overflow-y-auto md:grid-cols-2">
-            {usable.map((u) => (
-              <li key={u.id}>
-                <label className="flex items-center gap-2">
-                  <input type="checkbox" checked={picked.includes(u.id)}
-                         onChange={(e) => setPicked((xs) => (e.target.checked ? [...xs, u.id] : xs.filter((x) => x !== u.id)))} />
-                  <span className="truncate">{u.part_name}</span>
-                  <span className={cn("whitespace-nowrap font-mono", u.no_serial ? "text-foreground-subtle" : "text-foreground")}>{u.serial}</span>
-                  <UnitStateBadge code={u.purpose} />
-                  {u.issue_no !== deal.units?.issue_no && <span className="text-[11px] text-foreground-subtle">{u.issue_no}</span>}
-                </label>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {registering && unitDeal.units && (
-        <UnitRegisterDialog dealId={deal.id} quoteId={unitDeal.units.quote_id} revision={unitDeal.units.revision}
-                            onClose={() => setRegistering(false)} onSaved={() => void refreshUnits()} />
-      )}
-      {err && <p className="text-red-600">{err}</p>}
-      {noPhoto > 0 && (
-        <p className="text-[12px] text-amber-700 dark:text-amber-300">
-          {mode === "set" ? "세트 사진이 없습니다" : `사진이 없는 제품이 ${noPhoto}개 있습니다`} — 그대로 저장할 수도 있습니다.
+      {skipped.length > 0 && (
+        <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3.5 py-2.5 text-amber-800 dark:text-amber-200">
+          <b>정상 순서: 거래명세서 → 입금 확인 → 출하</b> · 지금은 {skipped.join(", ")} 전입니다. 그래도 출하 기록은 남길 수 있습니다.
         </p>
       )}
-      <div className="flex justify-end gap-2">
-        {onCancel && <SmallBtn onClick={onCancel}>취소</SmallBtn>}
-        <PrimarySmall onClick={() => void save()} disabled={!canSave}>{editIndex != null ? "고친 내용 저장" : "출하 기록 저장"}</PrimarySmall>
+      {editIndex != null && (
+        <p className="rounded-xl bg-sky-500/10 px-3.5 py-2.5 text-sky-800 dark:text-sky-200">이미 남긴 출하 기록을 고칩니다 — 저장하면 이 기록이 바뀝니다(새 출하가 늘어나지 않음).</p>
+      )}
+      <div className="flex flex-col gap-3 rounded-xl border border-border p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <GroupHead n={1} title="출하 품목" tone="bg-cyan-600/10 text-cyan-800 dark:text-cyan-300" />
+          <div className="ml-auto flex gap-1.5">
+            {([["items", "품목별"], ["set", "세트로 묶어서 (예: 1 SET)"]] as const).map(([k, label]) => (
+              <button key={k} type="button" onClick={() => setMode(k)} aria-pressed={mode === k}
+                      className={cn("h-8 rounded-full border px-3 text-[12px] font-semibold",
+                        mode === k ? "border-accent bg-accent/10 text-accent" : "border-border-strong bg-surface-raised text-foreground-muted hover:bg-foreground/5")}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+        {mode === "set" ? (
+          <div className={ROW_CARD}>
+            <div className="flex flex-wrap items-end gap-2.5">
+              <label className={cn(ROW_LABEL, "min-w-[180px] flex-1")}><span>세트 이름</span>
+                <input value={setName} onChange={(e) => setSetName(e.target.value)} aria-label="세트 이름" placeholder="예: TCV1 툴체인저(ATC)" className={HEAD_FIELD} />
+              </label>
+              <label className={ROW_LABEL}><span>수량</span>
+                <input value={setQty} onChange={(e) => setSetQty(e.target.value)} aria-label="세트 수량" placeholder="예: 1 SET" className={cn(ROW_FIELD, "w-[96px] text-right")} />
+              </label>
+              {photoBtn("set")}
+            </div>
+            {photoStrip(setPhotos, (p) => setSetPhotos((xs) => xs.filter((q) => q !== p)), `${setName} 출하 사진`)}
+            {items.length > 0 && (
+              <p className="mt-2 text-[11.5px] text-foreground-subtle">구성(참고로 함께 남김): {items.map((l) => `${l.name} × ${l.qty}`).join(", ")}</p>
+            )}
+            {view && view.lines.length > 0 && (
+              <ul className="mt-3 flex flex-col gap-2 border-t border-border pt-3">
+                <li className="text-[12px] font-semibold text-foreground-muted">구성 품목 S/N</li>
+                {view.lines.map((ln) => (
+                  <li key={ln.line_no}>
+                    <div className="flex items-center gap-2.5">
+                      <span className="min-w-0 flex-1 truncate text-[13.5px] font-semibold">{flatName(ln.name)}</span>
+                      <span className="text-foreground-muted">× {need.get(ln.line_no) ?? 0}</span>
+                      {snBtn(ln.line_no)}
+                    </div>
+                    {snBox(ln.line_no)}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        ) : (
+          <>
+            <ul className="flex flex-col gap-2.5">
+              {lines.map((l, i) => (
+                <li key={i} className={ROW_CARD}>
+                  {/* 한 줄 = 제품 · 수량 · 사진 · [S/N 등록] — 좁은 상세 패널에서는 버튼이 아랫줄로 */}
+                  <div className="flex flex-wrap items-end gap-2.5">
+                    <label className={cn(ROW_LABEL, "min-w-[180px] flex-1")}><span>제품</span>
+                      <input value={l.name} onChange={(e) => setLines((xs) => xs.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))}
+                             aria-label="제품" placeholder="예: TCV1 MASTER T.C" className={HEAD_FIELD} />
+                    </label>
+                    <label className={ROW_LABEL}><span>수량</span>
+                      <input value={l.qty ?? ""} inputMode="numeric" aria-label="수량"
+                             onChange={(e) => setLines((xs) => xs.map((x, j) => (j === i ? { ...x, qty: Number(e.target.value) || 0 } : x)))}
+                             className={cn(ROW_FIELD, "w-[72px] text-right")} />
+                    </label>
+                    <div className="ml-auto flex gap-2">
+                      {photoBtn(i)}
+                      {snLine(l.line_no) && snBtn(l.line_no!)}
+                      {/* [제품 줄 추가]로 넣은 줄은 지울 수 있다(사용자 2026-10-23) — 수주 견적서에서 딸려 온 품목 줄은 그대로 */}
+                      {!snLine(l.line_no) && (
+                        <button type="button" aria-label={`${l.name || "새"} 줄 빼기`} title="빼기" disabled={up !== null}
+                                onClick={() => { setLines((xs) => xs.filter((_, j) => j !== i)); setSnOpen(null); }}
+                                className={cn(ROW_ICON_BTN, "hover:text-red-600")}>
+                          <Icon name="trash" className="h-4 w-4" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  {snLine(l.line_no) && lines.findIndex((x) => x.line_no === l.line_no) === i && snBox(l.line_no!)}
+                  {photoStrip(l.photos, (p) => setLines((xs) => xs.map((x, j) => (j === i ? { ...x, photos: x.photos.filter((q) => q !== p) } : x))),
+                              `${l.name} 출하 사진`)}
+                </li>
+              ))}
+            </ul>
+            <div>
+              <button type="button" className={ITEM_BTN} onClick={() => setLines((xs) => [...xs, { name: "", qty: 1, photos: [] }])}>
+                <Icon name="plus" className="h-3.5 w-3.5 text-accent" /> 제품 줄 추가
+              </button>
+            </div>
+          </>
+        )}
       </div>
+      <div className="rounded-xl border border-border p-4">
+        <GroupHead n={2} title="배송" tone="bg-blue-500/10 text-blue-700 dark:text-blue-300" />
+        {/* 좁은 칸(수주 진행·상세 패널)에서도 라벨이 줄바꿈되지 않게 두 줄로 */}
+        <div className="mt-3 grid gap-3 sm:grid-cols-[150px_130px_minmax(0,1fr)]">
+          {field("출하일", <input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} className={HEAD_FIELD} />)}
+          {field("배송", (
+            <select value={f.carrier} onChange={(e) => setF({ ...f, carrier: e.target.value })} className={HEAD_FIELD}>
+              {/* 예전 기록의 배송(예: '택배')이 목록에 없어도 고칠 때 바뀌지 않게 */}
+              {(f.carrier && !CARRIERS.includes(f.carrier) ? [f.carrier, ...CARRIERS] : CARRIERS).map((c) => <option key={c}>{c}</option>)}
+            </select>
+          ))}
+          {field("운송장 번호", <input value={f.tracking} onChange={(e) => setF({ ...f, tracking: e.target.value })} className={HEAD_FIELD}
+                                   title="여러 개는 쉼표로" placeholder="예: 1234-5678, 2345-6789 (쉼표로 여러 개)" />)}
+        </div>
+        <div className="mt-3 grid gap-3 sm:grid-cols-[220px_minmax(0,1fr)]">
+          {field("받는 사람·연락처", <input value={f.receiver} onChange={(e) => setF({ ...f, receiver: e.target.value })} className={HEAD_FIELD}
+                                          placeholder="예: 김철수 과장 010-1234-5678" />)}
+          {field("주소", <input value={f.address} onChange={(e) => setF({ ...f, address: e.target.value })} className={HEAD_FIELD}
+                               placeholder="예: 경기도 포천시 ○○로 12, 2동 자재 입고장" />)}
+        </div>
+      </div>
+      {snShort.length > 0 && (
+        <p className="rounded-xl border border-red-500/25 bg-red-500/[0.06] px-3.5 py-2.5 text-red-700 dark:text-red-300">
+          <b>출하 전에 S/N을 등록해 주세요</b> — {snShort.join(", ")}. 품목 오른쪽 [S/N 등록]을 눌러 한 개씩 적습니다(출하일부터 무상 기간 시작).
+        </p>
+      )}
+      {err && <p className="text-red-600">{err}</p>}
+      <div className="flex flex-wrap items-center gap-2">
+        {noPhoto > 0 && (
+          <p className="text-[12px] text-amber-700 dark:text-amber-300">
+            {mode === "set" ? "세트 사진이 없습니다" : `사진이 없는 제품이 ${noPhoto}개 있습니다`} — 그대로 저장할 수도 있습니다.
+          </p>
+        )}
+        <div className="ml-auto flex gap-2">
+          {onCancel && <button type="button" className={secondaryBtn} onClick={onCancel}>취소</button>}
+          <button type="button" className={primaryBtn} onClick={() => void save()} disabled={!canSave}>
+            <Icon name="check" className="h-4 w-4" /> {editIndex != null ? "고친 내용 저장" : "출하 기록 저장"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 단계 묶음 제목 — 번호 배지 + 제목(거래명세서·출하 작성 칸이 같이 쓴다) */
+export function GroupHead({ n, title, tone }: { n: number; title: string; tone: string }) {
+  return (
+    <div className="flex items-center gap-2.5">
+      <span className={cn("grid h-[26px] w-[26px] place-items-center rounded-lg text-[12.5px] font-extrabold", tone)}>{n}</span>
+      <h4 className="text-[14px] font-extrabold text-foreground">{title}</h4>
     </div>
   );
 }

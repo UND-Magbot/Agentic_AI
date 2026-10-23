@@ -16,7 +16,7 @@ import type {
 import { AgentBubble, AiBubble, RichText, streamNdjson } from "@/components/domains/sales/agent-chat";
 import { OrderTab } from "@/components/domains/sales/order-workspace";
 import { Icon } from "@/components/shared/ui/icon";
-import { cn } from "@/lib/shared/utils";
+import { cn, scrollChatToEnd } from "@/lib/shared/utils";
 import {
   AtcCandidatePreview, AtcIntakeSummary, AtcLivePreview, AtcMeetingUpload, GroupedFields, AtcResultView, AtcWizard, describeAnswer, emptyIntake,
   type SpecCandidate, SPEC_FILL_PATHS, SpecAskContext, SpecLockContext, autoUtilities, questionTitle,
@@ -921,6 +921,24 @@ function MeetRows({ rows }: { rows: [string, string][] }) {
 
 export type RecommendTab = "recommend" | "quote" | "order" | "deals" | "rentals" | "units" | "memory";
 
+/** 화면 머리 — 고른 탭마다 제목·설명이 바뀐다(사용자 2026-10-23). 이름은 기술영업 첫 화면 기능 카드와 같게 */
+const TAB_HEAD: Record<RecommendTab, { title: string; desc: string }> = {
+  recommend: { title: "회사 제품 추천",
+    desc: "Q&A 를 순서대로 답하고 [AI와 같이 제품 검색 진행]을 누르면, AI 가 빠진 정보를 묻고 조건을 함께 확인한 뒤 근거와 함께 제품을 추천합니다. 결과나 데이터가 틀렸으면 대화창에서 말해 주세요 — 확인을 거쳐 AI 에 학습시킬 수 있습니다." },
+  quote: { title: "견적서",
+    desc: "작성 중인 견적서를 AI 와 대화하며 이어서 쓰고 발행합니다. AI 추천이 없는 제품은 [견적서 수기 작성]에서 제품 판매·제품 대여를 골라 시작하고, 발행하면 건 번호가 붙어 판매·대여 관리로 이어집니다." },
+  order: { title: "수주 진행",
+    desc: "수주한 건을 AI 와 대화하며 거래명세서 발급 → 결제 조건 → 입금 확인 → 출하 순서로 진행합니다. 순서는 안내만 하므로 필요하면 앞 단계 전에도 기록할 수 있고, 출하할 때 품목마다 S/N 을 등록합니다." },
+  deals: { title: "제품 판매 관리",
+    desc: "제품 판매 건을 견적부터 수주·거래명세서·입금·출하까지 한 건씩 리스트로 관리합니다. 줄을 누르면 오른쪽에 상세가 열리고, 기록을 남기면 단계가 바뀝니다." },
+  rentals: { title: "제품 대여 관리",
+    desc: "대여 견적서로 낸 건을 견적부터 수주·출하(S/N 등록)·회수까지 관리하고, 대여 기간과 월 납입금을 함께 봅니다. 끝나는 날이 가까우면 붉게 표시됩니다." },
+  units: { title: "제품 A/S건 관리",
+    desc: "S/N 으로 고객사·출하일·무상 기간·A/S 이력을 찾고, 접수한 A/S 를 원인·무상/유상·진행 상태와 함께 기록합니다." },
+  memory: { title: "검토·승인",
+    desc: "AI 가 대화에서 배운 내용(경험·정정·기준)과 나에게 온 승인 요청을 확인합니다. 영업 관리자가 승인한 내용만 AI 답에 반영됩니다." },
+};
+
 export function ProductRecommend({ initial, initialTab, startManual, writer = "", initialSub }: {
   initial: CorrectionList; initialTab?: RecommendTab; startManual?: boolean; initialSub?: "approvals";
   /** 로그인 계정의 영문 이름 — 질문지 고객 정보의 작성자(영업 담당) 기본값 */
@@ -1020,7 +1038,7 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
   useEffect(() => { recRef.current = rec; }, [rec]);
   const finalizedRef = useRef(finalized);
   useEffect(() => { finalizedRef.current = finalized; }, [finalized]);
-  useEffect(() => { chatEnd.current?.scrollIntoView({ block: "end", behavior: "smooth" }); }, [msgs, busy]);
+  useEffect(() => { scrollChatToEnd(chatEnd.current); }, [msgs, busy]);
 
   const push = (m: Omit<Msg, "id"> & Record<string, unknown>) => setMsgs((xs) => [...xs, { ...m, id: ++seq.current } as Msg]);
   const patch = (id: number, state: string) => setMsgs((xs) => xs.map((m) => (m.id === id ? ({ ...m, state } as Msg) : m)));
@@ -1777,24 +1795,22 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
   return (
     <SpecLockContext.Provider value={specLock}>
     <SpecAskContext.Provider value={() => void askSpec()}>
-    <div className="scroll-thin h-full overflow-y-auto">
+    <div className="und-page-bg scroll-thin h-full overflow-y-auto">
     <div className={cn("mx-auto flex w-full flex-col gap-4 px-4 py-6", session || tab === "quote" || tab === "order" || tab === "deals" || tab === "rentals" || tab === "units" ? "max-w-[1440px]" : "max-w-4xl")}>
       <header>
-        <h1 className="text-[18px] font-semibold text-foreground">회사 제품 추천</h1>
-        <p className="text-[12.5px] text-foreground-muted">
-          Q&amp;A 를 순서대로 답하고 [AI와 같이 제품 검색 진행]을 누르면, AI 가 빠진 정보를 묻고 조건을 함께 확인한 뒤 근거와 함께 제품을 추천합니다.
-          결과나 데이터가 틀렸으면 대화창에서 말해 주세요 — 확인을 거쳐 AI 에 학습시킬 수 있습니다.
-        </p>
+        <p className="und-eyebrow">기술영업 · Sales</p>
+        <h1 className="und-page-title mt-1 text-[22px] text-foreground">{TAB_HEAD[tab].title}</h1>
+        {/* 설명 줄 수가 탭마다 달라도 탭 줄이 위아래로 움직이지 않게 두 줄 높이를 잡아 둔다 */}
+        <p className="mt-1 min-h-[2.6rem] max-w-[980px] text-[13px] leading-relaxed text-foreground-muted">{TAB_HEAD[tab].desc}</p>
       </header>
 
       {/* 탭: 제품 추천 / AI 학습 내용 관리 */}
-      <div role="tablist" aria-label="회사 제품 추천 화면" className="flex gap-1 border-b border-border">
+      <div role="tablist" aria-label="회사 제품 추천 화면" className="und-tabs">
         {([["recommend", "제품 추천"], ["quote", "견적서"], ["order", "수주 진행"], ["deals", "제품 판매 관리"], ["rentals", "제품 대여 관리"], ["units", "제품·A/S"], ["memory", "검토·승인"]] as const).map(([key, label]) => {
           const pending = list.items.filter((c) => c.review_status === "pending").length;
           return (
             <button key={key} type="button" role="tab" aria-selected={tab === key} onClick={() => { setDealOpen(null); setTab(key); }}
-                    className={cn("-mb-px whitespace-nowrap border-b-2 px-3 py-2 text-[13.5px] font-semibold transition-colors",
-                      tab === key ? "border-accent text-accent" : "border-transparent text-foreground-muted hover:text-foreground")}>
+                    className="und-tab">
               {label}
               {key === "memory" && (
                 <span className={cn("ml-1.5 rounded-full px-1.5 py-0.5 text-[11px] font-medium",
@@ -1813,6 +1829,8 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
         })}
       </div>
 
+      {/* 고른 탭과 이어진 패널(사용자 2026-10-23) */}
+      <div role="tabpanel" className="und-tabpanel flex flex-col gap-4">
       {tab === "recommend" && phase === "form" && (
       <>
         {/* 제품 종류 — 누르면 질문지가 바뀐다 */}
@@ -2222,6 +2240,7 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
         </>
       )}
       <ErrorBox error={error} />
+      </div>
     </div>
     </div>
     </SpecAskContext.Provider>

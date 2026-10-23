@@ -62,7 +62,7 @@ export function stamp(iso: string): string {
 }
 
 export const ACTION_LABEL: Record<string, string> = {
-  import: "엑셀에서 이관", create: "새 건 등록", units: "제품 시리얼 등록", as_case: "A/S 접수", won: "수주 상태 변경", invoice: "세금계산서 기록", rental_return: "대여 회수", rental_start: "대여 시작일", as_case_delete: "A/S 기록 삭제",
+  import: "엑셀에서 이관", create: "새 건 등록", units: "S/N 등록", as_case: "A/S 접수", won: "수주 상태 변경", invoice: "세금계산서 기록", rental_return: "대여 회수", rental_start: "대여 시작일", as_case_delete: "A/S 기록 삭제",
   payment: "입금 확인", paid_full: "완납 표시 변경", shipment: "출하 기록", remove_invoice: "계산서 기록 삭제",
   remove_payment: "입금 기록 삭제", remove_shipment: "출하 기록 삭제", review_done: "확인 완료", review_reopen: "확인 되돌리기",
   po_upload: "발주서 첨부", remove_po_file: "발주서 삭제", po_compare: "발주서 품목 대조", shipment_edit: "출하 기록 수정",

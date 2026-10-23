@@ -445,8 +445,23 @@ check(qs.auto_block(na2) == "B1" and [r.get("row") for r in rn] == [None, "subto
 one = qs.render_lines(na, "ko", None)
 check(all(not r.get("row") for r in one), "기본 묶음 하나뿐인 견적은 예전처럼 Sub total·회색 줄 없음", str([r.get("row") for r in one]))
 lg, _ = qs.apply_ops(na, [{"op": "add", "name": "CHARGING DOCK", "qty": 1, "unit_price": 6_131_580, "option": True}], "충전독 6131580원 옵션으로")
+# OPTION 은 Total 반영 줄이 있을 때만 Sub total 을 셀 묶음(사용자 2026-10-23) — 회색 줄은 단락마다 그대로
 check([r.get("row") for r in qs.render_lines(lg, "ko", None)] == [None, "gap", "section", "option", "gap"],
-      "기본 + OPTION(LG CNS 견적서): 품목 묶음이 하나라 Sub total 없이, 단락마다 회색 줄", str([r.get("row") for r in qs.render_lines(lg, "ko", None)]))
+      "기본 + OPTION(미반영): 둘 다 Sub total 없이, 단락마다 회색 줄", str([r.get("row") for r in qs.render_lines(lg, "ko", None)]))
+lg_in, _ = qs.apply_ops(na, [{"op": "add", "name": "CHARGING DOCK", "qty": 1, "unit_price": 6_131_580, "option": True, "in_total": True}], "충전독 6131580원 옵션으로, Total 반영")
+check([r.get("row") for r in qs.render_lines(lg_in, "ko", None)] == [None, "subtotal", "gap", "section", "option", "subtotal", "gap"],
+      "기본 + OPTION(반영): 기본 품목·OPTION 둘 다 Sub total", str([r.get("row") for r in qs.render_lines(lg_in, "ko", None)]))
+three = {**lg, "blocks": [*qs.blocks(lg), {"id": "B9", "type": "items", "title": "설치 및 시운전"}],
+         "lines": [*lg["lines"], {"id": "x9", "kind": "extra", "key": "extra", "name": "설치", "commodity": "Service", "qty": 1,
+                                  "unit_price": 500_000, "remark": "", "block": "B9"}]}
+rows3 = [r.get("row") for r in qs.render_lines(three, "ko", None)]
+check(rows3.count("subtotal") == 2 and rows3[rows3.index("option") + 1] != "subtotal",
+      "기본 + 사용자 묶음 + OPTION(미반영): 기본·사용자 묶음에만 Sub total, OPTION 은 없음", str(rows3))
+for ln in three["lines"]:
+    if ln.get("kind") == "option" or ln.get("name") == "CHARGING DOCK":
+        ln["in_total"] = True
+rows3b = [r.get("row") for r in qs.render_lines(three, "ko", None)]
+check(rows3b.count("subtotal") == 3, "기본 + 사용자 묶음 + OPTION(반영): 셋 다 Sub total", str(rows3b))
 
 ng, _ = qs.apply_ops(na, [{"op": "nego", "amount": 300_000}], "30만원 네고")
 check([r.get("row") for r in qs.render_lines(ng, "ko", None)] == [None, "nego", "gap"],

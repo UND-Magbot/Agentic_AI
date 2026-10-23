@@ -4,7 +4,10 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Icon } from "@/components/shared/ui/icon";
+import { GroupHead } from "@/components/domains/sales/deal-flow";
 import { INPUT, Muted, todayIso, UnitStateBadge } from "@/components/domains/sales/deal-format";
+import { primaryBtn, secondaryBtn } from "@/components/domains/sales/proposal-actions";
+import { HEAD_AREA, HEAD_FIELD, ROW_BTN, ROW_LABEL } from "@/components/domains/sales/quote-styles";
 import type { AsCase, DealBiz, ProductUnit, UnitDetail, WarrantyPolicy } from "@/lib/shared/sales-deals";
 import { cn } from "@/lib/shared/utils";
 
@@ -54,14 +57,14 @@ export function ProductUnitsTab({ onOpenDeal }: {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-1.5">
-        {([["units", "시리얼 찾기"], ["cases", "A/S 기록"], ["policies", "무상 기간 기본값"]] as const).map(([k, label]) => (
+        {([["units", "S/N 찾기"], ["cases", "A/S 기록"], ["policies", "무상 기간 기본값"]] as const).map(([k, label]) => (
           <button key={k} type="button" onClick={() => setView(k)} aria-pressed={view === k}
                   className={cn("rounded-full border px-3 py-1 text-[12.5px] font-semibold",
                     view === k ? "border-accent bg-accent/10 text-accent" : "border-border text-foreground-muted hover:bg-foreground/5")}>
             {label}
           </button>
         ))}
-        <span className="ml-auto text-[12px] text-foreground-subtle">시리얼은 영업 건의 견적서 카드 [제품 시리얼 등록]에서 넣습니다.</span>
+        <span className="ml-auto text-[12px] text-foreground-subtle">S/N은 영업 건의 출하 기록을 쓸 때 품목마다 [S/N 등록]으로 넣습니다.</span>
       </div>
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
         <div className="min-w-0">
@@ -72,7 +75,7 @@ export function ProductUnitsTab({ onOpenDeal }: {
         <div className="min-w-0">
           {openId ? <UnitPanel key={`${openId}-${panelVer}`} unitId={openId} onOpenDeal={onOpenDeal} /> : (
             view !== "policies" && <div className="rounded-xl border border-dashed border-border p-6 text-center text-[13px] text-foreground-muted">
-              왼쪽에서 시리얼을 고르면 고객사·출하·무상 기간·A/S 이력이 보입니다.
+              왼쪽에서 S/N을 고르면 고객사·출하·무상 기간·A/S 이력이 보입니다.
             </div>
           )}
         </div>
@@ -101,11 +104,11 @@ function UnitSearch({ openId, onOpen }: { openId: number | null; onOpen: (id: nu
     <div className="flex flex-col gap-2">
       <div className="relative">
         <Icon name="search" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-foreground-subtle" />
-        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="시리얼·부품·고객사·발행번호로 찾기" aria-label="시리얼 찾기"
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="S/N·부품·고객사·발행번호로 찾기" aria-label="S/N 찾기"
                className={cn(INPUT, "pl-9")} />
       </div>
       {error && <p className="text-[12.5px] text-red-600">{error}</p>}
-      {items === null ? <Muted>불러오는 중…</Muted> : items.length === 0 ? <Muted>{q ? "맞는 시리얼이 없습니다." : "아직 등록한 시리얼이 없습니다."}</Muted> : (
+      {items === null ? <Muted>불러오는 중…</Muted> : items.length === 0 ? <Muted>{q ? "맞는 S/N이 없습니다." : "아직 등록한 S/N이 없습니다."}</Muted> : (
         <ul className="flex flex-col gap-1.5">
           {items.map((u) => (
             <li key={u.id}>
@@ -115,7 +118,7 @@ function UnitSearch({ openId, onOpen }: { openId: number | null; onOpen: (id: nu
                 <div className="flex flex-wrap items-center gap-2">
                   <UnitStateBadge code={u.purpose} />
                   <b className={cn("font-mono", u.no_serial && "text-foreground-muted")}>{u.serial}</b>
-                  {u.no_serial && <span className="text-[11px] text-foreground-subtle">(시리얼 없음)</span>}
+                  {u.no_serial && <span className="text-[11px] text-foreground-subtle">(S/N 없음)</span>}
                   <span className="truncate">{u.part_name}</span>
                   <span className="ml-auto"><WarrantyChip state={u.warranty_state} /></span>
                 </div>
@@ -202,7 +205,7 @@ function CaseList({ onOpen, onChanged }: { onOpen: (unitId: number) => void; onC
               ))}
             </ul>
             <p className="mt-2 text-[12px] text-foreground-muted">
-              지운 기록은 보관함으로 옮겨져 되살릴 수 있습니다. 시리얼은 그대로 남고, 진행 중이던 A/S 면 제품 상태(A)를 원래대로 되돌립니다.
+              지운 기록은 보관함으로 옮겨져 되살릴 수 있습니다. S/N은 그대로 남고, 진행 중이던 A/S 면 제품 상태(A)를 원래대로 되돌립니다.
             </p>
             {error && <p className="mt-2 text-[12.5px] text-red-600">{error}</p>}
             <div className="mt-4 flex justify-end gap-2">
@@ -260,7 +263,7 @@ function UnitPanel({ unitId, onOpenDeal }: { unitId: number; onOpenDeal?: (dealI
   if (error) return <p className="text-[12.5px] text-red-600">{error}</p>;
   if (!u) return <Muted>불러오는 중…</Muted>;
   const rows: [string, React.ReactNode][] = [
-    ["시리얼", <span key="s" className="font-mono">{u.serial}{u.no_serial ? " (시리얼 없음)" : ""}</span>],
+    ["S/N", <span key="s" className="font-mono">{u.serial}{u.no_serial ? " (S/N 없음)" : ""}</span>],
     ["부품", u.part_name],
     ["제조사", u.maker],
     ["상태", <UnitStateBadge key="st" code={u.purpose} />],
@@ -348,7 +351,7 @@ function PhotoPicker({ photos, onChange, disabled }: { photos: string[]; onChang
           </span>
         ))}
         {!disabled && photos.length < 10 && (
-          <label className={cn("grid h-16 w-16 cursor-pointer place-items-center rounded-md border border-dashed border-border text-[11.5px] text-foreground-muted hover:bg-foreground/5",
+          <label className={cn("grid h-16 w-16 cursor-pointer place-items-center rounded-[10px] border border-dashed border-border-strong bg-surface-raised text-[12px] font-semibold text-accent hover:bg-accent/5",
             up && "pointer-events-none opacity-50")}>
             {up ? "올리는 중…" : "+ 사진"}
             <input type="file" accept=".jpg,.jpeg,.png,.webp" multiple className="hidden"
@@ -374,7 +377,8 @@ function chargeBasis(unit: UnitDetail, received: string, cause: AsCase["cause"])
 
 /** A/S 접수서 — 고객사 문의를 받아 우리가 작성(사용자 2026-10-19). 무상·유상은 출하일 기준 무상 기간으로 채우고 바꿀 수 있다. */
 /** more — 같은 접수서로 함께 접수할 시리얼(영업 건 상세 [A/S 접수]에서 여러 개 고를 때, 사용자 2026-10-22). 시리얼마다 기록 한 건. */
-function CaseForm({ unit, more = [], onDone }: { unit: UnitDetail; more?: UnitDetail[]; onDone: (changed: boolean) => void }) {
+/** step — 영업 건 상세에서 S/N 고르기(①) 다음 묶음 번호를 이어 붙일 때 */
+function CaseForm({ unit, more = [], onDone, step = 1 }: { unit: UnitDetail; more?: UnitDetail[]; onDone: (changed: boolean) => void; step?: number }) {
   const [f, setF] = useState({ customer: unit.customer ?? "", contact: "", received_on: todayIso(), cause: "확인 중" as AsCase["cause"],
                                symptom: "", photos: [] as string[], status: "접수" as AsCase["status"], action: "" });
   const [picked, setPicked] = useState<AsCase["charge"] | null>(null);
@@ -398,56 +402,63 @@ function CaseForm({ unit, more = [], onDone }: { unit: UnitDetail; more?: UnitDe
       setBusy(false);
     }
   };
-  const label = "flex flex-col gap-1";
+  // 견적서·출하 작성과 같은 짜임(사용자 2026-10-23) — 묶음 번호 + 흰 40px 칸 + 테두리 버튼
   return (
-    <div className="flex flex-col gap-2.5 rounded-lg border border-accent/40 bg-accent/[0.03] p-3 text-[12.5px]">
-      <div className="flex flex-wrap items-baseline gap-2">
-        <b className="text-[13.5px]">A/S 접수서</b>
-        {more.length > 0 && <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[11.5px] font-semibold text-accent">시리얼 {all.length}개 · 시리얼마다 한 건씩</span>}
-        <span className="text-[11.5px] text-foreground-subtle">고객사 문의를 받아 작성합니다. 접수자는 로그인한 사람으로 남습니다.</span>
+    <div className="flex flex-col gap-3 text-[12.5px]">
+      <div className="flex flex-col gap-3 rounded-xl border border-border p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <GroupHead n={step} title="A/S 접수 내용" tone="bg-blue-500/10 text-blue-700 dark:text-blue-300" />
+          {more.length > 0 && <span className="rounded-md bg-accent/10 px-2 py-0.5 text-[11.5px] font-bold text-accent">S/N {all.length}개 · S/N마다 한 건씩</span>}
+          <span className="text-[11.5px] text-foreground-subtle">고객사 문의를 받아 작성합니다. 접수자는 로그인한 사람으로 남습니다.</span>
+        </div>
+        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_160px]">
+          <label className={ROW_LABEL}><span>고객사</span>
+            <input value={f.customer} maxLength={100} onChange={(e) => setF({ ...f, customer: e.target.value })} className={HEAD_FIELD} /></label>
+          <label className={ROW_LABEL}><span>고객사 담당자 (이름·연락처)</span>
+            <input value={f.contact} maxLength={200} placeholder="예: 김철수 과장 010-1234-5678" onChange={(e) => setF({ ...f, contact: e.target.value })} className={HEAD_FIELD} /></label>
+          <label className={ROW_LABEL}><span>접수일</span>
+            <input type="date" value={f.received_on} onChange={(e) => setF({ ...f, received_on: e.target.value })} className={HEAD_FIELD} /></label>
+        </div>
+        <div className="grid gap-3 md:grid-cols-[160px_minmax(0,1fr)]">
+          <label className={ROW_LABEL}><span>고장 원인 구분</span>
+            <select value={f.cause} onChange={(e) => setF({ ...f, cause: e.target.value as AsCase["cause"] })} className={HEAD_FIELD}>
+              {CAUSES.map((x) => <option key={x}>{x}</option>)}</select></label>
+          <label className={ROW_LABEL}><span>고장 원인·증상</span>
+            <textarea value={f.symptom} onChange={(e) => setF({ ...f, symptom: e.target.value })} rows={2} maxLength={1000}
+                      placeholder="예: 툴 결합 후 신호 끊김, 포고핀 눌림 확인" className={HEAD_AREA} /></label>
+        </div>
+        <div className={ROW_LABEL}><span>사진</span>
+          <PhotoPicker photos={f.photos} onChange={(photos) => setF((x) => ({ ...x, photos }))} disabled={busy} /></div>
       </div>
-      <div className="grid gap-2 md:grid-cols-3">
-        <label className={label}><span className="text-foreground-muted">고객사</span>
-          <input value={f.customer} maxLength={100} onChange={(e) => setF({ ...f, customer: e.target.value })} className={SMALL} /></label>
-        <label className={label}><span className="text-foreground-muted">고객사 담당자 (이름·연락처)</span>
-          <input value={f.contact} maxLength={200} placeholder="예: 김철수 과장 010-1234-5678" onChange={(e) => setF({ ...f, contact: e.target.value })} className={SMALL} /></label>
-        <label className={label}><span className="text-foreground-muted">접수일</span>
-          <input type="date" value={f.received_on} onChange={(e) => setF({ ...f, received_on: e.target.value })} className={SMALL} /></label>
+      <div className="flex flex-col gap-3 rounded-xl border border-border p-4">
+        <GroupHead n={step + 1} title="무상·유상 · 진행" tone="bg-cyan-600/10 text-cyan-800 dark:text-cyan-300" />
+        <div className="grid gap-3 md:grid-cols-[160px_160px_minmax(0,1fr)] md:items-end">
+          <label className={ROW_LABEL}><span>무상 / 유상</span>
+            <select value={mixed && !picked ? "" : charge} onChange={(e) => setPicked(e.target.value ? e.target.value as AsCase["charge"] : null)} className={HEAD_FIELD}>
+              {mixed && <option value="">S/N마다 (기본)</option>}
+              {CHARGES.map((x) => <option key={x} value={x}>{x}{!mixed && x === basis.suggested ? " (기본)" : ""}</option>)}</select></label>
+          <label className={ROW_LABEL}><span>진행</span>
+            <select value={f.status} onChange={(e) => setF({ ...f, status: e.target.value as AsCase["status"] })} className={HEAD_FIELD}>
+              {STATUSES.map((x) => <option key={x}>{x}</option>)}</select></label>
+          <p className="rounded-[10px] bg-foreground/[0.04] px-3 py-2 text-[12px] leading-relaxed text-foreground-muted">
+            {mixed ? "고른 S/N의 무상 기간이 서로 달라 S/N마다 무상·유상을 정합니다" : basis.text}
+            {picked && (mixed || picked !== basis.suggested) ? ` — ${mixed ? "모두" : `기본(${basis.suggested})에서`} ${picked}(으)로 바꿈` : ""}
+            {picked && <button type="button" onClick={() => setPicked(null)} className="ml-1 font-semibold text-accent hover:underline">기본으로</button>}
+          </p>
+        </div>
+        <label className={ROW_LABEL}><span>조치 내용</span>
+          <textarea value={f.action} onChange={(e) => setF({ ...f, action: e.target.value })} rows={2} maxLength={1000} placeholder="나중에 적어도 됩니다"
+                    className={HEAD_AREA} /></label>
       </div>
-      <div className="grid gap-2 md:grid-cols-[180px_minmax(0,1fr)]">
-        <label className={label}><span className="text-foreground-muted">고장 원인 구분</span>
-          <select value={f.cause} onChange={(e) => setF({ ...f, cause: e.target.value as AsCase["cause"] })} className={SMALL}>
-            {CAUSES.map((x) => <option key={x}>{x}</option>)}</select></label>
-        <label className={label}><span className="text-foreground-muted">고장 원인·증상</span>
-          <textarea value={f.symptom} onChange={(e) => setF({ ...f, symptom: e.target.value })} rows={2} maxLength={1000}
-                    placeholder="예: 툴 결합 후 신호 끊김, 포고핀 눌림 확인"
-                    className="rounded-md border border-border bg-surface px-2 py-1.5 outline-none focus:border-accent" /></label>
-      </div>
-      <div className={label}><span className="text-foreground-muted">사진</span>
-        <PhotoPicker photos={f.photos} onChange={(photos) => setF((x) => ({ ...x, photos }))} disabled={busy} /></div>
-      <div className="grid gap-2 md:grid-cols-[180px_180px_minmax(0,1fr)]">
-        <label className={label}><span className="text-foreground-muted">무상 / 유상</span>
-          <select value={mixed && !picked ? "" : charge} onChange={(e) => setPicked(e.target.value ? e.target.value as AsCase["charge"] : null)} className={SMALL}>
-            {mixed && <option value="">시리얼마다 (기본)</option>}
-            {CHARGES.map((x) => <option key={x} value={x}>{x}{!mixed && x === basis.suggested ? " (기본)" : ""}</option>)}</select></label>
-        <label className={label}><span className="text-foreground-muted">진행</span>
-          <select value={f.status} onChange={(e) => setF({ ...f, status: e.target.value as AsCase["status"] })} className={SMALL}>
-            {STATUSES.map((x) => <option key={x}>{x}</option>)}</select></label>
-        <p className="self-end pb-1 text-[11.5px] text-foreground-subtle">
-          {mixed ? "고른 시리얼의 무상 기간이 서로 달라 시리얼마다 무상·유상을 정합니다" : basis.text}
-          {picked && (mixed || picked !== basis.suggested) ? ` — ${mixed ? "모두" : `기본(${basis.suggested})에서`} ${picked}(으)로 바꿈` : ""}
-          {picked && <button type="button" onClick={() => setPicked(null)} className="ml-1 font-semibold text-accent hover:underline">기본으로</button>}
-        </p>
-      </div>
-      <textarea value={f.action} onChange={(e) => setF({ ...f, action: e.target.value })} rows={2} maxLength={1000} placeholder="조치 내용 (나중에 적어도 됩니다)"
-                className="rounded-md border border-border bg-surface px-2 py-1.5 outline-none focus:border-accent" />
-      <p className="text-[11.5px] text-foreground-subtle">유상 A/S 견적서는 따로(수기) 작성합니다 — 여기는 접수와 진행 기록만 남깁니다.</p>
-      {error && <p className="text-red-600">{error}</p>}
-      <div className="flex justify-end gap-2">
-        <button type="button" onClick={() => onDone(false)} disabled={busy} className="h-8 rounded-lg border border-border px-3 font-semibold text-foreground-muted">취소</button>
-        <button type="button" onClick={() => void save()} disabled={busy} className="h-8 rounded-lg bg-accent px-4 font-semibold text-white disabled:opacity-60">
-          {busy ? "저장 중…" : "접수"}
-        </button>
+      {error && <p className="rounded-xl border border-red-500/25 bg-red-500/[0.06] px-3.5 py-2.5 text-red-700 dark:text-red-300">{error}</p>}
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="text-[11.5px] text-foreground-subtle">유상 A/S 견적서는 따로(수기) 작성합니다 — 여기는 접수와 진행 기록만 남깁니다.</p>
+        <div className="ml-auto flex gap-2">
+          <button type="button" onClick={() => onDone(false)} disabled={busy} className={secondaryBtn}>취소</button>
+          <button type="button" onClick={() => void save()} disabled={busy} className={primaryBtn}>
+            <Icon name="check" className="h-4 w-4" /> {busy ? "저장 중…" : more.length ? `${all.length}건 접수` : "접수"}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -472,7 +483,7 @@ export function DealAsIntake({ units, onDone }: { units: ProductUnit[]; onDone: 
       const got = await Promise.all(need.map((id) => call<UnitDetail>(`/units/${id}`)));
       setLoaded((m) => ({ ...m, ...Object.fromEntries(got.map((u) => [u.id, u])) }));
     } catch (e) {
-      setError(e instanceof Error ? e.message : "시리얼을 불러오지 못했습니다.");
+      setError(e instanceof Error ? e.message : "S/N을 불러오지 못했습니다.");
       setPicked((xs) => xs.filter((id) => !need.includes(id)));
     } finally {
       setLoading((xs) => xs.filter((id) => !need.includes(id)));
@@ -493,42 +504,47 @@ export function DealAsIntake({ units, onDone }: { units: ProductUnit[]; onDone: 
   };
   const chosen = picked.map((id) => loaded[id]).filter(Boolean);
   return (
-    <div className="mb-3 flex flex-col gap-2 text-[12.5px]">
-      <div className="flex flex-col gap-1.5 rounded-lg border border-border p-2.5">
+    <div className="mb-3 flex flex-col gap-3 text-[12.5px]">
+      <div className="flex flex-col gap-3 rounded-xl border border-border p-4">
         <div className="flex flex-wrap items-center gap-2">
-          <b className="text-[13px]">A/S 받을 시리얼 고르기</b>
+          <GroupHead n={1} title="A/S 받을 S/N 고르기" tone="bg-slate-500/12 text-slate-700 dark:text-slate-300" />
           <span className="text-[11.5px] text-foreground-subtle">이 건에서 출하한 제품 {units.length}개 · 여러 개 고를 수 있습니다</span>
-          <button type="button" onClick={() => onDone(false)} className="ml-auto text-[12px] text-foreground-muted hover:text-foreground">닫기</button>
+          <button type="button" onClick={() => onDone(false)} className={cn(ROW_BTN, "ml-auto h-8")}>닫기</button>
         </div>
-        <div className="flex items-center gap-2">
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="시리얼·부품명으로 찾기" aria-label="A/S 시리얼 찾기" className={cn(SMALL, "flex-1")} />
-          <button type="button" onClick={toggleShown} disabled={!shown.length}
-                  className="whitespace-nowrap text-[12px] font-semibold text-accent hover:underline disabled:opacity-40">
-            {allShown ? "보이는 것 모두 빼기" : "보이는 것 모두 고르기"}
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="relative min-w-[200px] flex-1">
+            <Icon name="search" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-foreground-subtle" />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="S/N·부품명으로 찾기" aria-label="A/S S/N 찾기" className={cn(HEAD_FIELD, "pl-9")} />
+          </span>
+          <button type="button" onClick={toggleShown} disabled={!shown.length} className={ROW_BTN}>
+            <Icon name="check" className="h-3.5 w-3.5 text-accent" /> {allShown ? "보이는 것 모두 빼기" : "보이는 것 모두 고르기"}
           </button>
         </div>
-        <ul className="scroll-thin flex max-h-52 flex-col gap-0.5 overflow-y-auto" aria-label="A/S 받을 시리얼">
-          {shown.length === 0 && <li><Muted>맞는 시리얼이 없습니다.</Muted></li>}
-          {shown.map((u) => (
-            <li key={u.id}>
-              <label className={cn("flex min-w-0 cursor-pointer items-center gap-2 rounded-md px-2 py-1 hover:bg-foreground/5",
-                                   picked.includes(u.id) && "bg-accent/10")}>
-                <input type="checkbox" checked={picked.includes(u.id)} onChange={(e) => toggle(u.id, e.target.checked)}
-                       aria-label={`${u.serial} A/S 접수 선택`} />
-                <span className="min-w-0 flex-1 truncate">{u.part_name}</span>
-                <span className="whitespace-nowrap font-mono">{u.serial}</span>
-                <UnitStateBadge code={u.purpose} />
-                {loading.includes(u.id) && <span className="text-[11px] text-foreground-subtle">불러오는 중…</span>}
-              </label>
-            </li>
-          ))}
+        <ul className="scroll-thin flex max-h-64 flex-col gap-1.5 overflow-y-auto pr-1" aria-label="A/S 받을 S/N">
+          {shown.length === 0 && <li><Muted>맞는 S/N이 없습니다.</Muted></li>}
+          {shown.map((u) => {
+            const on = picked.includes(u.id);
+            return (
+              <li key={u.id}>
+                <label className={cn("flex min-w-0 cursor-pointer items-center gap-3 rounded-[10px] border px-3 py-2.5 transition-colors",
+                                     on ? "border-accent/50 bg-accent/[0.06]" : "border-border bg-surface-raised hover:border-accent/35")}>
+                  <input type="checkbox" checked={on} onChange={(e) => toggle(u.id, e.target.checked)}
+                         aria-label={`${u.serial} A/S 접수 선택`} className="h-4 w-4 shrink-0 accent-accent" />
+                  <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">{u.part_name}</span>
+                  <span className="whitespace-nowrap font-mono text-[12.5px] text-foreground-muted">{u.serial}</span>
+                  <UnitStateBadge code={u.purpose} />
+                  {loading.includes(u.id) && <span className="text-[11px] text-foreground-subtle">불러오는 중…</span>}
+                </label>
+              </li>
+            );
+          })}
         </ul>
-        <div className="text-[12px] text-foreground-muted">고른 시리얼 <b className="text-foreground">{picked.length}</b>개</div>
+        <div className="text-[12.5px] text-foreground-muted">고른 S/N <b className="text-[14px] text-foreground">{picked.length}</b>개</div>
         {error && <p className="text-red-600">{error}</p>}
       </div>
       {chosen.length > 0
-        ? <CaseForm key="intake" unit={chosen[0]} more={chosen.slice(1)} onDone={onDone} />
-        : <p className="text-[11.5px] text-foreground-subtle">시리얼을 하나 이상 고르면 아래에 A/S 접수서가 열립니다.</p>}
+        ? <CaseForm key="intake" unit={chosen[0]} more={chosen.slice(1)} onDone={onDone} step={2} />
+        : <p className="text-[11.5px] text-foreground-subtle">S/N을 하나 이상 고르면 아래에 A/S 접수서가 열립니다.</p>}
     </div>
   );
 }
@@ -669,7 +685,7 @@ function Policies() {
     try {
       const d = await call<{ rows: WarrantyPolicy[] }>("/warranty-policies", { rows: rows.map(({ keyword, months, note }) => ({ keyword, months, note })) });
       setRows(d.rows);
-      setMsg({ ok: true, text: "저장했습니다. 이미 등록한 시리얼의 무상 기간은 바뀌지 않습니다." });
+      setMsg({ ok: true, text: "저장했습니다. 이미 등록한 S/N의 무상 기간은 바뀌지 않습니다." });
     } catch (e) {
       setMsg({ ok: false, text: e instanceof Error ? e.message : "저장하지 못했습니다." });
     } finally {
@@ -680,13 +696,13 @@ function Policies() {
   return (
     <div className="flex flex-col gap-2 text-[12.5px]">
       <p className="text-foreground-muted">
-        부품명·품목·제조사에 아래 이름이 들어 있으면 시리얼 등록 때 그 개월 수가 채워집니다(여러 개 맞으면 긴 이름). 비우면 &lsquo;미정&rsquo;.
+        부품명·품목·제조사에 아래 이름이 들어 있으면 S/N 등록 때 그 개월 수가 채워집니다(여러 개 맞으면 긴 이름). 비우면 &lsquo;미정&rsquo;.
         {!canEdit && " 고치기는 관리자만 할 수 있습니다."}
       </p>
       <div className="grid grid-cols-[minmax(0,1.2fr)_90px_minmax(0,1.5fr)_28px] gap-1.5 text-[11.5px] text-foreground-muted">
         <span>제품 이름(예: TCV, Cable, Dobot)</span><span>무상(개월)</span><span>메모</span><span />
       </div>
-      {rows.length === 0 && <Muted>아직 정한 기본값이 없습니다 — 시리얼마다 직접 적거나 &lsquo;미정&rsquo;으로 둡니다.</Muted>}
+      {rows.length === 0 && <Muted>아직 정한 기본값이 없습니다 — S/N마다 직접 적거나 &lsquo;미정&rsquo;으로 둡니다.</Muted>}
       {rows.map((r, i) => (
         <div key={i} className="grid grid-cols-[minmax(0,1.2fr)_90px_minmax(0,1.5fr)_28px] items-center gap-1.5">
           <input value={r.keyword} disabled={!canEdit} maxLength={60} aria-label={`${i + 1}번 제품 이름`} className={SMALL}

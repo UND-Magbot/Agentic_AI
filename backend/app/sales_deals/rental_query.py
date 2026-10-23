@@ -76,7 +76,7 @@ async def rented_units(db: AsyncSession, since: dt.date | None) -> dict[str, Any
     for r in rs:
         q = _j(r["quote"]) or {}
         start = _start(dict(r), q, _j(r["shipments"]) or [])
-        item = {"serial": r["serial"] or "(시리얼 없음)", "part": r["part_name"] or "", "line": (r["line_name"] or "").split("\n")[0],
+        item = {"serial": r["serial"] or "(S/N 없음)", "part": r["part_name"] or "", "line": (r["line_name"] or "").split("\n")[0],
                 "customer": r["customer"] or "", "deal_no": q.get("no") or r["deal_no"] or "", "title": r["title"] or "",
                 "start": start, "end": ((q.get("rental") or {}).get("end")), "status": r["status"]}
         if start is None:
@@ -100,7 +100,7 @@ async def rented_units(db: AsyncSession, since: dt.date | None) -> dict[str, Any
 def answer(data: dict[str, Any], since: dt.date | None) -> str:
     """채팅에 보일 답 — 채팅창은 표·굵은 글씨 문법을 그리지 않으므로 번호 목록의 일반 글로(사용자 2026-10-22 확인)."""
     head = f"{since:%Y-%m-%d} 이후 대여 나간 제품" if since else "대여(R) 상태로 등록된 제품"
-    basis = "(시리얼 상태 R · 대여 시작일 기준, 없으면 출하일)"
+    basis = "(S/N 상태 R · 대여 시작일 기준, 없으면 출하일)"
     out = []
     rows = data["rows"]
     if rows:
@@ -117,7 +117,7 @@ def answer(data: dict[str, Any], since: dt.date | None) -> str:
         out.append(f"\n대여 시작일·출하일을 몰라 기간으로 거르지 못한 R 제품 {len(data['undated'])}개: "
                    + ", ".join(f"{x['serial']}({x['customer']})" for x in data["undated"][:20]))
     if data["unregistered"]:
-        out.append(f"\n시리얼을 아직 등록하지 않은 대여 건 {len(data['unregistered'])}건 — [제품 대여 관리]에서 수주 후 시리얼을 등록하면 위 목록에 나옵니다:")
+        out.append(f"\nS/N을 아직 등록하지 않은 대여 건 {len(data['unregistered'])}건 — [제품 대여 관리]에서 출하 기록 때 S/N을 등록하면 위 목록에 나옵니다:")
         for d in data["unregistered"][:20]:
             rent = d["rental"] or {}
             period = f"{rent.get('start')} ~ {rent.get('end')}" if rent.get("start") else f"{rent.get('months', '?')}개월 · 시작일 미정"

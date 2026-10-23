@@ -161,7 +161,7 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
               onDragOver={(e) => { e.preventDefault(); if (!busy) setOver(true); }}
               onDragLeave={() => setOver(false)}
               onDrop={(e) => { e.preventDefault(); setOver(false); if (!busy) pick(e.dataTransfer.files?.[0]); }}
-              className={cn("flex cursor-pointer flex-col items-center gap-1.5 rounded-xl border-2 border-dashed px-4 py-7 text-center transition-colors",
+              className={cn("relative flex cursor-pointer flex-col items-center gap-1.5 rounded-xl border-2 border-dashed px-4 py-7 text-center transition-colors",
               over ? "border-accent bg-accent/[0.06]" : file ? "border-accent/60 bg-accent/[0.04]" : "border-border hover:border-foreground/25")}>
               <input type="file" accept={ACCEPT} className="sr-only" disabled={!!busy}
                      onChange={(e) => pick(e.target.files?.[0])} />

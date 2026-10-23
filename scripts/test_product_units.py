@@ -110,6 +110,46 @@ async def run() -> None:
         finally:
             await db.rollback()
             await cleanup(db)
+        try:
+            await bind_flow(db)
+        finally:
+            await db.rollback()
+            await cleanup(db)
+
+
+async def bind_flow(db) -> None:
+    """이미 남긴 출하 기록에 나중에 S/N 등록(사용자 2026-10-23) — 그 출하로 바로 묶이고 그 출하일부터 무상 기간."""
+    today = dt.date(2026, 10, 23)
+    no = "QT-TS20261023-09"
+    lines = [{"name": "TCV3 툴체인저", "qty": 2, "unit_price": 5_000_000}]
+    quote = {"no": no, "date": "2026-10-01", "amount": 10_000_000, "currency": "KRW", "items": svc.snapshot_items(lines), "revision": 1}
+    shipments = [{"date": "2026-10-01", "items": "TCV3 툴체인저 × 1", "lines": [{"name": "TCV3 툴체인저", "qty": 1, "photos": []}],
+                  "tracking": [], "photos": []}]
+    deal_id = (await db.execute(text(
+        "INSERT INTO sales_deals (deal_no, kind, customer, owner, title, base_date, quote, won, shipments) VALUES "
+        "(:no, 'quote', :c, 'Test', 'TCV3', '2026-10-01', CAST(:q AS jsonb), TRUE, CAST(:s AS jsonb)) RETURNING id"),
+        {"no": no, "c": CUST, "q": json.dumps(quote, ensure_ascii=False), "s": json.dumps(shipments, ensure_ascii=False)})).scalar_one()
+    hist = [{"revision": 0, "quote_no": no, "lines": lines, "total": 10_000_000, "currency": "KRW", "issued_at": "2026-10-01T01:00:00+00:00"}]
+    qid = (await db.execute(text(
+        "INSERT INTO product_quotes (deal_id, status, quote_no, customer, revision, history, total) "
+        "VALUES (:d, 'issued', :no, :c, 0, CAST(:h AS jsonb), 10000000) RETURNING id"),
+        {"d": deal_id, "no": no, "c": CUST, "h": json.dumps(hist, ensure_ascii=False)})).scalar_one()
+    await db.commit()
+    d = await svc.get_deal(db, deal_id, today)
+    check(d["units"] and d["units"]["missing"] == 2, "S/N 없이 출하된 건 — 현황 2개 남음", str(d["units"]))
+    tag = dt.datetime.now().strftime("%H%M%S")
+    v = await units.save_units(db, deal_id, None, qid, 0, [{"line_no": 0, "units": [{"serial": f"TST-{tag}-B1", "warranty_months": 12}]}],
+                               partial=True, shipment_index=0)
+    u = v["lines"][0]["units"][0]
+    check(u["shipment_index"] == 0 and u["warranty_start"] == "2026-10-01" and u["warranty_until"] == "2027-09-30",
+          "출하 뒤 S/N 등록 → 그 출하로 묶이고 그 출하일부터 무상 기간", str({k: u[k] for k in ("shipment_index", "warranty_start", "warranty_until")}))
+    await expect_error(units.save_units(db, deal_id, None, qid, 0, [{"line_no": 0, "units": [{"id": u["id"], "serial": u["serial"]}]}],
+                                        partial=True, shipment_index=5), "없는 출하 번호면 막음", "출하 기록이 없습니다")
+    await db.rollback()
+    ship = {"date": today, "carrier": "택배", "tracking": "", "items": "", "purpose": "판매",
+            "lines": [{"name": "TCV3 툴체인저", "qty": 1, "line_no": 0}], "unit_ids": []}
+    await expect_error(svc.add_shipment(db, deal_id, None, dict(ship)), "두 번째 출하도 S/N 빈칸이면 막음", "S/N을 등록")
+    await db.rollback()
 
 
 async def flow(db, deal_id: int, qid: int) -> None:
@@ -118,7 +158,7 @@ async def flow(db, deal_id: int, qid: int) -> None:
     check(d["units"] and (d["units"]["total"], d["units"]["done"], d["units"]["issue_no"]) == (4, 0, NO),
           "영업 건 상세 = 수주 판 시리얼 현황(4개 중 0개)", str(d["units"]))
     ship = {"date": today, "carrier": "택배", "tracking": "", "items": "", "lines": [], "purpose": "판매"}
-    await expect_error(svc.add_shipment(db, deal_id, None, dict(ship)), "시리얼 미등록이면 출하 막음", "시리얼 번호를 등록")
+    await expect_error(svc.add_shipment(db, deal_id, None, dict(ship)), "S/N 미등록이면 출하 막음", "S/N을 등록")
     await db.rollback()
 
     v = await units.issue_units(db, deal_id, qid, 0)
@@ -132,6 +172,21 @@ async def flow(db, deal_id: int, qid: int) -> None:
         {"line_no": 1, "units": [{"serial": s2, "warranty_months": 6}, {"serial": "  "}]}])
     check(v["summary"]["done"] == 2 and v["summary"]["missing"] == 2, "빈 칸 = 미등록(저장 안 함)", str(v["summary"]))
     await expect_error(svc.add_shipment(db, deal_id, None, dict(ship)), "일부만 적어도 출하 막음", "4개 중 2개")
+    await db.rollback()
+    # 출하 기록의 품목 줄마다 [S/N 등록](사용자 2026-10-23) — 보낸 줄만 저장, 다른 줄 S/N 은 그대로
+    v = await units.save_units(db, deal_id, None, qid, 0, [{"line_no": 2, "units": [{"serial": "특주"}]}], partial=True)
+    have = {ln["line_no"]: [u["serial"] for u in ln["units"]] for ln in v["lines"]}
+    check(have == {0: [s1], 1: [s2], 2: ["특주"]}, "줄 하나만 저장(partial) — 다른 줄은 그대로", str(have))
+    await expect_error(units.save_units(db, deal_id, None, qid, 0, [{"line_no": 2, "units": [{"serial": s1.lower()}]}], partial=True),
+                       "줄 하나만 저장해도 같은 판 다른 줄의 S/N 과 겹치면 막음", "이미 등록된")
+    await db.rollback()
+    ids = {u["serial"]: u["id"] for ln in v["lines"] for u in ln["units"]}
+    d0 = await svc.get_deal(db, deal_id, today)
+    got = await units.check_before_ship(db, d0, {"lines": [{"name": "MASTER", "qty": 1, "line_no": 0}], "unit_ids": [ids[s1]]})
+    check(got == (qid, 0), "나눠 출하 — 이 출하 품목의 S/N 만 다 적었으면 통과(다른 줄 미등록이어도)", str(got))
+    await expect_error(svc.add_shipment(db, deal_id, None, {**ship, "lines": [{"name": "TOOL", "qty": 2, "line_no": 1}],
+                                                            "unit_ids": [ids[s2]]}),
+                       "출하 수량보다 S/N 이 적으면 그 품목 이름과 함께 막음", "S/N을 등록")
     await db.rollback()
     keep = [{"id": u["id"], "serial": u["serial"], "warranty_months": u["warranty_months"]} for ln in v["lines"] for u in ln["units"]]
     await expect_error(units.save_units(db, deal_id, None, qid, 0, [

@@ -20,6 +20,7 @@ from __future__ import annotations
 import calendar
 import datetime as dt
 import json
+import math
 import re
 from typing import Any
 
@@ -51,6 +52,8 @@ AS_STATUS = ("접수", "진행 중", "완료")
 SERIAL_MAX, PART_MAX, MAKER_MAX, NOTE_MAX = 80, 120, 40, 300
 MONTHS_MAX = 120
 _NOT_TARGET = ("work", "freight", "note")
+# 같은 견적서 판의 부품
+SRC = "quote_id = :q AND quote_revision = :r"
 _DIGIT = re.compile(r"[0-9]")
 AS_PHOTO_ID = re.compile(r"^[0-9a-f]{32}\.(jpg|jpeg|png|webp)$")
 AS_PHOTOS_MAX = 10
@@ -154,7 +157,7 @@ async def _issue(db: AsyncSession, d: dict, quote_id: int, revision: int) -> dic
     hist = json.loads(raw) if isinstance(raw, str) else (raw or [])
     h = next((x for x in hist if x.get("revision") == revision), None)
     if not h:
-        raise DealError("견적서 판을 찾을 수 없습니다. 발행한 판에만 시리얼을 등록합니다.")
+        raise DealError("견적서 판을 찾을 수 없습니다. 발행한 판에만 S/N을 등록합니다.")
     return {"quote_id": quote_id, "revision": revision, "issue_no": _issue_no(h), "issued_at": h.get("issued_at"),
             "total": h.get("total"), "currency": h.get("currency"), "lines": target_lines(h.get("lines") or [])}
 
@@ -206,8 +209,8 @@ async def issue_units(db: AsyncSession, deal_id: int, quote_id: int, revision: i
         raise DealError("건을 찾을 수 없습니다.", 404)
     d = _row(r)
     iss = await _issue(db, d, quote_id, revision)
-    rs = (await db.execute(text(f"SELECT {_UNIT_COLS} FROM product_units WHERE deal_id = :d AND quote_id = :q "
-                                "AND quote_revision = :r ORDER BY line_no, id"),
+    rs = (await db.execute(text(f"SELECT {_UNIT_COLS} FROM product_units WHERE deal_id = :d AND " + SRC + " "
+                                "ORDER BY line_no, id"),
                            {"d": deal_id, "q": quote_id, "r": revision})).mappings().all()
     pol = await policies(db)
     lines = []
@@ -217,7 +220,7 @@ async def issue_units(db: AsyncSession, deal_id: int, quote_id: int, revision: i
                       "units": [_unit_view(r) for r in rs if r["line_no"] == ln["line_no"]]})
     won = await won_issue(db, d)
     others = (await db.execute(text("SELECT DISTINCT issue_no FROM product_units WHERE deal_id = :d AND NOT "
-                                    "(quote_id = :q AND quote_revision = :r) AND issue_no IS NOT NULL"),
+                                    "(" + SRC + ") AND issue_no IS NOT NULL"),
                                {"d": deal_id, "q": quote_id, "r": revision})).scalars().all()
     return {**{k: iss[k] for k in ("quote_id", "revision", "issue_no", "issued_at", "total", "currency")},
             "customer": d.get("customer"), "won": bool(d.get("won")),
@@ -229,15 +232,25 @@ async def issue_units(db: AsyncSession, deal_id: int, quote_id: int, revision: i
 
 
 async def save_units(db: AsyncSession, deal_id: int, user_id: int | None, quote_id: int, revision: int,
-                     payload: list[dict]) -> dict:
+                     payload: list[dict], *, partial: bool = False, shipment_index: int | None = None) -> dict:
     """판 하나의 시리얼을 통째로 저장 — payload = [{line_no, units: [{id?, part_name, serial, maker, purpose,
-    warranty_months, note}]}]. 빈 칸(시리얼 없음)은 저장하지 않는다. 이 판에서 빠진 줄은 지우되, 출하했거나 A/S 기록이 있으면 막는다."""
+    warranty_months, note}]}]. 빈 칸(시리얼 없음)은 저장하지 않는다. 이 판에서 빠진 줄은 지우되, 출하했거나 A/S 기록이 있으면 막는다.
+    partial = 보낸 품목 줄만 저장(출하 기록의 줄마다 [S/N 등록], 사용자 2026-10-23) — 다른 줄의 S/N 은 그대로 둔다.
+    shipment_index = 이미 남긴 출하 기록 번호(사용자 2026-10-23 — 출하 뒤에도 S/N 등록) — 보낸 줄의 아직 안 묶인 S/N 을
+    그 출하로 묶는다(그 출하일 = 무상 기간 시작일)."""
     d = await _lock(db, deal_id)
     iss = await _issue(db, d, quote_id, revision)
+    ship_day = None
+    if shipment_index is not None:
+        if not 0 <= shipment_index < len(d["shipments"]):
+            raise DealError("S/N 을 묶을 출하 기록이 없습니다. 화면을 새로 열어 주세요.")
+        raw_day = d["shipments"][shipment_index].get("date")
+        ship_day = dt.date.fromisoformat(raw_day) if raw_day else dt.date.today()
     by_line = {ln["line_no"]: ln for ln in iss["lines"]}
+    only = " AND line_no = ANY(:lines)" if partial else ""
     old = {r["id"]: r for r in (await db.execute(text(
-        f"SELECT {_UNIT_COLS} FROM product_units WHERE deal_id = :d AND quote_id = :q AND quote_revision = :r FOR UPDATE"),
-        {"d": deal_id, "q": quote_id, "r": revision})).mappings().all()}
+        f"SELECT {_UNIT_COLS} FROM product_units WHERE deal_id = :d AND " + SRC + f"{only} FOR UPDATE"),
+        {"d": deal_id, "q": quote_id, "r": revision, "lines": [b.get("line_no") for b in payload]})).mappings().all()}
     keep: list[tuple[int | None, dict]] = []
     seen: dict[tuple[str, str], str] = {}
     for blk in payload:
@@ -258,7 +271,7 @@ async def save_units(db: AsyncSession, deal_id: int, user_id: int | None, quote_
             if not no_serial:
                 key = (maker.lower(), serial.lower())
                 if key in seen:
-                    raise DealError(f"같은 시리얼이 두 번 있습니다: {serial} ({seen[key]}, {part})")
+                    raise DealError(f"같은 S/N이 두 번 있습니다: {serial} ({seen[key]}, {part})")
                 seen[key] = part
             uid = u.get("id") if u.get("id") in old else None
             keep.append((uid, {"line_no": ln["line_no"], "line_name": ln["name"], "part_name": part, "serial": serial,
@@ -270,18 +283,18 @@ async def save_units(db: AsyncSession, deal_id: int, user_id: int | None, quote_
         busy = [old[i]["serial"] for i in gone if old[i]["shipment_index"] is not None]
         busy += (await db.execute(text("SELECT DISTINCT serial FROM as_cases WHERE unit_id = ANY(:g)"), {"g": gone})).scalars().all()
         if busy:
-            raise DealError("출하했거나 A/S 기록이 있는 시리얼은 지울 수 없습니다: " + ", ".join(dict.fromkeys(busy)))
-    # 다른 견적서 판·다른 건에 이미 있는 시리얼(같은 제조사)
+            raise DealError("출하했거나 A/S 기록이 있는 S/N은 지울 수 없습니다: " + ", ".join(dict.fromkeys(busy)))
+    # 이번에 다시 쓰는 부품 밖(다른 줄·다른 판·다른 건)에 이미 있는 시리얼(같은 제조사)
     reals = [(v["maker"].lower(), v["serial"].lower(), uid) for uid, v in keep if not v["no_serial"]]
     if reals:
         dup = (await db.execute(text(
             "SELECT u.serial, u.maker, u.issue_no, s.customer FROM product_units u LEFT JOIN sales_deals s ON s.id = u.deal_id "
             "WHERE NOT u.no_serial AND (lower(u.maker), lower(u.serial)) IN (SELECT * FROM unnest(CAST(:m AS text[]), CAST(:s AS text[]))) "
-            "AND NOT (u.deal_id IS NOT DISTINCT FROM :d AND u.quote_id IS NOT DISTINCT FROM :q AND u.quote_revision IS NOT DISTINCT FROM :r)"),
-            {"m": [m for m, _, _ in reals], "s": [s for _, s, _ in reals], "d": deal_id, "q": quote_id, "r": revision})).mappings().all()
+            "AND NOT (u.id = ANY(:own))"),
+            {"m": [m for m, _, _ in reals], "s": [s for _, s, _ in reals], "own": list(old)})).mappings().all()
         if dup:
             x = dup[0]
-            raise DealError(f"이미 등록된 시리얼입니다: {x['serial']} ({x['maker']}) — {x['customer'] or '고객사 없음'} "
+            raise DealError(f"이미 등록된 S/N입니다: {x['serial']} ({x['maker']}) — {x['customer'] or '고객사 없음'} "
                             f"{x['issue_no'] or ''}".rstrip())
     if gone:
         await db.execute(text("DELETE FROM product_units WHERE id = ANY(:g)"), {"g": gone})
@@ -303,13 +316,23 @@ async def save_units(db: AsyncSession, deal_id: int, user_id: int | None, quote_
                 "no_serial, maker, purpose, warranty_months, note, created_by, updated_by) VALUES (:d, :q, :r, :no, :line_no, "
                 ":line_name, :part_name, :serial, :no_serial, :maker, :purpose, :warranty_months, :note, :u, :u)"),
                 {**v, "d": deal_id, "q": quote_id, "r": revision, "no": iss["issue_no"], "u": user_id})
-    await _log(db, deal_id, user_id, "units", {"no": iss["issue_no"], "count": len(keep), "removed": len(gone)})
+    if ship_day is not None:
+        rs = (await db.execute(text(
+            "SELECT id, warranty_months FROM product_units WHERE deal_id = :d AND " + SRC + " "
+            "AND line_no = ANY(:lines) AND shipment_index IS NULL"),
+            {"d": deal_id, "q": quote_id, "r": revision, "lines": [b.get("line_no") for b in payload]})).mappings().all()
+        for r in rs:
+            await db.execute(text("UPDATE product_units SET shipment_index = :x, warranty_start = :s, warranty_until = :w, "
+                                  "status = '출하', updated_at = NOW() WHERE id = :i"),
+                             {"x": shipment_index, "s": ship_day, "w": warranty_until(ship_day, r["warranty_months"]), "i": r["id"]})
+    await _log(db, deal_id, user_id, "units", {"no": iss["issue_no"], "count": len(keep), "removed": len(gone),
+                                               **({"shipment": shipment_index + 1} if ship_day is not None else {})})
     await db.commit()
     return await issue_units(db, deal_id, quote_id, revision)
 
 
 async def won_summary(db: AsyncSession, d: dict) -> dict | None:
-    """수주 판의 시리얼 등록 현황(영업 건 상세·[AI 와 수주 진행] 안내·출하 전 확인). 수주 판이 없으면 None."""
+    """수주 판의 S/N 등록 현황(영업 건 상세·출하 전 확인). 수주 판이 없으면 None."""
     won = await won_issue(db, d)
     if not won:
         return None
@@ -320,18 +343,31 @@ async def won_summary(db: AsyncSession, d: dict) -> dict | None:
     if not lines:
         return None
     counts = dict((await db.execute(text(
-        "SELECT line_no, COUNT(*) FROM product_units WHERE deal_id = :d AND quote_id = :q AND quote_revision = :r GROUP BY line_no"),
+        "SELECT line_no, COUNT(*) FROM product_units WHERE deal_id = :d AND " + SRC + " GROUP BY line_no"),
         {"d": d["id"], "q": won[0], "r": won[1]})).all())
     s = _summary([{**ln, "units": [None] * counts.get(ln["line_no"], 0)} for ln in lines])
     return {"quote_id": won[0], "revision": won[1], "issue_no": (d.get("quote") or {}).get("no"), **s}
 
 
-async def check_before_ship(db: AsyncSession, d: dict) -> tuple[int, int] | None:
-    """출하 전 확인 — 수주 판의 시리얼(시리얼 없는 품목은 '특주' 등)을 다 적었는지. 반환 = 수주 판(없으면 None)."""
+async def check_before_ship(db: AsyncSession, d: dict, p: dict | None = None) -> tuple[int, int] | None:
+    """출하 전 확인. 반환 = 수주 판(없으면 None).
+    출하 줄에 수주 판 품목 줄 번호(line_no)가 있으면 그 줄마다 이 출하로 묶는 S/N 이 출하 수량만큼인지(사용자 2026-10-23 —
+    출하 기록을 쓰며 품목마다 등록, 나눠 출하 가능). 없으면(세트로 묶어 출하 등) 수주 판의 S/N 을 다 적었는지."""
     s = await won_summary(db, d)
+    shipped = [ln for ln in (p or {}).get("lines") or [] if ln.get("line_no") is not None and (ln.get("qty") or 0) > 0]
+    if s and shipped and (p or {}).get("unit_ids") is not None:
+        have = dict((await db.execute(text(
+            "SELECT line_no, COUNT(*) FROM product_units WHERE deal_id = :d AND " + SRC + " "
+            "AND id = ANY(:ids) GROUP BY line_no"),
+            {"d": d["id"], "q": s["quote_id"], "r": s["revision"], "ids": p["unit_ids"]})).all())
+        short = [ln["name"][:40] for ln in shipped if have.get(ln["line_no"], 0) < math.ceil(ln["qty"])]
+        if short:
+            raise DealError("출하 전에 S/N을 등록해 주세요 — " + ", ".join(short) + ". S/N이 없는 품목은 '특주'처럼 적으면 됩니다.",
+                            code="SERIALS_REQUIRED")
+        return s["quote_id"], s["revision"]
     if s and s["missing"] > 0:
-        raise DealError(f"출하 전에 제품 시리얼 번호를 등록해 주세요 — {s['issue_no']} 기준 {s['total']}개 중 {s['done']}개 등록. "
-                        "시리얼이 없는 품목은 '특주'처럼 적으면 됩니다.", code="SERIALS_REQUIRED")
+        raise DealError(f"출하 전에 S/N을 등록해 주세요 — {s['issue_no']} 기준 {s['total']}개 중 {s['done']}개 등록. "
+                        "S/N이 없는 품목은 '특주'처럼 적으면 됩니다.", code="SERIALS_REQUIRED")
     return (s["quote_id"], s["revision"]) if s else None
 
 
@@ -343,7 +379,7 @@ async def ship_units(db: AsyncSession, deal_id: int, index: int, day: dt.date, u
         if not issue:
             return 0
         unit_ids = list((await db.execute(text(
-            "SELECT id FROM product_units WHERE deal_id = :d AND quote_id = :q AND quote_revision = :r AND shipment_index IS NULL"),
+            "SELECT id FROM product_units WHERE deal_id = :d AND " + SRC + " AND shipment_index IS NULL"),
             {"d": deal_id, "q": issue[0], "r": issue[1]})).scalars().all())
     await db.execute(text("UPDATE product_units SET shipment_index = NULL, warranty_start = NULL, warranty_until = NULL, "
                           "status = '등록', updated_at = NOW() WHERE deal_id = :d AND shipment_index = :x AND NOT (id = ANY(:ids))"),
@@ -351,9 +387,9 @@ async def ship_units(db: AsyncSession, deal_id: int, index: int, day: dt.date, u
     rs = (await db.execute(text("SELECT id, warranty_months, shipment_index FROM product_units WHERE deal_id = :d AND id = ANY(:ids)"),
                            {"d": deal_id, "ids": unit_ids})).mappings().all()
     if len(rs) != len(set(unit_ids)):
-        raise DealError("이 영업 건의 시리얼이 아닌 것이 있습니다. 화면을 새로 열어 주세요.")
+        raise DealError("이 영업 건의 S/N이 아닌 것이 있습니다. 화면을 새로 열어 주세요.")
     if any(r["shipment_index"] is not None and r["shipment_index"] != index for r in rs):
-        raise DealError("이미 다른 출하로 나간 시리얼이 있습니다.")
+        raise DealError("이미 다른 출하로 나간 S/N이 있습니다.")
     for r in rs:
         await db.execute(text("UPDATE product_units SET shipment_index = :x, warranty_start = :s, warranty_until = :w, "
                               "status = '출하', updated_at = NOW() WHERE id = :i"),
@@ -416,7 +452,7 @@ async def unit_detail(db: AsyncSession, unit_id: int, today: dt.date) -> dict:
         f"SELECT {', '.join('u.' + c.strip() for c in _UNIT_COLS.split(','))}, s.customer, s.deal_no, {_DEAL_COLS}, s.shipments "
         "FROM product_units u LEFT JOIN sales_deals s ON s.id = u.deal_id WHERE u.id = :i"), {"i": unit_id})).mappings().first()
     if not r:
-        raise DealError("시리얼을 찾을 수 없습니다.", 404)
+        raise DealError("S/N을 찾을 수 없습니다.", 404)
     u = _unit_view(r)
     ships = u.pop("shipments") or []
     ships = json.loads(ships) if isinstance(ships, str) else ships
@@ -488,7 +524,7 @@ async def create_case(db: AsyncSession, user_id: int | None, unit_id: int, p: di
     u = (await db.execute(text("SELECT u.id, u.deal_id, u.serial, u.part_name, u.warranty_until, s.customer FROM product_units u "
                                "LEFT JOIN sales_deals s ON s.id = u.deal_id WHERE u.id = :i"), {"i": unit_id})).mappings().first()
     if not u:
-        raise DealError("시리얼을 찾을 수 없습니다.", 404)
+        raise DealError("S/N을 찾을 수 없습니다.", 404)
     c = _clean_case(p)
     received = c.get("received_on") or dt.date.today()
     cause = c.get("cause", "확인 중")

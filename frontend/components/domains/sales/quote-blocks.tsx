@@ -8,7 +8,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { QuoteBlock, QuoteLine, QuoteNego } from "@/lib/shared/product-recommend";
 import { Icon } from "@/components/shared/ui/icon";
 import { cn } from "@/lib/shared/utils";
-import { inputCls, primaryBtn } from "./proposal-actions";
+import { ITEM_BTN, inputCls, primaryBtn } from "./proposal-actions";
+import { AMOUNT_BOX, HEAD_AREA, ROW_CARD, ROW_CARD_AUTO, ROW_FIELD, ROW_ICON_BTN, ROW_LABEL } from "./quote-styles";
 
 /** 칸 높이를 내용만큼 */
 function useAutoHeight(value: string) {
@@ -88,7 +89,8 @@ const TYPE_TAG: Record<QuoteBlock["type"], string> = {
   spec: "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300",
   text: "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300",
 };
-const smallBtn = "rounded border border-border px-1.5 text-[11.5px] text-foreground-muted hover:text-foreground disabled:opacity-40";
+// 묶음 머리 버튼(↑·↓·삭제) — 누를 수 있게 보이도록 테두리·높이를 품목 줄 버튼과 맞춤(사용자 2026-10-23)
+const smallBtn = "inline-flex h-8 min-w-8 items-center justify-center rounded-[9px] border border-border-strong bg-surface-raised px-2 text-[12px] font-semibold text-foreground-muted hover:border-foreground/30 hover:bg-foreground/[0.04] hover:text-foreground disabled:pointer-events-none disabled:opacity-40";
 
 type PricePick = { model: string; item: string; unit_price: number };
 
@@ -121,15 +123,20 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
                                    unit_price: null, remark: "", block: blockId }] });
   const [groupName, setGroupName] = useState("");
   const [bigNote, setBigNote] = useState<number | null>(null);
+  // [묶음]을 눌러야 이름 칸이 나온다 · 견적서 문구(Total 아래·표 아래 주석)는 평소 접어 둔다(사용자 2026-10-23)
+  const [naming, setNaming] = useState(false);
+  const [notesOpen, setNotesOpen] = useState(false);
   const hasOption = blocks.some((b) => b.type === "option");
-  /** 사용자 지정 묶음 — 적은 이름으로 만들고 빈 항목 한 줄. < OPTION > 묶음은 하나만 */
+  /** 사용자 지정 묶음 — 적은 이름으로 만들고 빈 항목 한 줄. < OPTION > 묶음은 하나만, 빈 묶음으로 만들고 줄은 [항목 추가]로(사용자 2026-10-23) */
   function addBlock(type: "items" | "option") {
     const title = type === "option" ? "< OPTION >" : groupName.trim().slice(0, 60);
     if (!title) return;
     const id = `new-${Date.now()}`;
-    onChange({ blocks: [...blocks, { id, type, title, ...(type === "items" ? { subtotal: true } : {}) }],
-               lines: [...lines, { id: `new${Date.now()}`, kind: "extra", key: "extra", name: "", commodity: "", qty: 1, unit_price: null, remark: "", block: id }] });
-    if (type === "items") setGroupName("");
+    onChange(type === "option"
+      ? { blocks: [...blocks, { id, type, title }] }
+      : { blocks: [...blocks, { id, type, title, subtotal: true }],
+          lines: [...lines, { id: `new${Date.now()}`, kind: "extra", key: "extra", name: "", commodity: "", qty: 1, unit_price: null, remark: "", block: id }] });
+    if (type === "items") { setGroupName(""); setNaming(false); }
   }
 
   return (
@@ -140,7 +147,7 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
           : (l.qty ?? 0) * ((en ? usdOf(l, fx) : l.unit_price) ?? 0) * monthFactor(l, months)), 0);
         const inCount = own.filter(({ l }) => l.kind !== "note" && l.in_total).length;
         return (
-          <div key={b.id} className="flex flex-col gap-2 rounded-lg border border-border p-2.5">
+          <div key={b.id} className="flex flex-col gap-3 rounded-2xl border border-border bg-foreground/[0.015] p-3.5">
             <div className="flex flex-wrap items-center gap-2">
               <span className={cn("rounded px-1.5 py-0.5 text-[11px] font-semibold", TYPE_TAG[b.type])}>{TYPE_LABEL[b.type]}</span>
               {b.type !== "text" && (
@@ -154,150 +161,147 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
               <div className="ml-auto flex items-center gap-1">
                 <button type="button" className={smallBtn} disabled={busy || k === 0} aria-label="위로" onClick={() => move(b.id, -1)}>↑</button>
                 <button type="button" className={smallBtn} disabled={busy || k === extra.length - 1} aria-label="아래로" onClick={() => move(b.id, 1)}>↓</button>
-                <button type="button" className={cn(smallBtn, "hover:text-red-600")} disabled={busy} aria-label={`${TYPE_LABEL[b.type]} 삭제`}
-                        title="묶음과 그 안의 항목을 뺍니다" onClick={() => remove(b.id)}>삭제</button>
+                {/* 지우기는 품목 줄과 같은 휴지통 버튼으로 통일(사용자 2026-10-23) */}
+                <button type="button" className={cn(smallBtn, "hover:border-red-400/60 hover:bg-red-500/5 hover:text-red-600")} disabled={busy}
+                        aria-label={`${TYPE_LABEL[b.type]} 빼기`} title="묶음과 그 안의 항목을 뺍니다" onClick={() => remove(b.id)}>
+                  <Icon name="trash" className="h-4 w-4" />
+                </button>
               </div>
             </div>
 
             {(b.type === "items" || b.type === "option") && (
               <>
-                <div className="overflow-x-auto">
-                  {/* 칸 배치(사용자 2026-10-13: 어수선함 정리) — 머리글 한 줄, 수량·단위 따로, 규격은 넓고 내용만큼 늘어남, 칸은 위쪽 맞춤 */}
-                  <table className="w-full min-w-[980px] table-fixed text-[12.5px]">
-                    <colgroup>
-                      <col className="w-[150px]" /><col /><col className="w-[64px]" /><col className="w-[64px]" />
-                      <col className="w-[130px]" /><col className="w-[112px]" /><col className="w-[180px]" /><col className={b.type === "option" ? "w-[84px]" : "w-[30px]"} />
-                    </colgroup>
-                    <thead>
-                      <tr className="whitespace-nowrap border-b border-border text-left text-[11.5px] text-foreground-subtle">
-                        <th className="px-1.5 py-1.5 font-medium">{en ? "Commodity" : "품목"}</th>
-                        <th className="px-1.5 py-1.5 font-medium">{en ? "Specifications" : "규격"}</th>
-                        <th className="px-1.5 py-1.5 font-medium">{en ? "Qty" : "수량"}</th>
-                        <th className="px-1.5 py-1.5 font-medium">{en ? "Unit" : "단위"}</th>
-                        <th className="px-1.5 py-1.5 font-medium">{en ? (months ? "Price ($ / month)" : "Price ($)") : months ? "단가 (월 납입금 또는 1회 지불)" : "단가"}</th>
-                        <th className="px-1.5 py-1.5 text-right font-medium">{en ? "Amount" : "금액"}</th>
-                        <th className="px-1.5 py-1.5 font-medium">{en ? "Remark" : "비고"}</th>
-                        {b.type === "option" ? <th className="px-1 py-1.5 font-medium">Total</th> : <th />}
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border align-top">
-                      {own.map(({ l, idx }) => {
-                        const unit = en ? usdOf(l, fx) : l.unit_price;
-                        if (isAuto(l)) return (                     // 물류비·인건비 — 아래 납품 방식 칸에서 바꾼다
-                          <tr key={l.id} className="text-foreground-muted">
-                            <td className="px-1.5 py-2">{l.commodity}</td><td className="px-1.5 py-2">{l.name}</td>
-                            <td className="px-1.5 py-2">{l.qty}</td><td className="px-1.5 py-2">{l.unit ?? ""}</td>
-                            <td className="px-1.5 py-2">{en ? usd(unit) : won(l.unit_price)}</td>
-                            <td className="whitespace-nowrap px-1.5 py-2 text-right font-semibold">{en ? usd((l.qty ?? 0) * (unit ?? 0) * monthFactor(l, months)) : won((l.qty ?? 0) * (l.unit_price ?? 0) * monthFactor(l, months))}</td>
-                            <td className="px-1.5 py-2 text-[11.5px]" colSpan={2}>납품 방식에서 설정</td>
-                          </tr>
-                        );
-                        if (l.kind === "note") return (            // 서술형 줄 — 항목명 / 내용(가격 없음), 견적서엔 내용 가운데 정렬
-                          <tr key={l.id} className="bg-emerald-500/[0.03]">
-                            <td className="px-1.5 py-1.5">
-                              <LineArea className={cn(inputCls, "min-h-8 text-[12.5px]")} value={l.commodity ?? ""} maxLength={40} aria-label="서술형 항목명" disabled={busy}
-                                     placeholder={en ? "e.g. Weight" : "항목명 — 예: 무게"} onChange={(e) => setLine(idx, { commodity: e.target.value })} />
-                            </td>
-                            <td className="px-1.5 py-1.5" colSpan={6}>
-                              <AutoTextarea className={cn(inputCls, "text-center text-[12.5px]")} value={l.name} maxLength={300}
-                                            aria-label="서술형 내용" disabled={busy} placeholder={en ? "e.g. 55kg" : "내용 — 예: 55kg (여러 줄 가능, 가격 없음)"}
-                                            onChange={(e) => setLine(idx, { name: e.target.value })} />
-                            </td>
-                            <td className="px-1 py-1.5 text-center">
-                              <button type="button" aria-label="서술형 줄 빼기" disabled={busy} className="mt-1.5 text-foreground-subtle hover:text-red-600"
-                                      onClick={() => onChange({ lines: lines.filter((_, j) => j !== idx) })}>
-                                <Icon name="trash" className="h-4 w-4" />
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                        return (
-                          <tr key={l.id}>
-                            <td className="px-1.5 py-1.5">
-                              <LineArea className={cn(inputCls, "min-h-8 text-[12.5px]")} value={l.commodity ?? ""} aria-label="품목" disabled={busy}
-                                     placeholder={en ? "e.g. Charging Dock" : "예: 충전 스테이션"} onChange={(e) => setLine(idx, { commodity: e.target.value })} />
-                            </td>
-                            <td className="px-1.5 py-1.5">
-                              <AutoTextarea className={cn(inputCls, "text-[12.5px]")} value={l.name} aria-label="규격" disabled={busy}
-                                            placeholder={en ? "Model / spec — multiple lines\ne.g. CS-01\n- 24V, 2A" : "모델·사양 — 여러 줄 가능\n예: CS-01\n- 24V, 2A"}
-                                            onChange={(e) => setLine(idx, { name: e.target.value })} />
-                            </td>
-                            <td className="px-1.5 py-1.5">
-                              <input className={cn(inputCls, "h-8 text-center text-[12.5px]", !l.qty && "border-amber-500")} type="number" min={1}
+                {/* 묶음 안 품목 줄 — 기본 품목과 같은 두 단 카드(가로 스크롤 없이, 사용자 2026-10-23) */}
+                {own.length === 0 && (
+                  <p className="rounded-xl border border-dashed border-border px-3 py-3 text-center text-[12.5px] text-foreground-subtle">
+                    아직 줄이 없습니다 — 아래 [항목 추가]나 [단가표에서 추가]로 넣으세요.
+                  </p>
+                )}
+                <ul className="flex flex-col gap-2.5">
+                  {own.map(({ l, idx }) => {
+                    const unit = en ? usdOf(l, fx) : l.unit_price;
+                    const amount = en ? usd((l.qty ?? 0) * (unit ?? 0) * monthFactor(l, months)) : won((l.qty ?? 0) * (l.unit_price ?? 0) * monthFactor(l, months));
+                    const oneTime = !!months && monthFactor(l, months) === 1;
+                    if (isAuto(l)) return (                     // 물류비·인건비 — 아래 납품 방식 칸에서 바꾼다
+                      <li key={l.id} className={cn(ROW_CARD_AUTO, "flex flex-wrap items-center gap-x-4 gap-y-1 text-[13px] text-foreground-muted")}>
+                        <span className="font-semibold text-foreground">{l.commodity}</span>
+                        <span className="min-w-0 flex-1 whitespace-pre-line">{l.name}</span>
+                        <span>{l.qty}{l.unit ? ` ${l.unit}` : ""} × {en ? usd(unit) : won(l.unit_price)}</span>
+                        <span className="text-[16px] font-extrabold text-foreground">{amount}</span>
+                        <span className="basis-full text-[11.5px]">납품 방식에서 설정</span>
+                      </li>
+                    );
+                    if (l.kind === "note") return (            // 서술형 줄 — 항목명 / 내용(가격 없음), 견적서엔 내용 가운데 정렬
+                      <li key={l.id} className="rounded-xl border border-emerald-500/25 bg-emerald-500/[0.03] p-3.5">
+                        <div className="grid items-start gap-2.5 sm:grid-cols-[190px_minmax(0,1fr)_auto]">
+                          <div className={ROW_LABEL}>
+                            <span className="flex items-center gap-1.5">{en ? "Item" : "항목명"}
+                              <span className="rounded-md bg-emerald-500/12 px-1.5 py-px text-[11px] font-bold text-emerald-700 dark:text-emerald-300">서술형</span></span>
+                            <LineArea className={HEAD_AREA} value={l.commodity ?? ""} maxLength={40} aria-label="서술형 항목명" disabled={busy}
+                                      placeholder={en ? "e.g. Weight" : "예: 무게"} onChange={(e) => setLine(idx, { commodity: e.target.value })} />
+                          </div>
+                          <div className={ROW_LABEL}>
+                            <span>{en ? "Content (no price)" : "내용 (가격 없음)"}</span>
+                            <AutoTextarea className={cn(HEAD_AREA, "text-center")} value={l.name} maxLength={300}
+                                          aria-label="서술형 내용" disabled={busy} placeholder={en ? "e.g. 55kg" : "예: 55kg (여러 줄 가능)"}
+                                          onChange={(e) => setLine(idx, { name: e.target.value })} />
+                          </div>
+                          <button type="button" aria-label="서술형 줄 빼기" title="이 줄 빼기" disabled={busy} className={cn(ROW_ICON_BTN, "mt-6 hover:border-red-400/60 hover:bg-red-500/5 hover:text-red-600")}
+                                  onClick={() => onChange({ lines: lines.filter((_, j) => j !== idx) })}>
+                            <Icon name="trash" className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </li>
+                    );
+                    return (
+                      <li key={l.id} className={ROW_CARD}>
+                        <div className="grid gap-2.5 sm:grid-cols-[190px_minmax(0,1fr)]">
+                          <div className={ROW_LABEL}>
+                            <span className="flex items-center gap-1.5">{en ? "Commodity" : "품목"}
+                              {oneTime && <span className="rounded-md bg-emerald-500/12 px-1.5 py-px text-[11px] font-bold text-emerald-700 dark:text-emerald-300">1회</span>}
+                            </span>
+                            <LineArea className={HEAD_AREA} value={l.commodity ?? ""} aria-label="품목" disabled={busy}
+                                      placeholder={en ? "e.g. Charging Dock" : "예: 충전 스테이션"} onChange={(e) => setLine(idx, { commodity: e.target.value })} />
+                          </div>
+                          <div className={ROW_LABEL}>
+                            <span>{en ? "Specifications" : "규격"}</span>
+                            <AutoTextarea className={HEAD_AREA} value={l.name} aria-label="규격" disabled={busy}
+                                          placeholder={en ? "Model / spec — multiple lines\ne.g. CS-01\n- 24V, 2A" : "모델·사양 — 여러 줄 가능\n예: CS-01\n- 24V, 2A"}
+                                          onChange={(e) => setLine(idx, { name: e.target.value })} />
+                          </div>
+                        </div>
+                        <div className="mt-2.5 flex flex-wrap items-end gap-2.5">
+                          <div className={ROW_LABEL}>
+                            <span>{en ? "Qty · Unit" : "수량 · 단위"}</span>
+                            <span className="flex">
+                              <input className={cn(ROW_FIELD, "w-[64px] rounded-r-none text-right", !l.qty && "border-amber-500")} type="number" min={1}
                                      value={l.qty ?? ""} aria-label="수량" disabled={busy}
                                      onChange={(e) => setLine(idx, { qty: Math.max(0, Math.floor(Number(e.target.value) || 0)) || null })} />
-                            </td>
-                            <td className="px-1.5 py-1.5">
-                              <input className={cn(inputCls, "h-8 text-center text-[12.5px]")} value={l.unit ?? ""} maxLength={8} aria-label="수량 단위" disabled={busy}
-                                     placeholder="ea" title="수량 단위 — 예: MD·식·개월·대 (비우면 ea)" onChange={(e) => setLine(idx, { unit: e.target.value })} />
-                            </td>
-                            <td className="px-1.5 py-1.5">
-                              {en ? (
-                                <input key={`usd-${l.id}-${draftVer}`} className={cn(inputCls, "h-8 text-right text-[12.5px]", unit == null && "border-amber-500")}
-                                       inputMode="decimal" defaultValue={l.usd ?? ""} aria-label="달러 단가" disabled={busy}
-                                       placeholder={unit != null ? `${usd(unit)} (환율)` : "$ 단가"}
-                                       onChange={(e) => { const v = Number(e.target.value.replace(/[,$\s]/g, "")); setLine(idx, { usd: v > 0 ? v : null }); }} />
-                              ) : (
-                                <input className={cn(inputCls, "h-8 text-right text-[12.5px]", l.unit_price == null && "border-amber-500")} inputMode="numeric"
-                                       value={l.unit_price ?? ""} aria-label="단가" placeholder="단가" disabled={busy}
-                                       onChange={(e) => setLine(idx, { unit_price: Number(e.target.value.replace(/,/g, "")) || null })} />
-                              )}
-                            </td>
-                            <td className={cn("whitespace-nowrap px-1.5 py-1.5 text-right font-semibold leading-8", b.type === "option" && !l.in_total && "text-foreground-subtle")}>
-                              {en ? usd((l.qty ?? 0) * (unit ?? 0) * monthFactor(l, months)) : won((l.qty ?? 0) * (l.unit_price ?? 0) * monthFactor(l, months))}
-                            </td>
-                            <td className="px-1.5 py-1.5">
-                              <div className="flex flex-col gap-1">
-                                <LineArea className={cn(inputCls, "min-h-8 text-[12px]")} value={l.remark ?? ""} aria-label="비고" disabled={busy}
-                                       placeholder={en ? "Remark" : "비고"} onChange={(e) => setLine(idx, { remark: e.target.value })} />
-                                {photoCell?.(l)}
-                              </div>
-                            </td>
-                            {b.type === "option" ? (
-                              // 옵션 줄은 Total 반영/미반영(사용자 2026-10-19, 미반영이어도 공급가액은 견적서에 보인다) + 아래에 빼기 버튼(2026-10-22)
-                              <td className="px-1 py-1.5">
-                                <select value={l.in_total ? "in" : "out"} disabled={busy} aria-label={`${l.name || "옵션"} Total 반영`}
-                                        title="반영 = 옵션 Sub total·Total 에 포함 / 미반영 = 공급가액만 보이고 합계 제외"
-                                        onChange={(e) => setLine(idx, { in_total: e.target.value === "in" })}
-                                        className={cn("h-8 w-full rounded-md border px-1 text-[12px] font-semibold",
-                                                      l.in_total ? "border-accent/60 bg-accent/10 text-accent" : "border-border bg-surface text-foreground-muted")}>
-                                  <option value="in">반영</option>
-                                  <option value="out">미반영</option>
-                                </select>
-                                {/* 옵션 줄 빼기 — 반영/미반영 아래(사용자 2026-10-22) */}
-                                <div className="mt-1.5 text-center">
-                                  <button type="button" aria-label={`${l.name || "옵션"} 빼기`} title="이 옵션 줄 빼기" disabled={busy}
-                                          className="text-foreground-subtle hover:text-red-600" onClick={() => onChange({ lines: lines.filter((_, j) => j !== idx) })}>
-                                    <Icon name="trash" className="h-4 w-4" />
-                                  </button>
-                                </div>
-                              </td>
+                              <input className={cn(ROW_FIELD, "-ml-px w-[64px] rounded-l-none bg-foreground/[0.03] font-normal")} value={l.unit ?? ""} maxLength={8}
+                                     list="quote-units" aria-label="수량 단위" disabled={busy} placeholder="ea"
+                                     title="수량 단위 — 예: MD·식·개월·대 (비우면 ea)" onChange={(e) => setLine(idx, { unit: e.target.value })} />
+                            </span>
+                          </div>
+                          <div className={ROW_LABEL}>
+                            <span>{en ? (months ? "Price ($ / month)" : "Price ($)") : months ? (oneTime ? "금액 (1회)" : "월 단가") : "단가"}</span>
+                            {en ? (
+                              <input key={`usd-${l.id}-${draftVer}`} className={cn(ROW_FIELD, "w-[140px] text-right", unit == null && "border-amber-500")}
+                                     inputMode="decimal" defaultValue={l.usd ?? ""} aria-label="달러 단가" disabled={busy}
+                                     placeholder={unit != null ? `${usd(unit)} (환율)` : "$ 단가"}
+                                     onChange={(e) => { const v = Number(e.target.value.replace(/[,$\s]/g, "")); setLine(idx, { usd: v > 0 ? v : null }); }} />
                             ) : (
-                              <td className="px-1 py-1.5 text-center">
-                                <button type="button" aria-label={`${l.name || "항목"} 빼기`} disabled={busy} className="mt-1.5 text-foreground-subtle hover:text-red-600"
-                                        onClick={() => onChange({ lines: lines.filter((_, j) => j !== idx) })}>
-                                  <Icon name="trash" className="h-4 w-4" />
-                                </button>
-                              </td>
+                              <input className={cn(ROW_FIELD, "w-[140px] text-right", l.unit_price == null && "border-amber-500")} inputMode="numeric"
+                                     value={l.unit_price ?? ""} aria-label="단가" placeholder={months ? "월 납입금 또는 1회 지불" : "단가"} disabled={busy}
+                                     onChange={(e) => setLine(idx, { unit_price: Number(e.target.value.replace(/,/g, "")) || null })} />
                             )}
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+                          </div>
+                          {b.type === "option" && (
+                            // 옵션 줄은 Total 반영/미반영(사용자 2026-10-19, 미반영이어도 공급가액은 견적서에 보인다)
+                            <div className={ROW_LABEL}>
+                              <span>Total</span>
+                              <select value={l.in_total ? "in" : "out"} disabled={busy} aria-label={`${l.name || "옵션"} Total 반영`}
+                                      title="반영 = 옵션 Sub total·Total 에 포함 / 미반영 = 공급가액만 보이고 합계 제외"
+                                      onChange={(e) => setLine(idx, { in_total: e.target.value === "in" })}
+                                      className={cn(ROW_FIELD, "w-[96px] px-2 font-semibold",
+                                                    l.in_total ? "border-accent/60 bg-accent/10 text-accent" : "text-foreground-muted")}>
+                                <option value="in">반영</option>
+                                <option value="out">미반영</option>
+                              </select>
+                            </div>
+                          )}
+                          <div className={cn(ROW_LABEL, "ml-auto flex-1 items-end")}>
+                            <span>{en ? "Amount" : "금액"}{months ? <span className="font-normal text-foreground-subtle"> · {oneTime ? "1회 지불" : `× ${months}개월`}</span> : null}
+                              {b.type === "option" && !l.in_total && <span className="font-normal text-foreground-subtle"> · 미반영, 합계 제외</span>}</span>
+                            <span className={cn(AMOUNT_BOX, b.type === "option" && !l.in_total && "text-foreground-subtle")}>
+                              {!en && l.unit_price == null ? <span className="text-[12.5px] font-medium text-foreground-subtle">단가를 넣으면 계산</span> : amount}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="mt-2.5 flex flex-wrap items-start gap-2">
+                          <LineArea className={cn(HEAD_AREA, "min-w-0 flex-1 basis-64 text-[12.5px]")} value={l.remark ?? ""} aria-label="비고" disabled={busy}
+                                    placeholder={en ? "Remark" : "비고"} onChange={(e) => setLine(idx, { remark: e.target.value })} />
+                          {photoCell?.(l)}
+                          <button type="button" aria-label={`${l.name || "항목"} 빼기`} title="이 줄 빼기" disabled={busy}
+                                  className={cn(ROW_ICON_BTN, "hover:border-red-400/60 hover:bg-red-500/5 hover:text-red-600")}
+                                  onClick={() => onChange({ lines: lines.filter((_, j) => j !== idx) })}>
+                            <Icon name="trash" className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
                 <div className="flex flex-wrap items-center gap-2 text-[12px]">
-                  <button type="button" disabled={busy} onClick={() => addLine(b.id)}
-                          className="inline-flex items-center gap-1 rounded border border-border px-2 py-0.5 text-foreground-muted hover:text-foreground">
-                    <Icon name="plus" className="h-3.5 w-3.5" /> 항목 추가
+                  <button type="button" disabled={busy} onClick={() => addLine(b.id)} className={ITEM_BTN}>
+                    <Icon name="plus" className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" /> 항목 추가
                   </button>
                   {pricePicker?.((p) => onChange({ lines: [...lines, { id: `new${Date.now()}`, kind: "extra", key: "extra",
                     name: `${p.model} ${p.item}`.slice(0, 60), commodity: "", qty: 1, unit_price: p.unit_price, remark: "", block: b.id }] }))}
                   {b.type === "items" && (
                     <button type="button" disabled={busy} onClick={() => addLine(b.id, "note")}
                             title="항목명 / 내용만 적는 줄(가격 없음) — 사양·설명용"
-                            className="inline-flex items-center gap-1 rounded border border-border px-2 py-0.5 text-foreground-muted hover:text-foreground">
-                      <Icon name="plus" className="h-3.5 w-3.5" /> 서술형 줄
+                            className={ITEM_BTN}>
+                      <Icon name="plus" className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" /> 서술형 줄
                     </button>
                   )}
                   <span className="ml-auto text-foreground-subtle">
@@ -345,28 +349,39 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
         );
       })}
 
-      <div className="flex flex-col gap-1.5 rounded-lg border border-dashed border-accent/50 p-2.5">
-        <span className="text-[12px] font-semibold text-foreground">+ 묶음 추가</span>
-        <div className="flex flex-wrap items-center gap-1.5">
-          <input className={cn(inputCls, "min-w-0 flex-1 basis-48 py-1 text-[12.5px]")} value={groupName} maxLength={60} disabled={busy}
-                 aria-label="새 묶음 이름" placeholder={en ? "묶음 이름 — 예: Maintenance" : "묶음 이름 — 예: 설치 및 시운전, 유지보수, 방역 로봇 주요 사양"}
-                 onChange={(e) => setGroupName(e.target.value)}
-                 onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); addBlock("items"); } }} />
-          <button type="button" disabled={busy || !groupName.trim() || blocks.length >= 12} onClick={() => addBlock("items")}
-                  className="rounded-md border border-accent/60 px-2.5 py-1 text-[12.5px] font-semibold text-accent hover:bg-accent/5 disabled:opacity-40">
-            사용자 지정 묶음 만들기
+      {/* 더 넣기 — 묶음·OPTION 묶음·NEGO 를 한 줄로(넓은 점선 상자 대신) */}
+      <div className="flex flex-col gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[12.5px] font-semibold text-foreground-muted">더 넣기</span>
+          <button type="button" disabled={busy || blocks.length >= 12} aria-expanded={naming} onClick={() => setNaming(!naming)}
+                  title="이름을 정해 품목 묶음을 만듭니다(예: 설치 및 시운전, 유지보수) — 묶음마다 Sub total"
+                  className={cn("h-8 rounded-full border px-3 text-[12.5px] font-semibold disabled:opacity-40",
+                    naming ? "border-accent bg-accent/10 text-accent" : "border-border bg-surface-raised text-foreground-muted hover:text-foreground")}>
+            + 묶음
           </button>
           <button type="button" disabled={busy || hasOption || blocks.length >= 12} onClick={() => addBlock("option")}
                   title={hasOption ? "< OPTION > 묶음은 하나만 둡니다" : "줄마다 Total 반영/미반영을 고르는 묶음 — 반영한 줄만 옵션 Sub total·Total 에 포함"}
-                  className="rounded-md border border-amber-500/60 px-2.5 py-1 text-[12.5px] font-semibold text-amber-700 hover:bg-amber-500/5 disabled:opacity-40 dark:text-amber-300">
-            &lt; OPTION &gt; 묶음
+                  className="inline-flex h-8 items-center gap-1.5 rounded-full border border-border bg-surface-raised px-3 text-[12.5px] font-semibold text-foreground-muted hover:text-foreground disabled:opacity-40">
+            <span className="h-1.5 w-1.5 rounded-full bg-cyan-600" aria-hidden /> OPTION 묶음
           </button>
           <button type="button" disabled={busy || !!nego} onClick={() => onChange({ nego: { mode: "amount", value: null, label: "" } })}
-                  className="rounded-md border border-red-500/50 px-2.5 py-1 text-[12.5px] font-semibold text-red-700 hover:bg-red-500/5 disabled:opacity-40 dark:text-red-300">
-            NEGO(할인)
+                  className="inline-flex h-8 items-center gap-1.5 rounded-full border border-border bg-surface-raised px-3 text-[12.5px] font-bold text-red-700 hover:bg-red-500/5 disabled:opacity-40 dark:text-red-300">
+            <span className="h-1.5 w-1.5 rounded-full bg-red-600" aria-hidden /> NEGO (할인)
           </button>
         </div>
-        <span className="text-[11px] text-foreground-subtle">이름을 적고 만들면 그 묶음이 생깁니다 — 안에 항목(가격 있음)이나 서술형 줄(항목명 / 내용)을 넣으세요.</span>
+        {naming && (
+          <div className="flex flex-wrap items-center gap-2 rounded-xl border border-accent/30 bg-accent/[0.03] p-2.5">
+            <input className={cn(inputCls, "h-9 min-w-0 flex-1 basis-48 text-[12.5px]")} value={groupName} maxLength={60} disabled={busy} autoFocus
+                   aria-label="새 묶음 이름" placeholder={en ? "묶음 이름 — 예: Maintenance" : "묶음 이름 — 예: 설치 및 시운전, 유지보수, 방역 로봇 주요 사양"}
+                   onChange={(e) => setGroupName(e.target.value)}
+                   onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); addBlock("items"); } }} />
+            <button type="button" disabled={busy || !groupName.trim() || blocks.length >= 12} onClick={() => addBlock("items")}
+                    className={groupName.trim() ? cn(ITEM_BTN, "border-accent/60 text-accent") : ITEM_BTN}>
+              묶음 만들기
+            </button>
+            <span className="basis-full text-[11px] text-foreground-subtle">만든 묶음 안에 항목(가격 있음)이나 서술형 줄(항목명 / 내용)을 넣으세요.</span>
+          </div>
+        )}
       </div>
 
       {children}
@@ -388,13 +403,26 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
           <input className={cn(inputCls, "min-w-0 flex-1 basis-36 py-0.5 text-[12.5px]")} value={nego.label} maxLength={40} disabled={busy}
                  aria-label="NEGO 이름" placeholder={en ? "이름(선택) — 예: Special discount" : "이름(선택) — 예: 특별 할인"}
                  onChange={(e) => onChange({ nego: { ...nego, label: e.target.value } })} />
-          <button type="button" className={cn(smallBtn, "hover:text-red-600")} disabled={busy} onClick={() => onChange({ nego: null })}>삭제</button>
+          <button type="button" className={cn(smallBtn, "hover:border-red-400/60 hover:bg-red-500/5 hover:text-red-600")} disabled={busy}
+                  aria-label="NEGO 빼기" title="NEGO 줄 빼기" onClick={() => onChange({ nego: null })}>
+            <Icon name="trash" className="h-4 w-4" />
+          </button>
           <span className="basis-full text-[11.5px] text-foreground-subtle">
             Total 바로 위에 &quot;NEGO&quot; 줄로 들어갑니다. %는 미반영 옵션을 뺀 합계 기준으로 계산해 견적서엔 금액으로 나옵니다. 값을 비우면 빠집니다.
           </span>
         </div>
       )}
 
+      <button type="button" aria-expanded={notesOpen} onClick={() => setNotesOpen(!notesOpen)}
+              className="inline-flex w-fit items-center gap-2 py-1 text-[12.5px] font-bold text-accent hover:underline">
+        {notesOpen ? "견적서 문구 접기 ▴" : "견적서 문구 더 보기 ▾"}
+        {(totalNote.trim() || footNotes.some((x) => x.trim())) && (
+          <span className="rounded-full border border-border bg-surface-raised px-2 py-px text-[11.5px] font-semibold text-foreground-muted">
+            {[totalNote.trim() ? "Total 아래 문구" : "", footNotes.filter((x) => x.trim()).length ? `주석 ${footNotes.filter((x) => x.trim()).length}개` : ""].filter(Boolean).join(" · ")}
+          </span>
+        )}
+      </button>
+      {notesOpen && (
       <div className="grid gap-2 sm:grid-cols-2">
         <label className="flex flex-col gap-1 text-[12px] text-foreground-muted">
           <span>Total 아래 보조 문구 <span className="text-[11px] text-foreground-subtle">· 적은 것만 들어감(비우면 없음)</span></span>
@@ -429,6 +457,7 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
           </button>
         </div>
       </div>
+      )}
     </div>
   );
 }

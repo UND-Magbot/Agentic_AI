@@ -7,13 +7,15 @@
 
 import { useEffect, useRef, useState } from "react";
 import { AgentBubble, type AgentStep, streamNdjson } from "@/components/domains/sales/agent-chat";
-import { type Act, BUYER_HINT, ShipDialog, type ShipDraft, ShipForm, StatementDialog, StatementItems, shipmentDraft } from "@/components/domains/sales/deal-flow";
+import { type Act, BUYER_HINT, GroupHead, ShipDialog, type ShipDraft, ShipForm, StatementDialog, StatementItems, shipmentDraft } from "@/components/domains/sales/deal-flow";
 import { INPUT, Muted, STAGE_DONE, STAGE_SHIP_ONLY, STAGE_TONE, dealRequest, shortDate, todayIso, won } from "@/components/domains/sales/deal-format";
 import { DownloadDialog, PreviewDialog } from "@/components/domains/sales/quote-workspace";
 import { Icon } from "@/components/shared/ui/icon";
 import type { DealListData, DealRow, DealStatement, PayTerm } from "@/lib/shared/sales-deals";
-import { cn } from "@/lib/shared/utils";
-import { ErrorBox, inputCls, primaryBtn, secondaryBtn } from "./proposal-actions";
+import { cn, scrollChatToEnd } from "@/lib/shared/utils";
+import { ErrorBox, primaryBtn, secondaryBtn } from "./proposal-actions";
+import { HEAD_FIELD } from "./quote-styles";
+import { SPLIT_GRID, SplitBar, splitStyle, useSplit } from "./split-pane";
 
 type ChatMsg =
   | { role: "user"; text: string }
@@ -117,9 +119,9 @@ function PayQueue({ onOpen }: { onOpen: (id: number) => void }) {
   }
 
   return (
-    <section className="flex flex-col gap-3 rounded-xl border border-border bg-surface p-4 text-[12.5px]">
+    <section className="flex flex-col gap-3 rounded-2xl border border-border bg-surface-raised p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04),0_16px_36px_-24px_rgba(15,30,70,0.30)] text-[12.5px]">
       <div>
-        <h2 className="text-[15px] font-semibold">입금 확인</h2>
+        <h2 className="text-[16px] font-extrabold tracking-tight">입금 확인</h2>
         <p className="text-foreground-muted">지금 확인할 차례인 결제 회차입니다(예정 입금일이 지난 회차는 붉게, 맨 위). 회사에서 입금을 확인했으면 입금일을 고르고 [입금 확인]을 누르세요. 금액은 공급가액입니다.</p>
       </div>
       <ErrorBox error={err} />
@@ -208,9 +210,9 @@ function StatementQueue({ onOpen }: { onOpen: (id: number) => void }) {
   };
 
   return (
-    <section className="flex flex-col gap-3 rounded-xl border border-border bg-surface p-4 text-[12.5px]">
+    <section className="flex flex-col gap-3 rounded-2xl border border-border bg-surface-raised p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04),0_16px_36px_-24px_rgba(15,30,70,0.30)] text-[12.5px]">
       <div>
-        <h2 className="text-[15px] font-semibold">거래명세서 발급</h2>
+        <h2 className="text-[16px] font-extrabold tracking-tight">거래명세서 발급</h2>
         <p className="text-foreground-muted">수주는 확인됐는데 거래명세서를 아직 발급하지 않은 건입니다. [발급하기]로 견적 품목이 채워진 초안을 확인하고 발급하세요 — 발급하면 PDF·엑셀로 받을 수 있습니다.</p>
       </div>
       <ErrorBox error={err} />
@@ -292,9 +294,9 @@ function ShipQueue({ onOpen }: { onOpen: (id: number) => void }) {
   };
 
   return (
-    <section className="flex flex-col gap-3 rounded-xl border border-border bg-surface p-4 text-[12.5px]">
+    <section className="flex flex-col gap-3 rounded-2xl border border-border bg-surface-raised p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04),0_16px_36px_-24px_rgba(15,30,70,0.30)] text-[12.5px]">
       <div>
-        <h2 className="text-[15px] font-semibold">출하 대기</h2>
+        <h2 className="text-[16px] font-extrabold tracking-tight">출하 대기</h2>
         <p className="text-foreground-muted">거래명세서를 발급하고 아직 출하하지 않은 건입니다(입금 확인과 상관없이 출하할 수 있음). [출하 기록]으로 제품별 수량·사진과 배송 정보를 남기면 단계가 &apos;출하 후 입금 대기&apos;(완납이면 &apos;완료 (출하·완납)&apos;)로 바뀝니다.</p>
       </div>
       <ErrorBox error={err} />
@@ -343,9 +345,8 @@ function OrderList({ onOpen }: { onOpen: (id: number) => void }) {
     return () => { alive = false; };
   }, []);
   return (
-    <section className="flex flex-col gap-3 rounded-xl border border-border bg-surface p-4">
+    <section className="flex flex-col gap-3">
       <div>
-        <h2 className="text-[15px] font-semibold text-foreground">수주 진행</h2>
         <p className="text-[12.5px] text-foreground-muted">
           수주 확인된 건을 AI 와 대화하며 진행합니다 — 거래명세서 발급 → 결제 조건 → 회차별 입금 확인 → 출하.
           영업 건에서 [수주 확정] 뒤 [수주 진행 →]으로도 들어옵니다.
@@ -399,6 +400,7 @@ export function OrderWorkspace({ id, onBack }: { id: number; onBack: () => void 
   const chatEnd = useRef<HTMLDivElement>(null);
   const [admin, setAdmin] = useState(false);
   const [payDate, setPayDate] = useState(todayIso());
+  const split = useSplit("und_cortex_order_split", 50);
 
   function load(x: Order) {
     // 이 화면에서 마지막 절차를 마쳐 '완료'가 되는 순간 완납 팝업(처음 열 때 이미 완료인 건은 띄우지 않음)
@@ -413,7 +415,7 @@ export function OrderWorkspace({ id, onBack }: { id: number; onBack: () => void 
     getJson<Order>(`/api/sales-deals/${id}/order`).then((x) => { if (alive) { setAdmin(!!x.admin); load(x); } }).catch((e: Error) => { if (alive) setErr(e.message); });
     return () => { alive = false; };
   }, [id]);
-  useEffect(() => { chatEnd.current?.scrollIntoView({ block: "end", behavior: "smooth" }); }, [o?.state.chat.length, live?.answer, live?.think]);
+  useEffect(() => { scrollChatToEnd(chatEnd.current); }, [o?.state.chat.length, live?.answer, live?.think]);
 
   async function run<T>(label: string, f: () => Promise<T>): Promise<T | null> {
     setBusy(label);
@@ -525,14 +527,15 @@ export function OrderWorkspace({ id, onBack }: { id: number; onBack: () => void 
   // 출하 강조('지금 할 차례')는 결제 조건을 정한 뒤에만 — 정하는 동안엔 결제 조건 칸만 강조(사용자 2026-10-08). 버튼은 그대로 누를 수 있다
   const shipNow = ready("ship") && stepDone("case");
 
+  // 왼쪽 절차 ↔ 오른쪽 AI 대화 폭 조절(사용자 2026-10-23) — 견적서 작성과 같은 막대, 기본 반반
   return (
-    <div className="grid items-start gap-4 lg:grid-cols-2">
+    <div style={splitStyle(split)} className={SPLIT_GRID}>
       <div className="flex min-w-0 flex-col gap-4">
         {/* 머리 · 진행 */}
         <section className="flex flex-col gap-2 rounded-xl border border-accent/30 bg-surface p-4">
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" className={secondaryBtn} onClick={onBack}><Icon name="back" className="h-4 w-4" /> 목록</button>
-            <h2 className="text-[15px] font-semibold">{deal.display_no ?? deal.deal_no ?? "번호 미부여"} · {deal.customer ?? "-"}</h2>
+            <h2 className="text-[16px] font-extrabold tracking-tight">{deal.display_no ?? deal.deal_no ?? "번호 미부여"} · {deal.customer ?? "-"}</h2>
             <span className={cn("rounded-full px-2 py-0.5 text-[12px] font-semibold", STAGE_TONE[deal.stage])}>{deal.stage}</span>
             {fl?.total != null && <span className="ml-auto text-[12.5px] text-foreground-muted">공급가액 {won(fl.total)}원 · 입금 확인 {won(fl.paid)}원</span>}
           </div>
@@ -547,9 +550,9 @@ export function OrderWorkspace({ id, onBack }: { id: number; onBack: () => void 
         </section>
 
         {/* 거래명세서 */}
-        <section className={cn("flex flex-col gap-2 rounded-xl border bg-surface p-4 text-[12.5px]", !st ? "border-accent/50" : "border-border")}>
+        <section className={cn("flex flex-col gap-2 rounded-2xl border bg-surface-raised p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04),0_16px_36px_-24px_rgba(15,30,70,0.30)] text-[12.5px]", !st ? "border-accent/50" : "border-border")}>
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-[14px] font-semibold">거래명세서</h3>
+            <h3 className="text-[16px] font-extrabold tracking-tight">거래명세서</h3>
             {st ? <span className="text-emerald-700 dark:text-emerald-300">✓ 발급 <b className="font-mono">{st.no}</b> · {st.date} · 합계 {won(st.totals?.total)}원</span>
               : <span className="text-foreground-subtle">발급 전 초안</span>}
             {st && (
@@ -559,26 +562,36 @@ export function OrderWorkspace({ id, onBack }: { id: number; onBack: () => void 
               </button>
             )}
           </div>
-          <div className="grid gap-2 md:grid-cols-4">
-            <Lab label="발행자 이니셜 *"><input value={draft.initials ?? ""} maxLength={4} placeholder="예: LU"
-                                         onChange={(e) => edit({ ...draft, initials: e.target.value.toUpperCase() })} className={inputCls} /></Lab>
-            <Lab label="발행일자"><input type="date" value={draft.date} onChange={(e) => edit({ ...draft, date: e.target.value })} className={inputCls} /></Lab>
+          {/* 견적서 작성과 같은 짜임(사용자 2026-10-23) — ① 발행 ② 공급받는자 ③ 품목, 흰 40px 칸 */}
+          <div className="rounded-xl border border-border p-4">
+            <GroupHead n={1} title="발행" tone="bg-slate-500/12 text-slate-700 dark:text-slate-300" />
+            <div className="mt-3 grid gap-3 sm:grid-cols-[120px_180px_minmax(0,1fr)] sm:items-end">
+              <Lab label="발행자 이니셜 *"><input value={draft.initials ?? ""} maxLength={4} placeholder="예: LU"
+                                           onChange={(e) => edit({ ...draft, initials: e.target.value.toUpperCase() })} className={cn(HEAD_FIELD, "font-bold tracking-wider")} /></Lab>
+              <Lab label="발행일자"><input type="date" value={draft.date} onChange={(e) => edit({ ...draft, date: e.target.value })} className={HEAD_FIELD} /></Lab>
+              <p className="pb-2.5 text-[11.5px] text-foreground-subtle">
+                발행번호는 발급할 때마다 새로 붙습니다 — TS-{(draft.initials || "LU").toUpperCase()}{draft.date.replaceAll("-", "")}-01
+              </p>
+            </div>
           </div>
-          <p className="text-[11.5px] text-foreground-subtle">
-            발행번호는 발급할 때마다 자동으로 새로 붙습니다 — TS-{(draft.initials || "LU").toUpperCase()}{draft.date.replaceAll("-", "")}-01 (그 발행자의 그날 몇 번째 명세서인지).
-          </p>
           {/* 주소는 한 줄 통째로 — 긴 주소도 끝까지 보며 오타 확인 */}
-          <div className="grid gap-2 md:grid-cols-3">
-            {([["reg_no", "등록번호 *"], ["name", "상호 *"], ["ceo", "성명(대표)"], ["address", "주소 *"]] as const).map(([k, lab]) => (
-              <Lab key={k} label={`공급받는자 ${lab}`} wide={k === "address"}>
-                <input value={draft.buyer[k] ?? ""} onChange={(e) => edit({ ...draft, buyer: { ...draft.buyer, [k]: e.target.value } })} className={inputCls}
-                       placeholder={BUYER_HINT[k]} />
-              </Lab>
-            ))}
+          <div className="rounded-xl border border-border p-4">
+            <GroupHead n={2} title="공급받는자" tone="bg-blue-500/10 text-blue-700 dark:text-blue-300" />
+            <div className="mt-3 grid gap-3 md:grid-cols-3">
+              {([["reg_no", "등록번호 *"], ["name", "상호 *"], ["ceo", "성명(대표)"], ["address", "주소 *"]] as const).map(([k, lab]) => (
+                <Lab key={k} label={lab} wide={k === "address"}>
+                  <input value={draft.buyer[k] ?? ""} onChange={(e) => edit({ ...draft, buyer: { ...draft.buyer, [k]: e.target.value } })} className={HEAD_FIELD}
+                         placeholder={BUYER_HINT[k]} />
+                </Lab>
+              ))}
+            </div>
           </div>
-          <StatementItems deal={deal} st={draft} onChange={edit} />
+          <div className="flex flex-col gap-3 rounded-xl border border-border p-4">
+            <GroupHead n={3} title="품목" tone="bg-cyan-600/10 text-cyan-800 dark:text-cyan-300" />
+            <StatementItems deal={deal} st={draft} onChange={edit} />
+          </div>
           <div className="flex flex-wrap items-center gap-2">
-            <button type="button" className={secondaryBtn} disabled={!dirty || !!busy} onClick={() => void saveDraft()}>
+            <button type="button" className={dirty ? primaryBtn : secondaryBtn} disabled={!dirty || !!busy} onClick={() => void saveDraft()}>
               <Icon name="check" className="h-4 w-4" /> 변경 저장
             </button>
             {dirty && <button type="button" className="text-[12px] text-foreground-subtle hover:underline" onClick={() => load(o)}>되돌리기</button>}
@@ -594,23 +607,23 @@ export function OrderWorkspace({ id, onBack }: { id: number; onBack: () => void 
         </section>
 
         {/* 결제 조건 — 정할 차례면 눈에 띄게. 선금·중도금·잔금 % 수기(사용자 2026-10-08) */}
-        <section className={cn("flex flex-col gap-2 rounded-xl border bg-surface p-4 text-[12.5px]", ready("case") ? HL : "border-border")}>
+        <section className={cn("flex flex-col gap-2 rounded-2xl border bg-surface-raised p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04),0_16px_36px_-24px_rgba(15,30,70,0.30)] text-[12.5px]", ready("case") ? HL : "border-border")}>
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-[14px] font-semibold">결제 조건 {fl?.pay_case_label && <span className="font-normal text-foreground-muted">· {fl.pay_case_label}</span>}</h3>
+            <h3 className="text-[16px] font-extrabold tracking-tight">결제 조건 {fl?.pay_case_label && <span className="font-normal text-foreground-muted">· {fl.pay_case_label}</span>}</h3>
             {ready("case") && <NowBadge>지금 정할 차례</NowBadge>}
           </div>
-          {!st ? <Muted>거래명세서를 발급하면 정할 수 있습니다.</Muted> : (
-            <TermsEditor key={JSON.stringify(deal.pay_terms) + deal.payments.length} deal={deal} busy={!!busy}
-                         onSave={(t) => void confirm("terms", { terms: t }, "case")} />
-          )}
+          {/* 순서대로 안내만 하고 막지 않는다 — 거래명세서 발급 전에도 정할 수 있음(사용자 2026-10-23, 상세 탭과 같게) */}
+          {!st && <p className="text-[11.5px] text-foreground-subtle">보통은 거래명세서를 발급한 뒤에 정합니다.</p>}
+          <TermsEditor key={JSON.stringify(deal.pay_terms) + deal.payments.length} deal={deal} busy={!!busy}
+                       onSave={(t) => void confirm("terms", { terms: t }, "case")} />
         </section>
 
-        {/* 입금 확인·출하 — 서로 순서 없음(출하는 입금 확인 없이도, 사용자 2026-10-08), 출하 칸을 먼저 */}
-        {(["ship", "pay"] as const).map((k) => k === "pay" ? (
-          <section key="pay" className={cn("flex flex-col gap-2 rounded-xl border bg-surface p-4 text-[12.5px]",
-            payReady ? HL : late.size ? "border-red-400" : "border-border", !payReady && !payDone && !late.size && "opacity-60")}>
+        {/* 입금 확인 → 출하 — 정상 순서대로 보이되 막지는 않는다(출하는 입금 확인 없이도 기록, 사용자 2026-10-08·10-23) */}
+        {(["pay", "ship"] as const).map((k) => k === "pay" ? (
+          <section key="pay" className={cn("flex flex-col gap-2 rounded-2xl border bg-surface-raised p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04),0_16px_36px_-24px_rgba(15,30,70,0.30)] text-[12.5px]",
+            payReady ? HL : late.size ? "border-red-400" : "border-border")}>
             <div className="flex flex-wrap items-center gap-2">
-              <h3 className="text-[14px] font-semibold">입금 확인</h3>
+              <h3 className="text-[16px] font-extrabold tracking-tight">입금 확인</h3>
               {payReady && <NowBadge>지금 할 차례</NowBadge>}
               {payDone && <span className="text-emerald-700 dark:text-emerald-300">✓ 완납</span>}
               {payReady && (
@@ -658,14 +671,14 @@ export function OrderWorkspace({ id, onBack }: { id: number; onBack: () => void 
             )}
           </section>
         ) : (
-          <section key="ship" className={cn("flex flex-col gap-2 rounded-xl border bg-surface p-4 text-[12.5px]",
-            shipNow ? HL : "border-border", !shipNow && !stepDone("ship") && "opacity-60")}>
+          <section key="ship" className={cn("flex flex-col gap-2 rounded-2xl border bg-surface-raised p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04),0_16px_36px_-24px_rgba(15,30,70,0.30)] text-[12.5px]",
+            shipNow ? HL : "border-border")}>
             <div className="flex flex-wrap items-center gap-2">
-              <h3 className="text-[14px] font-semibold">출하</h3>
+              <h3 className="text-[16px] font-extrabold tracking-tight">출하</h3>
               {shipNow && <NowBadge>지금 할 차례</NowBadge>}
               {stepDone("ship") && <span className="text-emerald-700 dark:text-emerald-300">✓ {deal.shipments.length}회 기록</span>}
               {!shipOpen && (
-                <button type="button" className={cn(shipNow ? primaryBtn : secondaryBtn, "ml-auto")} disabled={!st || !!busy}
+                <button type="button" className={cn(shipNow ? primaryBtn : secondaryBtn, "ml-auto")} disabled={!!busy}
                         onClick={() => setShipOpen(true)}>
                   {stepDone("ship") ? "출하 기록 수정" : "출하 기록 작성"}
                 </button>
@@ -686,11 +699,12 @@ export function OrderWorkspace({ id, onBack }: { id: number; onBack: () => void 
                           onCancel={() => { shipRef.current = null; setShipOpen(false); }} />
               </>
             )}
-            {!st && <Muted>거래명세서를 발급하면 출하를 기록할 수 있습니다.</Muted>}
           </section>
         ))}
         <ErrorBox error={err} />
       </div>
+
+      <SplitBar split={split} label="수주 진행과 AI 대화 폭 조절" />
 
       {/* 오른쪽: AI 와 대화 */}
       <aside className="flex flex-col overflow-hidden rounded-xl border border-border bg-surface lg:sticky lg:top-4 lg:h-[calc(100svh-2rem)]">
@@ -815,10 +829,14 @@ function TermsEditor({ deal, busy, onSave }: { deal: DealRow; busy: boolean; onS
   }
   return (
     <div className="flex flex-col gap-2">
-      <table className="w-full border-collapse">
+      {/* 칸 폭을 고정 — 좁은 칸에서 머리글이 세로로 쪼개지지 않게(사용자 2026-10-23). 금액 = 공급가액 */}
+      <table className="w-full table-fixed border-collapse">
+        <colgroup><col className="w-[60px]" /><col className="w-[80px]" /><col /><col className="w-[150px]" /><col className="w-[104px]" /></colgroup>
         <thead>
-          <tr className="border-b border-border text-left text-foreground-muted">
-            {["구분", "비율(%)", "시점", "예정 입금일", "금액(공급가액)"].map((h) => <th key={h} className="py-1 pr-1.5 font-semibold">{h}</th>)}
+          <tr className="border-b border-border text-left text-[12px] text-foreground-muted">
+            {["구분", "비율(%)", "시점", "예정 입금일", "금액"].map((h) => (
+              <th key={h} className={cn("whitespace-nowrap py-1.5 pr-1.5 font-bold", h === "금액" && "text-right")} title={h === "금액" ? "공급가액 기준" : undefined}>{h}</th>
+            ))}
           </tr>
         </thead>
         <tbody>
@@ -828,20 +846,20 @@ function TermsEditor({ deal, busy, onSave }: { deal: DealRow; busy: boolean; onS
             const amt = amountOf(r);
             return (
               <tr key={r.label} className={cn("border-b border-border/60", off && "text-foreground-subtle")}>
-                <td className="w-24 py-1 pr-1.5 font-semibold">{r.label}{!r.fixed && <span className="ml-1 text-[11px] font-normal text-foreground-subtle">(예전)</span>}</td>
-                <td className="w-24 py-1 pr-1.5">
+                <td className="py-1.5 pr-1.5 font-bold">{r.label}{!r.fixed && <span className="ml-1 text-[11px] font-normal text-foreground-subtle">(예전)</span>}</td>
+                <td className="py-1.5 pr-1.5">
                   <input value={r.pct} disabled={locked} inputMode="decimal" placeholder="0" aria-label={`${r.label} 비율`}
-                         onChange={(e) => setRow(i, { pct: e.target.value.replace(/[^\d.]/g, "") })} className={cn(INPUT, "h-8 text-right")} />
+                         onChange={(e) => setRow(i, { pct: e.target.value.replace(/[^\d.]/g, "") })} className={cn(HEAD_FIELD, "text-right")} />
                 </td>
-                <td className="w-32 py-1 pr-1.5">
+                <td className="py-1.5 pr-1.5">
                   <input value={r.when} disabled={off} maxLength={30} placeholder="예: 발주 시" aria-label={`${r.label} 시점`}
-                         onChange={(e) => setRow(i, { when: e.target.value })} className={cn(INPUT, "h-8")} />
+                         onChange={(e) => setRow(i, { when: e.target.value })} className={HEAD_FIELD} />
                 </td>
-                <td className="w-36 py-1 pr-1.5">
+                <td className="py-1.5 pr-1.5">
                   <input type="date" value={r.expected_date} disabled={off} aria-label={`${r.label} 예정 입금일`}
-                         onChange={(e) => setRow(i, { expected_date: e.target.value })} className={cn(INPUT, "h-8")} />
+                         onChange={(e) => setRow(i, { expected_date: e.target.value })} className={HEAD_FIELD} />
                 </td>
-                <td className="py-1 pr-1.5 text-right tabular-nums">
+                <td className="py-1.5 text-right font-bold tabular-nums">
                   {locked ? <span className="mr-2 text-[11px] text-emerald-700 dark:text-emerald-300">입금 확인됨</span> : null}
                   {amt != null ? won(amt) : <Muted>-</Muted>}
                 </td>
@@ -912,9 +930,10 @@ export function CompletionDialog({ deals, onClose }: { deals: DealRow[]; onClose
 }
 
 function Lab({ label, children, wide }: { label: string; children: React.ReactNode; wide?: boolean }) {
-  return <label className={cn("flex flex-col gap-1", wide && "md:col-span-3")}><span className="text-[11.5px] text-foreground-muted">{label}</span>{children}</label>;
+  return <label className={cn("flex min-w-0 flex-col gap-1.5", wide && "md:col-span-3")}><span className="text-[12.5px] font-semibold text-foreground-muted">{label}</span>{children}</label>;
 }
 
+/** 묶음 머리 — 번호 배지 + 제목(견적서 머리와 같은 모양) */
 function UserBubble({ text }: { text: string }) {
   return (
     <div className="flex justify-end">

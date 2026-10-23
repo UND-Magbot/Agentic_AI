@@ -805,10 +805,9 @@ async def reset_to_quote(db: AsyncSession, deal_id: int, user_id: int | None) ->
 
 async def set_terms(db: AsyncSession, deal_id: int, user_id: int | None, raw: list[dict], *, admin: bool = True) -> None:
     """결제 조건(선금·중도금·잔금 %·시점·예정 입금일) 저장 — 사용자 2026-10-08. 이미 확인한 회차의 % 는 바꾸지 않는다.
-    입금 예정일이 지난 회차의 예정일은 관리자만 바꾼다(admin=False 면 거절 — 일반 직원은 연장 요청, 사용자 2026-10-13)."""
+    입금 예정일이 지난 회차의 예정일은 관리자만 바꾼다(admin=False 면 거절 — 일반 직원은 연장 요청, 사용자 2026-10-13).
+    거래명세서 발급 전에도 정할 수 있다 — 수주 진행 칸은 순서대로 안내만 하고 막지 않는다(사용자 2026-10-23)."""
     d = await _lock(db, deal_id)
-    if not d.get("statement"):
-        raise DealError("거래명세서를 먼저 발급해 주세요.")
     try:
         ts = flow.clean_terms(raw)
     except ValueError as e:
@@ -887,7 +886,8 @@ def _ship_entry(d: dict, p: dict, forced: bool) -> dict:
     """출하 입력 → 출하 기록 한 줄(추가·수정 공용)."""
     tracking = [t for t in re.split(r"[,\s]+", p.get("tracking") or "") if t]
     # 제품별 출하 줄(사용자 2026-10-07: 제품마다 사진) — 예전 출하 시트처럼 품목·수량 글도 함께 남긴다
-    lines = [{"name": ln["name"], "qty": ln.get("qty"), "qty_text": ln.get("qty_text") or None, "photos": list(ln.get("photos") or [])}
+    lines = [{"name": ln["name"], "qty": ln.get("qty"), "qty_text": ln.get("qty_text") or None, "photos": list(ln.get("photos") or []),
+              **({"line_no": ln["line_no"]} if ln.get("line_no") is not None else {})}
              for ln in p.get("lines") or [] if str(ln.get("name") or "").strip()]
     items_text = p.get("items") or "\n".join(
         f"{ln['name']} {ln['qty_text']}" if ln.get("qty_text") else f"{ln['name']} × {ln['qty']:g}" if ln.get("qty") else ln["name"]
@@ -908,8 +908,9 @@ async def update_shipment(db: AsyncSession, deal_id: int, user_id: int | None, i
     if not 0 <= index < len(d["shipments"]):
         raise DealError("고칠 출하 기록이 없습니다.", 404)
     old = d["shipments"][index]
+    # 구분(판매·대여 등)은 처음 값 그대로 — 고치는 화면은 구분 칸이 없다(사용자 2026-10-23 상세 탭 출하 고치기)
     entry = {**_ship_entry(d, p, bool(old.get("forced"))), "owner": old.get("owner") or d["owner"],
-             "photos": old.get("photos") or [], "source": old.get("source")}
+             "photos": old.get("photos") or [], "source": old.get("source"), "purpose": old.get("purpose") or "판매"}
     shipments = list(d["shipments"])
     shipments[index] = entry
     await _save(db, deal_id, shipments=shipments)
@@ -928,10 +929,10 @@ async def update_shipment(db: AsyncSession, deal_id: int, user_id: int | None, i
 async def add_shipment(db: AsyncSession, deal_id: int, user_id: int | None, p: dict) -> None:
     """출하 기록 — 입금 확인과 상관없이 언제든(사용자 2026-10-08: 입금 확인 전 출하 막기·예외 체크 없앰)."""
     d = await _lock(db, deal_id)
-    # 출하 전에 수주 판의 제품 시리얼을 다 적어야 한다(사용자 2026-10-19 — 시리얼 없는 품목은 '특주'·'실주'처럼)
+    # 출하 전에 이 출하로 나가는 품목의 S/N 을 적어야 한다(사용자 2026-10-19·10-23 — S/N 없는 품목은 '특주'·'실주'처럼)
     from . import units
 
-    issue = await units.check_before_ship(db, d) if d["kind"] == "quote" else None
+    issue = await units.check_before_ship(db, d, p) if d["kind"] == "quote" else None
     entry = _ship_entry(d, p, False)
     fields: dict[str, Any] = {"shipments": d["shipments"] + [entry]}
     if d["kind"] == "quote" and not d["won"]:

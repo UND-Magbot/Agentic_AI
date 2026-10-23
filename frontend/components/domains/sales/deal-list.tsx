@@ -140,13 +140,13 @@ export function DealList({ data, biz = "sale", initialOpenId = null, onRefresh, 
   });
 
   return (
-    <div className="mx-auto w-full max-w-[1400px] px-4 pb-16 pt-6 md:px-6">
+    // 회사 제품 추천 화면의 탭 패널 안에 들어간다 — 제목은 화면 머리가 보여 주므로 여기는 요약 줄만(사용자 2026-10-23)
+    <div className="w-full pb-2">
       <header className="mb-4 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-[20px] font-bold tracking-tight">{biz === "rental" ? "제품 대여 관리" : "제품 판매 관리"}</h1>
-          <p className="mt-1 text-[12.5px] text-foreground-muted">
+          <p className="text-[12.5px] text-foreground-muted">
             {biz === "rental"
-              ? "대여 견적서(견적서 수기 작성 → 제품 대여)로 낸 건 — 견적 → 수주 → 시리얼 등록(R 대여) → 출하를 관리하고, 대여 기간·월 납입금을 함께 봅니다."
+              ? "대여 견적서(견적서 수기 작성 → 제품 대여)로 낸 건 — 견적 → 수주 → 출하(품목마다 S/N 등록, R 대여)를 관리하고, 대여 기간·월 납입금을 함께 봅니다."
               : "제품 추천 확정 → 견적 → 수주 → 거래명세서 발급·입금 확인 → 출하를 한 건씩 관리합니다."} (전체 {data.counts.total}건) · 기준일 {data.today}
             · 금액은 공급가액 · 새로 만든 건이 위
           </p>
@@ -235,7 +235,8 @@ export function DealList({ data, biz = "sale", initialOpenId = null, onRefresh, 
                 </th>
               )}
               {["프로젝트", "번호", "담당", "최근 견적", "공급가액", "단계", "입금", "출하", "알림"].map((h) => (
-                <th key={h} className={cn("whitespace-nowrap px-3 py-2 font-semibold", h === "공급가액" && "text-right")}>{h}</th>
+                <th key={h} className={cn("whitespace-nowrap px-3 py-2 font-semibold", h === "공급가액" && "text-right")}
+                    data-deal-col={h === "담당" ? "owner" : undefined}>{h}</th>
               ))}
             </tr>
           </thead>

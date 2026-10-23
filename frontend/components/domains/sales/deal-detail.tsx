@@ -9,15 +9,15 @@ import { DownloadDialog, PreviewDialog, savedContact } from "@/components/domain
 import { Icon } from "@/components/shared/ui/icon";
 import { QuoteUploadDialog } from "@/components/domains/sales/quote-upload-dialog";
 import { DealAsIntake } from "@/components/domains/sales/product-units-tab";
-import { SerialConfirmDialog, SerialRequiredDialog, UnitRegisterDialog } from "@/components/domains/sales/unit-register";
+import { ShipForm, shipmentDraft } from "@/components/domains/sales/deal-flow";
+import { SnButton, SnPanel, flatName, loadSnView, shipmentSnLines } from "@/components/domains/sales/unit-register";
 import { ACTION_LABEL, Field, INPUT, Muted, StageChip, UnitStateBadge, dealRequest, eventDetail, quoteVer, shortDate, stamp, todayIso, won } from "@/components/domains/sales/deal-format";
-import type { ApprovalAdmin, ApprovalRequest, DealEvent, DealQuoteDoc, DealRow, DealShipment, PoCompare, ProductUnit } from "@/lib/shared/sales-deals";
+import type { ApprovalAdmin, ApprovalRequest, DealEvent, DealRow, IssueUnits, DealShipment, PoCompare, ProductUnit } from "@/lib/shared/sales-deals";
 import { cn } from "@/lib/shared/utils";
 
 const STEPS = ["제품 추천 확정", "견적", "수주", "거래명세서", "출하", "입금 완료"] as const;
 // 대여 건 진행(사용자 2026-10-22) — 출하 = 대여 시작, 회수까지
 const RENTAL_STEPS = ["견적", "수주", "거래명세서", "대여 중(출하)", "회수 완료", "입금 완료"] as const;
-const CARRIERS = ["로젠택배", "경동택배", "직납", "배차", "기타"];
 
 
 type Act = (path: string, body: unknown) => Promise<boolean>;
@@ -44,10 +44,6 @@ export function DealDetail({ row, admin = false, onClose, onChanged, onMeeting, 
   const [meetingOpen, setMeetingOpen] = useState(false);
   /** 지금 AI 가 품목을 대조 중인 발주서 순번 */
   const [comparing, setComparing] = useState<number | null>(null);
-  // 제품 시리얼(사용자 2026-10-19) — 경고창을 띄울 견적서 · 수주 진행 전 등록 안내 · 등록 화면(견적서 판)
-  const [serialConfirm, setSerialConfirm] = useState<DealQuoteDoc | null>(null);
-  const [serialAsk, setSerialAsk] = useState(false);
-  const [serialFor, setSerialFor] = useState<{ quoteId: number; revision: number } | null>(null);
   const reload = () => { dealRequest(`/${deal.id}`).then(setDeal).catch(() => {}); onChanged(); };
 
   // 리스트 행에는 변경 이력이 없어 한 건을 다시 받는다
@@ -61,14 +57,11 @@ export function DealDetail({ row, admin = false, onClose, onChanged, onMeeting, 
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       if (photo) setPhoto(null);
-      else if (serialFor) setSerialFor(null);
-      else if (serialConfirm) setSerialConfirm(null);
-      else if (serialAsk) setSerialAsk(false);
       else onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [photo, onClose, serialFor, serialConfirm, serialAsk]);
+  }, [photo, onClose]);
 
   const act: Act = async (path, body) => {
     setBusy(true);
@@ -132,11 +125,24 @@ export function DealDetail({ row, admin = false, onClose, onChanged, onMeeting, 
     : [!!deal.proposal_id, !!deal.quote, !!deal.won, !!deal.statement, deal.shipped, deal.paid_full];
   const isShipOnly = deal.kind === "shipment_only";
 
+  // 패널 폭 — 리스트의 [담당] 칸 오른쪽 끝까지 넓힌다(사용자 2026-10-23). 화면이 좁아 그보다 작으면 원래 680px
+  const [panelW, setPanelW] = useState<number | null>(null);
+  useEffect(() => {
+    const fit = () => {
+      const th = document.querySelector('[data-deal-col="owner"]');
+      setPanelW(th ? Math.max(680, Math.round(window.innerWidth - th.getBoundingClientRect().right)) : null);
+    };
+    fit();
+    window.addEventListener("resize", fit);
+    return () => window.removeEventListener("resize", fit);
+  }, []);
+
   return (
     <AdminCtx.Provider value={admin}>
     <div className="fixed inset-0 z-40 flex justify-end bg-black/25" onClick={onClose}>
       <aside role="dialog" aria-label={`${deal.display_no ?? deal.deal_no ?? "번호 미부여"} 상세`} onClick={(e) => e.stopPropagation()}
-             className="scroll-thin h-full w-full max-w-[680px] overflow-y-auto bg-background shadow-2xl">
+             className="scroll-thin h-full w-full max-w-[680px] overflow-y-auto bg-background shadow-2xl"
+             style={panelW ? { maxWidth: panelW } : undefined}>
         <div className="sticky top-0 z-10 border-b border-border bg-background/95 px-5 py-4 backdrop-blur">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
@@ -203,10 +209,18 @@ export function DealDetail({ row, admin = false, onClose, onChanged, onMeeting, 
           {!isShipOnly && !deal.dropped && <WonBlock deal={deal} busy={busy} act={act} uploadPo={uploadPo} comparing={comparing} comparePo={comparePo} />}
           {isRental && deal.won && !deal.dropped && <RentalReturn deal={deal} busy={busy} act={act} />}
           {!isShipOnly && deal.won && onOrder && deal.kind !== "sales_only" && (
-            <button type="button" onClick={() => (deal.units && deal.units.missing > 0 ? setSerialAsk(true) : onOrder(deal.id))}
+            <button type="button" onClick={() => onOrder(deal.id)}
                     className="-mb-2 flex items-center justify-between rounded-xl border border-accent/50 bg-accent/[0.06] px-4 py-2.5 text-left hover:bg-accent/10">
+              {/* 수주 확정 뒤에는 이미 진행 중 — 시작 버튼처럼 보이지 않게 지금 상태를 붙인다(사용자 2026-10-23) */}
               <span>
-                <b className="text-[13.5px] text-accent">AI 와 수주 진행 →</b>
+                <b className="flex flex-wrap items-center gap-2 text-[13.5px] text-accent">
+                  {orderDone(deal) ? "수주 진행 기록 보기 →" : "AI 와 수주 진행 →"}
+                  <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-px text-[11px] font-bold",
+                    orderDone(deal) ? "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300" : "bg-accent/12 text-accent")}>
+                    {!orderDone(deal) && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />}
+                    {orderDone(deal) ? "완료" : "현재 진행 중"}
+                  </span>
+                </b>
                 <span className="block text-[12px] text-foreground-muted">{orderGuide(deal)}</span>
               </span>
             </button>
@@ -223,8 +237,7 @@ export function DealDetail({ row, admin = false, onClose, onChanged, onMeeting, 
 
           {deal.quote && <QuoteTable deal={deal} />}
           {(!!deal.quotes?.length || (!!deal.quote && !deal.imported && deal.kind !== "shipment_only")) && (
-            <QuoteDocs deal={deal} onQuote={onQuote} onUploaded={(d) => { setDeal(d); onChanged(); }} onSerial={setSerialConfirm}
-                       onSerialOpen={(quoteId, revision) => setSerialFor({ quoteId, revision })} />
+            <QuoteDocs deal={deal} onQuote={onQuote} onUploaded={(d) => { setDeal(d); onChanged(); }} />
           )}
           {deal.kind === "recommend" && !deal.quotes?.length && !deal.dropped && deal.recommendation_id && onQuote && (
             <StartQuote recommendationId={deal.recommendation_id} onQuote={onQuote} />
@@ -272,22 +285,6 @@ export function DealDetail({ row, admin = false, onClose, onChanged, onMeeting, 
 
       {meetingOpen && <DealMeetingDialog deal={deal} onClose={() => setMeetingOpen(false)}
                                          onSaved={(row) => { setDeal({ ...deal, ...row }); onChanged(); }} />}
-      {/* 제품 시리얼(사용자 2026-10-19) — 창 안 클릭이 상세 패널 닫기로 번지지 않게 */}
-      <div onClick={(e) => e.stopPropagation()}>
-        {serialConfirm && (
-          <SerialConfirmDialog deal={deal} quote={serialConfirm} onCancel={() => setSerialConfirm(null)}
-                               onConfirm={(revision) => { setSerialFor({ quoteId: serialConfirm.id, revision }); setSerialConfirm(null); }} />
-        )}
-        {serialAsk && (
-          <SerialRequiredDialog deal={deal} onCancel={() => setSerialAsk(false)}
-                                onLater={() => { setSerialAsk(false); onOrder?.(deal.id); }}
-                                onMove={() => { setSerialAsk(false); if (deal.units) setSerialFor({ quoteId: deal.units.quote_id, revision: deal.units.revision }); }} />
-        )}
-        {serialFor && (
-          <UnitRegisterDialog dealId={deal.id} quoteId={serialFor.quoteId} revision={serialFor.revision}
-                              onClose={() => setSerialFor(null)} onSaved={reload} />
-        )}
-      </div>
       {photo && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-black/80 p-4" onClick={(e) => { e.stopPropagation(); setPhoto(null); }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -503,6 +500,12 @@ function TermsView({ deal, busy, act }: { deal: DealRow; busy: boolean; act: Act
 }
 
 /** 영업 건 상세의 수주 진행 안내 한 줄 — 단계 버튼은 수주 진행 탭에서만(사용자 2026-10-07: 상세에 같이 있으면 지저분). */
+/** 수주 뒤 절차(거래명세서·결제·입금·출하)가 다 끝났는지 */
+function orderDone(deal: DealRow): boolean {
+  const steps = deal.flow?.steps ?? [];
+  return steps.length > 0 && steps.every((s) => s.done);
+}
+
 function orderGuide(deal: DealRow): string {
   const steps = deal.flow?.steps ?? [];
   const next = steps.find((s) => s.ready);
@@ -605,7 +608,7 @@ function RentalReturn({ deal, busy, act }: { deal: DealRow; busy: boolean; act: 
             <p className="mt-1 text-[11.5px] text-foreground-subtle">
               {asking === "start"
                 ? "고객에게서 제품을 가져오기 시작하면 누르세요. 단계가 '회수 중'이 됩니다."
-                : "제품을 다 받았으면 누르세요. 단계가 '회수 완료'가 되고, 이 건 시리얼의 출하 상태가 '회수'로 바뀌어 'AI 대여 나간 제품' 목록에서 빠집니다."}
+                : "제품을 다 받았으면 누르세요. 단계가 '회수 완료'가 되고, 이 건 S/N의 출하 상태가 '회수'로 바뀌어 'AI 대여 나간 제품' 목록에서 빠집니다."}
             </p>
           </FormBox>
         )}
@@ -943,25 +946,20 @@ function PaymentBlock({ deal, busy, act }: { deal: DealRow; busy: boolean; act: 
 function ShipmentBlock({ deal, busy, act, onPhoto, onReload }: {
   deal: DealRow; busy: boolean; act: Act; onPhoto: (n: string) => void; onReload: () => void;
 }) {
-  const last = deal.shipments[deal.shipments.length - 1];
   const [open, setOpen] = useState(false);
-  const [f, setF] = useState({ date: todayIso(), carrier: CARRIERS[0], tracking: "", items: "", qty_text: "",
-    receiver: "", address: "", purpose: "판매" });
-  const set = (patch: Partial<typeof f>) => setF((p) => ({ ...p, ...patch }));
-
-  const start = () => {
-    // 받는 사람·주소는 이 건의 직전 출하에서 가져온다
-    setF({ date: todayIso(), carrier: last?.carrier ?? CARRIERS[0], tracking: "", items: "", qty_text: "",
-      receiver: last?.receiver ?? "", address: last?.address ?? "", purpose: "판매" });
-    setOpen(true);
-  };
-  const save = async () => { if (await act("shipments", f)) setOpen(false); };
+  const [editing, setEditing] = useState<number | null>(null);
   // [A/S 접수] — 이 건에서 출하한 시리얼을 골라 [제품·A/S] 탭과 같은 접수서로(사용자 2026-10-22)
   const [asOpen, setAsOpen] = useState(false);
   const shipped = (deal.unit_list ?? []).filter((u) => u.shipment_index != null);
-  // 수주 판에서 아직 안 나간 시리얼(서버가 이 출하에 묶는 것과 같은 범위)
-  const pending = (deal.unit_list ?? []).filter((u) => u.shipment_index == null && deal.units
-    && u.quote_id === deal.units.quote_id && u.quote_revision === deal.units.revision);
+  // 이미 남긴 출하 기록에도 품목마다 S/N 등록(사용자 2026-10-23) — 출하 카드 안에서, 저장하면 그 출하로 묶임
+  const [view, setView] = useState<IssueUnits | null>(null);
+  const src = deal.units;
+  useEffect(() => {
+    if (!src || !deal.shipments.length) return;
+    let alive = true;
+    loadSnView(deal.id, src).then((v) => { if (alive) setView(v); }).catch(() => {});
+    return () => { alive = false; };
+  }, [deal.id, src, deal.shipments.length]);
 
   return (
     <Section title={`출하${deal.shipments.length ? ` ${deal.shipments.length}회` : ""}`}
@@ -971,143 +969,173 @@ function ShipmentBlock({ deal, busy, act, onPhoto, onReload }: {
                  <Icon name="plus" className="h-3.5 w-3.5" /> A/S 접수
                </button>
              )}
-             action={!open && deal.kind !== "shipment_only" && !deal.pay_case && <AddBtn onClick={start} disabled={busy}>+ 출하 기록</AddBtn>}>
+             action={!open && editing === null && deal.kind !== "shipment_only" && !deal.pay_case && <AddBtn onClick={() => setOpen(true)} disabled={busy}>+ 출하 기록</AddBtn>}>
       {asOpen && <DealAsIntake units={shipped} onDone={(changed) => { setAsOpen(false); if (changed) onReload(); }} />}
       {deal.shipments.length === 0 && !open && (
         <Muted>{deal.shipped ? "비고에 '출하완료'만 적혀 있음(출하시트에서 짝을 찾지 못함)" : "출하 기록 없음"}</Muted>
       )}
-      {deal.shipments.map((s, i) => (
-        <EntryCard key={i} onRemove={deal.kind === "shipment_only" ? undefined : () => act("remove", { kind: "shipments", index: i })} busy={busy}>
+      {deal.shipments.map((s, i) => editing === i ? (
+        // 남긴 출하 기록 고치기(사용자 2026-10-23) — 품목 이름·수량·사진·배송 정보·S/N, 수주 진행과 같은 작성 칸
+        <div key={i} className="mb-2 rounded-xl border border-accent/40 bg-accent/[0.02] p-3">
+          <ShipForm deal={deal} busy={busy} act={act} initial={shipmentDraft(s)} editIndex={i}
+                    onSaved={() => { setEditing(null); onReload(); }} onCancel={() => setEditing(null)} />
+        </div>
+      ) : (
+        <EntryCard key={i} onRemove={deal.kind === "shipment_only" ? undefined : () => act("remove", { kind: "shipments", index: i })}
+                   onEdit={deal.kind === "shipment_only" || editing !== null || open ? undefined : () => setEditing(i)} busy={busy}>
           <ShipmentInfo s={s} dealId={deal.id} onPhoto={onPhoto}
                         units={(deal.unit_list ?? []).filter((u) => u.shipment_index === i)} />
+          {view && <ShipmentSn dealId={deal.id} view={view} lines={s.lines ?? []} index={i} busy={busy}
+                               onSaved={(v) => { setView(v); onReload(); }} />}
         </EntryCard>
       ))}
+      {/* 출하 기록 — 출하 목록·수주 진행과 같은 작성 칸. 품목은 수주 판에서 딸려 오고, 품목마다 [S/N 등록](사용자 2026-10-23) */}
       {open && (
-        <FormBox onCancel={() => setOpen(false)} onSave={save} busy={busy}
-                 canSave={!!f.date && !busy}>
-          <div className="grid gap-2 md:grid-cols-3">
-            <Field label="출하일"><input type="date" value={f.date} onChange={(e) => set({ date: e.target.value })} className={INPUT} /></Field>
-            <Field label="배송">
-              <select value={f.carrier} onChange={(e) => set({ carrier: e.target.value })} className={INPUT}>
-                {CARRIERS.map((c) => <option key={c}>{c}</option>)}
-              </select>
-            </Field>
-            <Field label="용도">
-              <select value={f.purpose} onChange={(e) => set({ purpose: e.target.value })} className={INPUT}>
-                {["판매", "개발", "샘플", "기타"].map((c) => <option key={c}>{c}</option>)}
-              </select>
-            </Field>
-            <Field label="운송장 번호 (여러 개는 쉼표로)" wide><input value={f.tracking} onChange={(e) => set({ tracking: e.target.value })} className={INPUT} /></Field>
-            <Field label="수량"><input value={f.qty_text} onChange={(e) => set({ qty_text: e.target.value })} className={INPUT} placeholder="예: 1set" /></Field>
-            <Field label="출하 품목" wide>
-              <textarea value={f.items} onChange={(e) => set({ items: e.target.value })} rows={2} className={cn(INPUT, "h-auto py-2")} />
-            </Field>
-            <Field label="받는 사람·연락처"><input value={f.receiver} onChange={(e) => set({ receiver: e.target.value })} className={INPUT} /></Field>
-            <Field label="주소" wide><input value={f.address} onChange={(e) => set({ address: e.target.value })} className={INPUT} /></Field>
-          </div>
-          {/* 저장하면 수주 판에서 아직 안 나간 시리얼이 모두 이 출하로 묶인다 — 무엇이 나가는지 상태 코드와 함께(사용자 2026-10-22) */}
-          {pending.length > 0 && (
-            <div className="mt-2 rounded-lg border border-border px-2.5 py-2 text-[12.5px]">
-              <div className="mb-1 font-semibold text-foreground-muted">이 출하로 나가는 제품 시리얼 {pending.length}개 <span className="font-normal text-foreground-subtle">· 출하일부터 무상 기간이 시작됩니다</span></div>
-              <ul className="flex flex-col gap-1">
-                {pending.map((u) => (
-                  <li key={u.id} className="flex min-w-0 items-center gap-2">
-                    <span className="min-w-0 flex-1 truncate">{u.part_name}</span>
-                    <span className={cn("whitespace-nowrap font-mono", u.no_serial ? "text-foreground-subtle" : "text-foreground")}>{u.serial}</span>
-                    <UnitStateBadge code={u.purpose} />
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </FormBox>
+        <div className="rounded-xl border border-border p-3">
+          <ShipForm deal={deal} busy={busy} act={act} onSaved={() => setOpen(false)} onCancel={() => setOpen(false)} />
+        </div>
       )}
     </Section>
+  );
+}
+
+/** 출하 카드 안 품목별 [S/N 등록](사용자 2026-10-23) — 이미 나간 건도 나중에 적는다. 다 적으면 버튼이 초록색 */
+function ShipmentSn({ dealId, view, lines, index, busy, onSaved }: {
+  dealId: number; view: IssueUnits; lines: NonNullable<DealShipment["lines"]>; index: number; busy: boolean;
+  onSaved: (v: IssueUnits) => void;
+}) {
+  const [open, setOpen] = useState<number | null>(null);
+  const rows = shipmentSnLines(view, lines, index);
+  if (!rows.length) return null;
+  const short = rows.filter((r) => r.line.units.filter((u) => u.shipment_index === index).length < r.need).length;
+  return (
+    <div className="mb-2 rounded-lg border border-border px-2.5 py-2">
+      <div className="mb-1 flex flex-wrap items-center gap-2 text-[12px]">
+        <span className="font-semibold text-foreground-muted">품목별 S/N</span>
+        {short > 0
+          ? <span className="text-red-700 dark:text-red-300">S/N 이 빈 품목 {short}개 — 오른쪽 [S/N 등록]으로 적어 주세요</span>
+          : <span className="text-emerald-700 dark:text-emerald-300">모두 적었습니다</span>}
+      </div>
+      <ul className="flex flex-col gap-1.5">
+        {rows.map(({ line, need }) => (
+          <li key={line.line_no}>
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="min-w-0 flex-1 truncate">{flatName(line.name)}</span>
+              <span className="shrink-0 text-foreground-muted">× {need}</span>
+              <SnButton count={line.units.filter((u) => u.shipment_index === index).length} need={need} open={open === line.line_no}
+                        disabled={busy} onClick={() => setOpen(open === line.line_no ? null : line.line_no)} />
+            </div>
+            {open === line.line_no && (
+              <SnPanel dealId={dealId} view={view} line={line} need={need} editIndex={index} bindIndex={index}
+                       onSaved={onSaved} onClose={() => setOpen(null)} />
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
 function ShipmentInfo({ s, dealId, onPhoto, units = [] }: {
   s: DealShipment; dealId: number; onPhoto: (name: string) => void; units?: ProductUnit[];
 }) {
+  // 품목 줄마다 그 줄로 나간 S/N 을 바로 아래에(사용자 2026-10-23) — 줄 번호로, 예전 기록은 이름으로 짝. 짝이 없는 S/N 은 맨 아래 따로
+  const lines = s.lines ?? [];
+  const ofLine = (ln: (typeof lines)[number]) =>
+    units.filter((u) => (ln.line_no != null && u.line_no != null ? u.line_no === ln.line_no : flatName(u.line_name || u.part_name) === flatName(ln.name)));
+  const matched = new Set(lines.flatMap((ln) => ofLine(ln).map((u) => u.id)));
+  const rest = units.filter((u) => !matched.has(u.id));
+  const snList = (xs: ProductUnit[]) => (
+    <ul className="mt-2 flex flex-col gap-1">
+      {xs.map((u) => (
+        <li key={u.id} className="flex min-w-0 items-center gap-2 rounded-lg bg-foreground/[0.03] px-2.5 py-1.5">
+          <span className="text-[10.5px] font-bold text-foreground-subtle">S/N</span>
+          <span className={cn("whitespace-nowrap font-mono text-[12.5px]", u.no_serial ? "text-foreground-subtle" : "font-semibold text-foreground")}>{u.serial}</span>
+          {flatName(u.part_name) !== flatName(u.line_name || "") && <span className="min-w-0 flex-1 truncate text-[12px] text-foreground-muted">{u.part_name}</span>}
+          <span className="ml-auto"><UnitStateBadge code={u.purpose} /></span>
+        </li>
+      ))}
+    </ul>
+  );
+  const photoRow = (photos: string[], url: (p: string) => string, onOpen: (p: string) => void, alt: string, size = "h-16 w-16") => (
+    <div className="mt-2 flex flex-wrap gap-1.5">
+      {photos.map((p) => (
+        <button key={p} type="button" onClick={() => onOpen(p)} className="overflow-hidden rounded-lg ring-1 ring-border hover:ring-accent">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={url(p)} alt={alt} className={cn(size, "object-cover")} loading="lazy" />
+        </button>
+      ))}
+    </div>
+  );
+  const info: [string, string | null | undefined][] = [
+    ["품목", lines.length ? null : s.items],
+    ["수량", s.qty_text],
+    ["금액", s.amount != null ? `${won(s.amount)}원` : null],
+    ["운송장", s.tracking.length ? s.tracking.join(", ") : null],
+    ["받는 사람", s.receiver],
+    ["주소", s.address],
+    ["담당", s.owner],
+  ];
   return (
-    <>
-      <div className="mb-2 flex flex-wrap items-center gap-2">
-        <b>{s.date ?? s.date_text ?? "출하일 미기재"}</b>
+    <div className="flex flex-col gap-3">
+      {/* 오른쪽 위 [고치기]·[잘못 입력함] 자리만 비운다 */}
+      <div className="flex flex-wrap items-center gap-2 pr-44">
+        <b className="text-[14px] font-extrabold">{s.date ?? s.date_text ?? "출하일 미기재"}</b>
         {s.date_guessed && <span className="text-[11.5px] text-sky-700 dark:text-sky-300">(연도 추정)</span>}
-        {s.purpose && <span className="rounded bg-foreground/8 px-1.5 text-[11.5px]">{s.purpose}</span>}
-        {s.carrier && <span className="text-foreground-muted">{s.carrier}</span>}
+        {s.purpose && <span className="rounded-md bg-foreground/8 px-1.5 py-px text-[11.5px] font-semibold">{s.purpose}</span>}
+        {s.carrier && <span className="rounded-md border border-border px-1.5 py-px text-[11.5px] text-foreground-muted">{s.carrier}</span>}
+        {units.length > 0 && <span className="text-[12px] text-foreground-muted">S/N {units.length}개</span>}
         {s.forced && <span className="text-[11.5px] text-amber-700 dark:text-amber-300">입금 확인 전 출하</span>}
       </div>
-      {s.lines?.length ? (
-        <ul className="mb-2 flex flex-col gap-1.5">
-          {s.lines.map((ln, i) => (
-            <li key={i}>
-              <span className="font-medium">{ln.name}</span>{ln.qty_text ? <span className="text-foreground-muted"> {ln.qty_text}</span> : ln.qty != null && <span className="text-foreground-muted"> × {ln.qty}</span>}
-              {ln.photos.length > 0 ? (
-                <div className="mt-1 flex flex-wrap gap-1.5">
-                  {ln.photos.map((p) => {
-                    const url = `/api/sales-deals/${dealId}/ship-photos/${p}`;
-                    return (
-                      <button key={p} type="button" onClick={() => onPhoto(url)} className="overflow-hidden rounded-lg ring-1 ring-border hover:ring-accent">
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={url} alt={`${ln.name} 출하 사진`} className="h-20 w-20 object-cover" loading="lazy" />
-                      </button>
-                    );
-                  })}
+      {lines.length > 0 && (
+        <ul className="flex flex-col gap-2">
+          {lines.map((ln, i) => {
+            const sn = ofLine(ln);
+            return (
+              <li key={i} className="rounded-xl border border-border bg-surface-raised p-3">
+                <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                  <span className="text-[13.5px] font-semibold">{ln.name}</span>
+                  <span className="text-[12.5px] text-foreground-muted">{ln.qty_text ? ln.qty_text : ln.qty != null ? `× ${ln.qty}` : ""}</span>
+                  {ln.photos.length === 0 && <span className="ml-auto text-[11.5px] text-foreground-subtle">사진 없음</span>}
                 </div>
-              ) : <div className="text-[12px] text-foreground-subtle">사진 없음</div>}
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      {/* 이 출하로 나간 제품 시리얼과 상태 코드(사용자 2026-10-22) — 출하일부터 무상 기간 */}
-      {units.length > 0 && (
-        <div className="mb-2 rounded-lg border border-border px-2.5 py-2">
-          <div className="mb-1 text-[12px] font-semibold text-foreground-muted">나간 제품 시리얼 {units.length}개</div>
-          <ul className="flex flex-col gap-1">
-            {units.map((u) => (
-              <li key={u.id} className="flex min-w-0 items-center gap-2">
-                <span className="min-w-0 flex-1 truncate">{u.part_name}</span>
-                <span className={cn("whitespace-nowrap font-mono", u.no_serial ? "text-foreground-subtle" : "text-foreground")}>{u.serial}</span>
-                <UnitStateBadge code={u.purpose} />
+                {ln.photos.length > 0 && photoRow(ln.photos, (p) => `/api/sales-deals/${dealId}/ship-photos/${p}`,
+                                                  (p) => onPhoto(`/api/sales-deals/${dealId}/ship-photos/${p}`), `${ln.name} 출하 사진`)}
+                {sn.length > 0 && snList(sn)}
               </li>
-            ))}
-          </ul>
+            );
+          })}
+        </ul>
+      )}
+      {/* 품목 줄과 짝이 없는 S/N(세트로 묶은 출하·예전 기록) */}
+      {rest.length > 0 && (
+        <div className="rounded-xl border border-border bg-surface-raised p-3">
+          <div className="text-[12.5px] font-semibold text-foreground-muted">{lines.length ? "그 밖의 S/N" : "나간 제품 S/N"} {rest.length}개</div>
+          {snList(rest)}
         </div>
       )}
-      <Grid rows={[
-        ["품목", s.lines?.length ? null : s.items],
-        ["수량", s.qty_text],
-        ["금액", s.amount != null ? `${won(s.amount)}원` : null],
-        ["운송장", s.tracking.length ? s.tracking.join(", ") : null],
-        ["받는 사람", s.receiver],
-        ["주소", s.address],
-        ["담당", s.owner],
-      ]} />
-      {s.photos.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-2">
-          {s.photos.map((p) => (
-            <button key={p} type="button" onClick={() => onPhoto(p)} className="overflow-hidden rounded-lg ring-1 ring-border hover:ring-accent">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={`/api/sales-deals/photos/${p}`} alt="출하 사진" className="h-24 w-24 object-cover" loading="lazy" />
-            </button>
+      {info.some(([, v]) => v) && (
+        <dl className="grid grid-cols-[84px_minmax(0,1fr)] gap-x-3 gap-y-1.5 rounded-xl bg-foreground/[0.03] px-3.5 py-3">
+          {info.filter(([, v]) => v).map(([k, v]) => (
+            <Fragment key={k}>
+              <dt className="text-[12px] text-foreground-muted">{k}</dt>
+              <dd className="whitespace-pre-line break-words">{v}</dd>
+            </Fragment>
           ))}
-        </div>
+        </dl>
       )}
-    </>
+      {s.photos.length > 0 && photoRow(s.photos, (p) => `/api/sales-deals/photos/${p}`, onPhoto, "출하 사진", "h-24 w-24")}
+    </div>
   );
 }
 
 // ── 견적서 발행본(사용자 2026-10-07: 발행한 견적은 영업 건에서 관리, 견적서 탭은 작성 중인 것만) ──
 
-function QuoteDocs({ deal, onQuote, onUploaded, onSerial, onSerialOpen }: {
+function QuoteDocs({ deal, onQuote, onUploaded }: {
   deal: DealRow; onQuote?: (quoteId: number) => void; onUploaded: (d: DealRow) => void;
-  /** [제품 시리얼 등록] — 경고창부터(사용자 2026-10-19) */
-  onSerial: (q: DealQuoteDoc) => void;
-  /** 수주 판 등록 현황 줄의 [등록 →] — 수주 판이라 경고창 없이 바로 */
-  onSerialOpen: (quoteId: number, revision: number) => void;
 }) {
   const [saving, setSaving] = useState<{ quote: number; revision: number; fileName: string; title: string } | null>(null);
+  // 발행본 보기 — 거래명세서처럼 받지 않고 바로 확인(사용자 2026-10-23)
+  const [viewing, setViewing] = useState<{ quote: number; revision: number; title: string; sub: string } | null>(null);
   const [uploading, setUploading] = useState(false);
   return (
     <Section title="견적서">
@@ -1123,21 +1151,8 @@ function QuoteDocs({ deal, onQuote, onUploaded, onSerial, onSerialOpen }: {
         <p className="mb-2 rounded-lg bg-amber-500/10 px-3 py-1.5 text-[12.5px] text-amber-800 dark:text-amber-200">
           🔧 {deal.as_active ? `A/S 진행 중 ${deal.as_active}건` : ""}{deal.as_active && deal.as_open > deal.as_active ? " · " : ""}
           {deal.as_open > (deal.as_active ?? 0) ? `A/S 접수 ${deal.as_open - (deal.as_active ?? 0)}건` : ""} (전체 {deal.as_total}건)
-          — 내용은 [제품·A/S] 탭에서 시리얼로 확인하고, [A/S 들어감 확인]·[A/S 완료]로 진행을 바꿉니다.
+          — 내용은 [제품·A/S] 탭에서 S/N로 확인하고, [A/S 들어감 확인]·[A/S 완료]로 진행을 바꿉니다.
         </p>
-      )}
-      {deal.units && (
-        <div className={cn("mb-2 flex flex-wrap items-center gap-2 rounded-lg px-3 py-1.5 text-[12.5px]",
-          deal.units.missing > 0 ? "bg-amber-500/10 text-amber-800 dark:text-amber-200" : "bg-emerald-500/10 text-emerald-800 dark:text-emerald-200")}>
-          <span>
-            제품 시리얼 — <b className="font-mono">{deal.units.issue_no}</b> 기준 {deal.units.total}개 중 <b>{deal.units.done}개</b> 등록
-            {deal.units.missing > 0 ? " (출하 전에 모두 등록해야 합니다)" : ""}
-          </span>
-          <button type="button" onClick={() => onSerialOpen(deal.units!.quote_id, deal.units!.revision)}
-                  className="ml-auto font-semibold underline-offset-2 hover:underline">
-            {deal.units.missing > 0 ? "등록 →" : "보기·고치기 →"}
-          </button>
-        </div>
       )}
       {(deal.quotes ?? []).map((q) => (
         <div key={q.id} className="mb-2 rounded-xl border border-border p-3">
@@ -1149,13 +1164,6 @@ function QuoteDocs({ deal, onQuote, onUploaded, onSerial, onSerialOpen }: {
               <button type="button" onClick={() => onQuote(q.id)}
                       className="ml-auto rounded-lg border border-accent/50 px-2.5 py-1 text-[12px] font-semibold text-accent hover:bg-accent/5">
                 {q.status === "issued" ? "견적서 고치기 →" : "이어서 작성 →"}
-              </button>
-            )}
-            {q.issues.length > 0 && (
-              <button type="button" onClick={() => onSerial(q)}
-                      className={cn("rounded-lg border border-border px-2.5 py-1 text-[12px] font-semibold text-foreground-muted hover:text-foreground",
-                        !onQuote && "ml-auto")}>
-                제품 시리얼 등록
               </button>
             )}
           </div>
@@ -1174,6 +1182,11 @@ function QuoteDocs({ deal, onQuote, onUploaded, onSerial, onSerialOpen }: {
                   <span className="text-foreground-subtle">{h.issued_at.slice(0, 16).replace("T", " ")}</span>
                   <span>{h.currency === "USD" ? `$${h.total.toLocaleString("en-US")}` : `${won(h.total)}원`}</span>
                   <button type="button" className="ml-auto inline-flex items-center gap-1 font-semibold text-accent hover:underline"
+                          onClick={() => setViewing({ quote: q.id, revision: h.revision, title: "견적서",
+                                                      sub: `${h.issue_no ?? h.quote_no ?? q.quote_no ?? "견적서"} · v${h.revision + 1} · 발행 ${h.issued_at.slice(0, 10)}` })}>
+                    <Icon name="eye" className="h-3.5 w-3.5" /> 보기
+                  </button>
+                  <button type="button" className="inline-flex items-center gap-1 font-semibold text-accent hover:underline"
                           onClick={() => setSaving({ quote: q.id, revision: h.revision, fileName: h.file_name,
                                                      title: `${h.issue_no ?? h.quote_no ?? q.quote_no ?? "견적서"} 다시 다운로드` })}>
                     <Icon name="download" className="h-3.5 w-3.5" /> 다시 다운로드
@@ -1184,6 +1197,10 @@ function QuoteDocs({ deal, onQuote, onUploaded, onSerial, onSerialOpen }: {
           )}
         </div>
       ))}
+      {viewing && (
+        <PreviewDialog url={`/api/sales-deals/${deal.id}/quote-file?quote=${viewing.quote}&revision=${viewing.revision}&fmt=pdf`}
+                       title={viewing.title} sub={viewing.sub} onClose={() => setViewing(null)} />
+      )}
       {saving && (
         <DownloadDialog urlFor={(fmt) => `/api/sales-deals/${deal.id}/quote-file?quote=${saving.quote}&revision=${saving.revision}&fmt=${fmt}`}
                         fileName={saving.fileName} title={saving.title} onClose={() => setSaving(null)} />
@@ -1314,14 +1331,24 @@ function QuoteTable({ deal }: { deal: DealRow }) {
   );
 }
 
-function EntryCard({ children, onRemove, busy }: { children: React.ReactNode; onRemove?: () => void; busy: boolean }) {
+function EntryCard({ children, onRemove, onEdit, busy }: {
+  children: React.ReactNode; onRemove?: () => void; busy: boolean;
+  /** [고치기] — 누구나(지우기는 관리자만) */
+  onEdit?: () => void;
+}) {
   const [confirming, setConfirming] = useState(false);
   const admin = useContext(AdminCtx);
   return (
     <div className="relative mb-2 rounded-xl border border-border p-3">
-      {onRemove && admin && (
+      {(onEdit || (onRemove && admin)) && (
         <div className="absolute right-2 top-2 flex gap-1 text-[12px]">
-          {confirming ? (
+          {onEdit && !confirming && (
+            <button type="button" disabled={busy} onClick={onEdit}
+                    className="inline-flex items-center gap-1 rounded-lg border border-border-strong bg-surface-raised px-2 py-0.5 font-semibold text-foreground-muted hover:bg-foreground/5 hover:text-foreground">
+              <Icon name="edit" className="h-3 w-3" /> 고치기
+            </button>
+          )}
+          {!(onRemove && admin) ? null : confirming ? (
             <>
               <button type="button" disabled={busy} onClick={() => { setConfirming(false); onRemove(); }}
                       className="rounded px-2 py-0.5 font-semibold text-red-600 hover:bg-red-500/10">삭제</button>
