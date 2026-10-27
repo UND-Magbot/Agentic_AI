@@ -26,6 +26,12 @@ import openpyxl
 from ..finance.vendor_registry import normalize_vendor
 from .status import STAGES, derive
 
+# 엑셀 이관은 꺼 둔다(사용자 2026-10-27 — 견적·세금·수주 관리 시트·영업 출하시트는 이제 쓰지 않음).
+# 코드는 남겨 두었다 — 옛 데이터를 다시 넣을 일이 생기면 True 로 바꾸고 scripts/build_sales_deals_preview.py →
+# scripts/import_sales_deals.py 순서로 돌린다. parse_pay_terms·VAT_RATE·PARTIAL_RATIO 는 영업 건 기능이 같이 쓰므로 그대로 둔다.
+ENABLED = False
+DISABLED_MSG = "엑셀 이관은 꺼 두었습니다(backend/app/sales_deals/legacy_import.py 의 ENABLED)."
+
 BROKEN_CELL = "########"          # 열 너비가 좁아 날짜가 '#'로 저장된 칸(원본에 값이 남아 있지 않음)
 REVISION_WINDOW_DAYS = 45         # 같은 고객 견적이 이 기간 안에 이어지면 차수 후보
 SHIP_LOOKBACK_DAYS = 200          # 출하 ↔ 견적 연결 시 출하일 기준 이 기간 안의 견적만 후보

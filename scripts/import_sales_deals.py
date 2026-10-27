@@ -21,13 +21,16 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 from app.database import SessionLocal  # noqa: E402
 from app.migrations import _SALES_DEALS_STMTS  # noqa: E402
-from app.sales_deals.legacy_import import build_preview  # noqa: E402
+from app.sales_deals.legacy_import import DISABLED_MSG, ENABLED, build_preview  # noqa: E402
 from app.sales_deals.service import DealError, import_preview_rows  # noqa: E402
 
 SNAPSHOT = ROOT / "backend" / "app" / "sales_deals" / "data" / "legacy_snapshot.json"
 
 
 async def main(dry_run: bool) -> int:
+    if not ENABLED:                     # 엑셀 이관은 꺼 둠(사용자 2026-10-27)
+        print(DISABLED_MSG)
+        return 1
     preview = build_preview(json.loads(SNAPSHOT.read_text(encoding="utf-8")))
     rows = preview["rows"]
     print(f"넣을 건 {len(rows)}개 · 단계별 {preview['summary']}")

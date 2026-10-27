@@ -14,6 +14,8 @@ import { cn } from "@/lib/shared/utils";
 const CAUSES: AsCase["cause"][] = ["확인 중", "제품 결함", "고객 과실", "기타"];
 const CHARGES: AsCase["charge"][] = ["미정", "무상", "유상"];
 const STATUSES: AsCase["status"][] = ["접수", "진행 중", "완료"];
+/** 영업 건을 지운 S/N 의 상태(서버 units.DELETED) — 기록으로 남기고 건번호·고객사는 메모에 */
+const UNIT_DELETED = "건 삭제";
 const SMALL = "h-8 rounded-md border border-border bg-surface px-2 text-[12.5px] outline-none focus:border-accent";
 
 async function call<T>(path: string, body?: unknown): Promise<T> {
@@ -27,7 +29,7 @@ async function call<T>(path: string, body?: unknown): Promise<T> {
 function WarrantyChip({ state }: { state?: string }) {
   if (!state) return null;
   const tone = state.startsWith("무상 기간 (") ? "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300"
-    : state === "무상 기간 지남" ? "bg-red-500/10 text-red-700 dark:text-red-300" : "bg-foreground/8 text-foreground-muted";
+    : state === "무상 기간 지남" || state === "무상 없음" ? "bg-red-500/10 text-red-700 dark:text-red-300" : "bg-foreground/8 text-foreground-muted";
   return <span className={cn("whitespace-nowrap rounded px-1.5 py-0.5 text-[11.5px] font-semibold", tone)}>{state}</span>;
 }
 
@@ -87,11 +89,14 @@ export function ProductUnitsTab({ onOpenDeal }: {
 function UnitSearch({ openId, onOpen }: { openId: number | null; onOpen: (id: number) => void }) {
   const [q, setQ] = useState("");
   const [items, setItems] = useState<ProductUnit[] | null>(null);
+  const [more, setMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const load = useCallback(async (text: string) => {
     setError(null);
     try {
-      setItems((await call<{ items: ProductUnit[] }>(`/units/search?q=${encodeURIComponent(text)}`)).items);
+      const d = await call<{ items: ProductUnit[]; more?: boolean }>(`/units/search?q=${encodeURIComponent(text)}`);
+      setItems(d.items);
+      setMore(!!d.more);
     } catch (e) {
       setError(e instanceof Error ? e.message : "불러오지 못했습니다.");
     }
@@ -108,6 +113,7 @@ function UnitSearch({ openId, onOpen }: { openId: number | null; onOpen: (id: nu
                className={cn(INPUT, "pl-9")} />
       </div>
       {error && <p className="text-[12.5px] text-red-600">{error}</p>}
+      {more && items && <Muted>최근 {items.length}개만 보입니다 — 찾는 S/N이 없으면 검색어를 더 자세히 적어 주세요.</Muted>}
       {items === null ? <Muted>불러오는 중…</Muted> : items.length === 0 ? <Muted>{q ? "맞는 S/N이 없습니다." : "아직 등록한 S/N이 없습니다."}</Muted> : (
         <ul className="flex flex-col gap-1.5">
           {items.map((u) => (
@@ -116,7 +122,7 @@ function UnitSearch({ openId, onOpen }: { openId: number | null; onOpen: (id: nu
                       className={cn("w-full rounded-lg border px-3 py-2 text-left text-[12.5px] hover:bg-foreground/[0.03]",
                         openId === u.id ? "border-accent bg-accent/[0.05]" : "border-border")}>
                 <div className="flex flex-wrap items-center gap-2">
-                  <UnitStateBadge code={u.purpose} />
+                  <UnitStateBadge code={u.purpose} status={u.status} rentalDeal={u.deal_biz === "rental"} />
                   <b className={cn("font-mono", u.no_serial && "text-foreground-muted")}>{u.serial}</b>
                   {u.no_serial && <span className="text-[11px] text-foreground-subtle">(S/N 없음)</span>}
                   <span className="truncate">{u.part_name}</span>
@@ -124,7 +130,9 @@ function UnitSearch({ openId, onOpen }: { openId: number | null; onOpen: (id: nu
                 </div>
                 <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11.5px] text-foreground-muted">
                   <BizChip biz={u.deal_biz} />
-                  <span>{u.customer ?? "고객사 없음"}{u.deal_title ? ` · ${u.deal_title}` : ""}</span>
+                  {u.status === UNIT_DELETED
+                    ? <span className="font-semibold text-red-700 dark:text-red-300">지운 건의 S/N</span>
+                    : <span>{u.customer ?? "고객사 없음"}{u.deal_title ? ` · ${u.deal_title}` : ""}</span>}
                   {u.issue_no && <span className="font-mono">{u.issue_no}</span>}
                   <span>{u.maker}</span>
                   {!!u.as_count && <span className={cn(u.as_open ? "font-semibold text-amber-700 dark:text-amber-300" : "")}>
@@ -142,6 +150,7 @@ function UnitSearch({ openId, onOpen }: { openId: number | null; onOpen: (id: nu
 function CaseList({ onOpen, onChanged }: { onOpen: (unitId: number) => void; onChanged?: () => void }) {
   const [st, setSt] = useState<AsCase["status"] | "">("");
   const [items, setItems] = useState<AsCase[] | null>(null);
+  const [more, setMore] = useState(false);
   const [admin, setAdmin] = useState(false);
   // 관리자 삭제(사용자 2026-10-22) — 골라서 지우면 보관함으로. 시리얼 목록은 지우지 않는다
   const [selecting, setSelecting] = useState(false);
@@ -152,8 +161,8 @@ function CaseList({ onOpen, onChanged }: { onOpen: (unitId: number) => void; onC
   const [ver, setVer] = useState(0);
   useEffect(() => {
     let alive = true;
-    call<{ items: AsCase[]; admin?: boolean }>(`/as-cases${st ? `?case_status=${encodeURIComponent(st)}` : ""}`)
-      .then((d) => { if (alive) { setItems(d.items); setAdmin(!!d.admin); } }).catch(() => { if (alive) setItems([]); });
+    call<{ items: AsCase[]; more?: boolean; admin?: boolean }>(`/as-cases${st ? `?case_status=${encodeURIComponent(st)}` : ""}`)
+      .then((d) => { if (alive) { setItems(d.items); setMore(!!d.more); setAdmin(!!d.admin); } }).catch(() => { if (alive) setItems([]); });
     return () => { alive = false; };
   }, [st, ver]);
   const toggle = (id: number) => setPicked((p) => { const n = new Set(p); if (n.has(id)) n.delete(id); else n.add(id); return n; });
@@ -225,6 +234,7 @@ function CaseList({ onOpen, onChanged }: { onOpen: (unitId: number) => void; onC
           </button>
         ))}
       </div>
+      {more && items && <Muted>최근 접수 {items.length}건만 보입니다 — 오래된 기록은 위 S/N 찾기에서 그 제품을 열어 보세요.</Muted>}
       {items === null ? <Muted>불러오는 중…</Muted> : items.length === 0 ? <Muted>A/S 기록이 없습니다.</Muted> : (
         <ul className="flex flex-col gap-1.5">
           {items.map((c) => (
@@ -266,22 +276,22 @@ function UnitPanel({ unitId, onOpenDeal }: { unitId: number; onOpenDeal?: (dealI
     ["S/N", <span key="s" className="font-mono">{u.serial}{u.no_serial ? " (S/N 없음)" : ""}</span>],
     ["부품", u.part_name],
     ["제조사", u.maker],
-    ["상태", <UnitStateBadge key="st" code={u.purpose} />],
+    ["상태", <UnitStateBadge key="st" code={u.purpose} status={u.status} rentalDeal={u.deal_biz === "rental"} />],
     ["프로젝트", u.deal_id ? (
       <span key="pj" className="flex flex-wrap items-center gap-1.5">
         <BizChip biz={u.deal_biz} />
         <span>{u.customer ?? "고객사 없음"}{u.deal_title ? ` · ${u.deal_title}` : ""}</span>
         {u.deal_display_no && <span className="font-mono text-[11.5px] text-foreground-muted">{u.deal_display_no}</span>}
-      </span>) : "-"],
+      </span>) : u.status === UNIT_DELETED ? "지운 건 (메모에 건번호·고객사)" : "-"],
     ["견적서", u.issue_no ? `${u.issue_no}${u.quote_revision != null ? ` v${u.quote_revision + 1}` : ""}` : "-"],
     ["출하", u.shipment ? `${u.shipment.date ?? "-"}${u.shipment.carrier ? ` · ${u.shipment.carrier}` : ""}` : "출하 전"],
-    ["무상 기간", u.warranty_months == null ? "미정" : `${u.warranty_months}개월${u.warranty_until ? ` (${u.warranty_start} ~ ${u.warranty_until})` : ""}`],
+    ["무상 기간", u.warranty_months == null ? "미정" : u.warranty_months === 0 ? "무상 없음 (0개월)" : `${u.warranty_months}개월${u.warranty_until ? ` (${u.warranty_start} ~ ${u.warranty_until})` : ""}`],
   ];
   return (
     <div className="flex flex-col gap-3 rounded-xl border border-border p-4 text-[13px]">
       <div className="flex flex-wrap items-center gap-2">
         <h3 className="text-[15px] font-semibold">{u.part_name}</h3>
-        <UnitStateBadge code={u.purpose} />
+        <UnitStateBadge code={u.purpose} status={u.status} rentalDeal={u.deal_biz === "rental"} />
         <WarrantyChip state={u.warranty_state} />
         {u.deal_id && onOpenDeal && (
           <button type="button" onClick={() => onOpenDeal(u.deal_id as number, u.deal_biz ?? "sale")}
@@ -368,6 +378,8 @@ function PhotoPicker({ photos, onChange, disabled }: { photos: string[]; onChang
 function chargeBasis(unit: UnitDetail, received: string, cause: AsCase["cause"]): { suggested: AsCase["charge"]; text: string } {
   const ship = unit.shipment?.date ?? unit.warranty_start;
   if (!ship) return { suggested: cause === "고객 과실" ? "유상" : "미정", text: "출하 전 제품이라 무상 기간이 없습니다 — 직접 골라 주세요." };
+  // 0개월 = 무상 없음(사용자 2026-10-26) — 출하일부터 유상
+  if (unit.warranty_months === 0) return { suggested: "유상", text: `출하일 ${ship} — 무상 없음(0개월) 제품이라 유상` };
   if (!unit.warranty_until) return { suggested: cause === "고객 과실" ? "유상" : "미정", text: `출하일 ${ship} — 무상 기간이 미정이라 직접 골라 주세요.` };
   const inside = received <= unit.warranty_until;
   const base = `출하일 ${ship} 기준 무상 ${unit.warranty_months}개월(~${unit.warranty_until}) — 접수일이 기간 ${inside ? "안" : "지남"}`;
@@ -532,7 +544,7 @@ export function DealAsIntake({ units, onDone }: { units: ProductUnit[]; onDone: 
                          aria-label={`${u.serial} A/S 접수 선택`} className="h-4 w-4 shrink-0 accent-accent" />
                   <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">{u.part_name}</span>
                   <span className="whitespace-nowrap font-mono text-[12.5px] text-foreground-muted">{u.serial}</span>
-                  <UnitStateBadge code={u.purpose} />
+                  <UnitStateBadge code={u.purpose} status={u.status} rentalDeal={u.deal_biz === "rental"} />
                   {loading.includes(u.id) && <span className="text-[11px] text-foreground-subtle">불러오는 중…</span>}
                 </label>
               </li>

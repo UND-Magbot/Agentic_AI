@@ -291,9 +291,16 @@ export function ShipForm({ deal, busy, act, initial, onSaved, onCancel, onChange
   }
   const snCount = (no: number) => usableUnits(snLine(no)!, editIndex).length;
   const snShort = view ? [...need].filter(([no, n]) => n > 0 && snCount(no) < n).map(([no]) => flatName(snLine(no)!.name)) : [];
-  // 고칠 때는 이 출하에 이미 묶인 S/N 을 늘 포함 — 이름으로 짝을 못 찾은 예전 줄의 S/N 이 풀리지 않게
-  const bound = view && editIndex != null ? view.lines.flatMap((ln) => ln.units.filter((u) => u.shipment_index === editIndex).map((u) => u.id)) : [];
-  const unitIds = view ? [...new Set([...[...need.keys()].flatMap((no) => usableUnits(snLine(no)!, editIndex).map((u) => u.id)), ...bound])] : null;
+  // 품목마다 출하 수량만큼만 묶는다 — 이 출하에 이미 묶인 것 먼저, 그다음 안 나간 것(검증 2026-10-26: 다음 출하 몫까지 묶이던 문제)
+  const pick = (no: number) => {
+    const us = usableUnits(snLine(no)!, editIndex);
+    const mine = editIndex == null ? [] : us.filter((u) => u.shipment_index === editIndex);
+    return [...mine, ...us.filter((u) => !mine.includes(u))].slice(0, need.get(no) ?? 0).map((u) => u.id);
+  };
+  // 고칠 때 이번 품목 칸에 없는 줄(이름으로 짝을 못 찾은 예전 줄)에 묶인 S/N 은 그대로 둔다
+  const bound = view && editIndex != null
+    ? view.lines.filter((ln) => !need.has(ln.line_no)).flatMap((ln) => ln.units.filter((u) => u.shipment_index === editIndex).map((u) => u.id)) : [];
+  const unitIds = view ? [...new Set([...[...need.keys()].flatMap(pick), ...bound])] : null;
 
   // 화면에서 고친 내용을 위로 알린다(수주 진행: 대화 보내기 전에 저장)
   const report = useRef(onChange);
@@ -326,7 +333,8 @@ export function ShipForm({ deal, busy, act, initial, onSaved, onCancel, onChange
           lines: [{ name: setName.trim(), qty: null, qty_text: setQty.trim(), photos: setPhotos }] }
       : { ...f, purpose: "판매", lines: items };
     if (unitIds) Object.assign(body, { unit_ids: unitIds });
-    const ok = editIndex != null ? await act("shipment-edit", { ...body, index: editIndex }) : await act("shipments", body);
+    const ok = editIndex != null ? await act("shipment-edit", { ...body, index: editIndex, expect: deal.shipments[editIndex] })
+      : await act("shipments", body);
     if (ok) onSaved?.();
   }
   const noPhoto = mode === "set" ? (setPhotos.length ? 0 : 1) : items.filter((l) => !l.photos.length).length;
@@ -364,6 +372,7 @@ export function ShipForm({ deal, busy, act, initial, onSaved, onCancel, onChange
   );
   const snBox = (no: number) => view && snOpen === no && (
     <SnPanel key={no} dealId={deal.id} view={view} line={snLine(no)!} need={need.get(no) ?? 0} editIndex={editIndex} bindIndex={editIndex}
+             bindExpect={editIndex != null ? deal.shipments[editIndex] : undefined}
              onSaved={setView} onClose={() => setSnOpen(null)} />
   );
   const field = (label: string, input: React.ReactNode) => <label className={ROW_LABEL}><span>{label}</span>{input}</label>;

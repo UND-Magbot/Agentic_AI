@@ -11,7 +11,7 @@ import { QuoteUploadDialog } from "@/components/domains/sales/quote-upload-dialo
 import { DealAsIntake } from "@/components/domains/sales/product-units-tab";
 import { ShipForm, shipmentDraft } from "@/components/domains/sales/deal-flow";
 import { SnButton, SnPanel, flatName, loadSnView, shipmentSnLines } from "@/components/domains/sales/unit-register";
-import { ACTION_LABEL, Field, INPUT, Muted, StageChip, UnitStateBadge, dealRequest, eventDetail, quoteVer, shortDate, stamp, todayIso, won } from "@/components/domains/sales/deal-format";
+import { ACTION_LABEL, Field, INPUT, Muted, StageChip, UnitStateBadge, dealRequest, eventDetail, quoteVer, shortDate, stamp, termExpect, todayIso, won } from "@/components/domains/sales/deal-format";
 import type { ApprovalAdmin, ApprovalRequest, DealEvent, DealRow, IssueUnits, DealShipment, PoCompare, ProductUnit } from "@/lib/shared/sales-deals";
 import { cn } from "@/lib/shared/utils";
 
@@ -322,6 +322,8 @@ function DropBlock({ deal, busy, act }: { deal: DealRow; busy: boolean; act: Act
       </div>
     );
   }
+  // 출하·입금 기록이 있는 건은 관리자만 드랍(사용자 2026-10-27, 서버 svc.drop_locked 와 같게)
+  if (!admin && (deal.shipments.length > 0 || deal.payments.length > 0 || deal.shipped || deal.paid_full)) return null;
   if (!open) {
     return (
       <button type="button" onClick={() => setOpen(true)} disabled={busy}
@@ -369,8 +371,8 @@ function DueStatus({ late, req, busy, open, onOpen }: {
 }
 
 /** 기한 연장 창 — 관리자는 새 예정일·사유로 바로 바꾸고, 일반 직원은 받을 관리자를 체크해 요청을 보낸다 */
-function DueForm({ due, label, index, busy, act, onDone }: {
-  due: string; label: string; index: number; busy: boolean; act: Act; onDone: () => void;
+function DueForm({ due, label, index, expect, busy, act, onDone }: {
+  due: string; label: string; index: number; expect: { label: string; pct: number }; busy: boolean; act: Act; onDone: () => void;
 }) {
   const admin = useContext(AdminCtx);
   const plus14 = () => { const d = new Date(); d.setDate(d.getDate() + 14); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
@@ -395,8 +397,8 @@ function DueForm({ due, label, index, busy, act, onDone }: {
   const canSend = dateOk && !busy && (admin || (reason.trim().length > 0 && to.size > 0));
   const send = async () => {
     const ok = admin
-      ? await act("due-extend", { index, date, reason: reason.trim() })
-      : await act("due-request", { index, date, reason: reason.trim(), recipients: [...to] });
+      ? await act("due-extend", { index, date, reason: reason.trim(), expect })
+      : await act("due-request", { index, date, reason: reason.trim(), recipients: [...to], expect });
     if (ok) onDone();
   };
 
@@ -487,7 +489,7 @@ function TermsView({ deal, busy, act }: { deal: DealRow; busy: boolean; act: Act
             </tr>
             {open === t.index && late.has(t.index) && (
               <tr><td colSpan={6} className="px-3 pb-2.5">
-                <DueForm due={t.expected_date ?? ""} label={`${t.label} ${t.pct}%`} busy={busy} act={act} index={t.index}
+                <DueForm due={t.expected_date ?? ""} label={`${t.label} ${t.pct}%`} busy={busy} act={act} index={t.index} expect={termExpect(t)}
                          onDone={() => setOpen(null)} />
               </td></tr>
             )}
@@ -750,7 +752,7 @@ function WonBlock({ deal, busy, act, uploadPo, comparing, comparePo }: {
             ? <Muted>첨부한 발주서 없음</Muted>
             : files.map((f, i) => (
                 <EntryCard key={`${f.filename}-${f.uploaded_at}`} busy={busy}
-                           onRemove={() => act("remove", { kind: "po_files", index: i })}>
+                           onRemove={() => act("remove", { kind: "po_files", index: i, expect: f })}>
                   <a href={`/api/sales-deals/${deal.id}/po/${i}`} target="_blank" rel="noreferrer"
                      className="font-medium text-accent underline-offset-2 hover:underline">{f.filename}</a>
                   <div className="mt-0.5 text-[12px] text-foreground-subtle">
@@ -921,7 +923,7 @@ function PaymentBlock({ deal, busy, act }: { deal: DealRow; busy: boolean; act: 
       </div>
       {deal.payments.length === 0 && !open && <Muted>입금 기록 없음</Muted>}
       {deal.payments.map((p, i) => (
-        <EntryCard key={i} onRemove={p.term != null ? undefined : () => act("remove", { kind: "payments", index: i })} busy={busy}>
+        <EntryCard key={i} onRemove={p.term != null ? undefined : () => act("remove", { kind: "payments", index: i, expect: p })} busy={busy}>
           <Grid rows={[["입금일", p.date ?? "날짜 없음"], ["입금액", p.amount != null ? `${won(p.amount)}원` : null], ["메모", p.note]]} />
         </EntryCard>
       ))}
@@ -981,11 +983,11 @@ function ShipmentBlock({ deal, busy, act, onPhoto, onReload }: {
                     onSaved={() => { setEditing(null); onReload(); }} onCancel={() => setEditing(null)} />
         </div>
       ) : (
-        <EntryCard key={i} onRemove={deal.kind === "shipment_only" ? undefined : () => act("remove", { kind: "shipments", index: i })}
+        <EntryCard key={i} onRemove={deal.kind === "shipment_only" ? undefined : () => act("remove", { kind: "shipments", index: i, expect: s })}
                    onEdit={deal.kind === "shipment_only" || editing !== null || open ? undefined : () => setEditing(i)} busy={busy}>
           <ShipmentInfo s={s} dealId={deal.id} onPhoto={onPhoto}
                         units={(deal.unit_list ?? []).filter((u) => u.shipment_index === i)} />
-          {view && <ShipmentSn dealId={deal.id} view={view} lines={s.lines ?? []} index={i} busy={busy}
+          {view && <ShipmentSn dealId={deal.id} view={view} lines={s.lines ?? []} index={i} shipment={s} busy={busy}
                                onSaved={(v) => { setView(v); onReload(); }} />}
         </EntryCard>
       ))}
@@ -1000,8 +1002,8 @@ function ShipmentBlock({ deal, busy, act, onPhoto, onReload }: {
 }
 
 /** 출하 카드 안 품목별 [S/N 등록](사용자 2026-10-23) — 이미 나간 건도 나중에 적는다. 다 적으면 버튼이 초록색 */
-function ShipmentSn({ dealId, view, lines, index, busy, onSaved }: {
-  dealId: number; view: IssueUnits; lines: NonNullable<DealShipment["lines"]>; index: number; busy: boolean;
+function ShipmentSn({ dealId, view, lines, index, shipment, busy, onSaved }: {
+  dealId: number; view: IssueUnits; lines: NonNullable<DealShipment["lines"]>; index: number; shipment: DealShipment; busy: boolean;
   onSaved: (v: IssueUnits) => void;
 }) {
   const [open, setOpen] = useState<number | null>(null);
@@ -1026,7 +1028,7 @@ function ShipmentSn({ dealId, view, lines, index, busy, onSaved }: {
                         disabled={busy} onClick={() => setOpen(open === line.line_no ? null : line.line_no)} />
             </div>
             {open === line.line_no && (
-              <SnPanel dealId={dealId} view={view} line={line} need={need} editIndex={index} bindIndex={index}
+              <SnPanel dealId={dealId} view={view} line={line} need={need} editIndex={index} bindIndex={index} bindExpect={shipment}
                        onSaved={onSaved} onClose={() => setOpen(null)} />
             )}
           </li>
@@ -1052,7 +1054,7 @@ function ShipmentInfo({ s, dealId, onPhoto, units = [] }: {
           <span className="text-[10.5px] font-bold text-foreground-subtle">S/N</span>
           <span className={cn("whitespace-nowrap font-mono text-[12.5px]", u.no_serial ? "text-foreground-subtle" : "font-semibold text-foreground")}>{u.serial}</span>
           {flatName(u.part_name) !== flatName(u.line_name || "") && <span className="min-w-0 flex-1 truncate text-[12px] text-foreground-muted">{u.part_name}</span>}
-          <span className="ml-auto"><UnitStateBadge code={u.purpose} /></span>
+          <span className="ml-auto"><UnitStateBadge code={u.purpose} status={u.status} /></span>
         </li>
       ))}
     </ul>
@@ -1207,7 +1209,7 @@ function QuoteDocs({ deal, onQuote, onUploaded }: {
       )}
       {uploading && (
         <QuoteUploadDialog title="견적서 파일 첨부" uploadUrl={`/api/sales-deals/${deal.id}/quote-upload`}
-                           confirmUrl={`/api/sales-deals/${deal.id}/quote-upload/confirm`}
+                           confirmUrl={`/api/sales-deals/${deal.id}/quote-upload/confirm`} paidFull={deal.paid_full}
                            onDone={(d) => { setUploading(false); onUploaded(d as DealRow); }} onClose={() => setUploading(false)} />
       )}
     </Section>

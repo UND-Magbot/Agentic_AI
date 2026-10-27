@@ -1248,9 +1248,9 @@ async def _stream_rentals(text_: str, user_id: int | None):
         if user is None or not (user.role == UserRole.superadmin or user.domain in (UserDomain.sales, UserDomain.all)):
             yield "대여 제품 목록은 영업부만 볼 수 있습니다."
             return
-        since = _rq.since_date(text_, kst_today())
-        data = await _rq.rented_units(db, since)
-    yield _rq.answer(data, since)
+        when = _rq.period(text_, kst_today())
+        data = await _rq.rented_units(db, when["since"], when["until"])
+    yield _rq.answer(data, when["since"], when["until"], when["unclear"])
 
 
 @app.post("/v1/generate")

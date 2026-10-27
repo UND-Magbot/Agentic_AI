@@ -116,7 +116,7 @@ r = svc._rental({"rental": {"months": 36, "start": "2026-11-01"}}, 35_800_000)
 check(r == {"biz": "rental", "rental": {"months": 36, "start": "2026-11-01", "end": "2029-10-31", "monthly": 995_000}},
       "영업 건: 2026-11-01 + 36개월 → 2029-10-31, 월 995,000", str(r))
 r = svc._rental({"rental": {"months": 3, "start": "2026-11-30"}}, 1_000_000)
-check(r["rental"]["end"] == "2027-02-27" and r["rental"]["monthly"] == 334_000, "월말 시작도 끝나는 날 계산", str(r))
+check(r["rental"]["end"] == "2027-02-28" and r["rental"]["monthly"] == 334_000, "월말 시작도 끝나는 날 계산(2월에 30일이 없으면 말일 — 민법, 사용자 2026-10-27)", str(r))
 check(svc._rental({}, 1_000) == {} and svc._rental({"rental": {"months": 12}}, None)["rental"]["start"] is None,
       "판매 건은 그대로 · 시작일 없으면 비워 둠")
 check(svc._add_months(dt.date(2026, 1, 31), 1) == dt.date(2026, 2, 28), "개월 더하기: 1/31 + 1개월 = 2/28")

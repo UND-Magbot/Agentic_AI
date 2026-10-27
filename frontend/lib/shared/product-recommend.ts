@@ -344,6 +344,8 @@ export type QuoteSession = {
   hangul?: QuoteHangulCell[];
   /** 올린 견적서 파일 위에서 이어서 고치는 중(그 발행번호) — 미리보기·발행이 그 파일의 엑셀 서식 그대로 */
   on_file?: string | null;
+  /** 이어진 영업 건이 완납 — 발행 전에 확인 창(사용자 2026-10-26) */
+  deal_paid_full?: boolean;
   chat: { role: "user" | "assistant"; text: string }[];
   history: { revision: number; quote_no?: string | null; uploaded?: boolean; issued_at: string; total: number; currency: "KRW" | "USD"; file_name: string }[];
   created_at: string; updated_at: string;

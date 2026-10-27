@@ -75,6 +75,9 @@ services:
     restart: unless-stopped
     env_file: ./.env
     environment:
+      # 서버 날짜·시각 = 한국(사용자 2026-10-26) — UTC 면 한국 오전 0~9시에 '오늘'이 하루 전으로 잡혔다(휴가·회의록 날짜·파일명 등).
+      # 영업 쪽은 코드에서도 kst_today() 로 한국 날짜를 쓴다.
+      TZ: Asia/Seoul
       VLLM_BASE_URL: ${VLLM_BASE_URL:-http://host.docker.internal:8001}
       MODEL: ${MODEL:-Qwen/Qwen2.5-7B-Instruct-AWQ}
       MAX_TOKENS: ${MAX_TOKENS:-1024}

@@ -1,12 +1,21 @@
 // 영업 건 리스트·상세·등록이 함께 쓰는 표시 도우미 + 저장 요청.
 import type { DealEvent, DealRow, DealStage } from "@/lib/shared/sales-deals";
-import { UNIT_STATE_TONE, unitStateText } from "@/lib/shared/unit-states";
+import { rentalPhase, UNIT_STATE_TONE, unitStateText } from "@/lib/shared/unit-states";
 import { cn } from "@/lib/shared/utils";
 
-/** 제품 상태 코드 배지 — 코드와 뜻을 색으로(S · 판매 / R · 대여 / A · A/S 중 …, 사용자 2026-10-22). 시리얼 찾기·출하에서 같이 쓴다 */
-export function UnitStateBadge({ code }: { code: string }) {
+/** 제품 상태 코드 배지 — 코드와 뜻을 색으로(S · 판매 / R · 대여 / A · A/S 중 …, 사용자 2026-10-22). 시리얼 찾기·출하에서 같이 쓴다.
+ *  status(S/N 진행)를 주면 대여 단계도 붙인다(사용자 2026-10-27): R · 대여 전 / 대여 중 / 대여 완료, 대여 건의 A/S 중이면 'A/S 중 · 대여 중'. */
+export function UnitStateBadge({ code, status, rentalDeal = false }: { code: string; status?: string | null; rentalDeal?: boolean }) {
+  const phase = rentalPhase(code, status, rentalDeal);
+  const text = phase ? (code === "R" ? `R · ${phase}` : `${unitStateText(code)} · ${phase}`) : unitStateText(code);
   return <span className={cn("whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[11.5px] font-semibold", UNIT_STATE_TONE[code] ?? UNIT_STATE_TONE.O)}
-               title="제품 상태 코드">{unitStateText(code)}</span>;
+               title="제품 상태 코드">{text}</span>;
+}
+
+/** 회차를 줄 번호로 고칠 때 함께 보내는 '화면에서 본 그 회차'(검증 2026-10-26 — 여러 명이 같이 쓰다 회차가 바뀌면
+ *  서버가 409 로 막는다. 백엔드 svc.check_entry). */
+export function termExpect(t: { label: string; pct: number }): { label: string; pct: number } {
+  return { label: t.label, pct: t.pct };
 }
 
 // 단계 이름(백엔드 sales_deals/status.STAGES 와 같게). 이 상수는 화면 코드에서 쓰므로 여기 둔다 —

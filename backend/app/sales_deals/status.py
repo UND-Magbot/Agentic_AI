@@ -67,6 +67,9 @@ def derive(d: dict, today: dt.date) -> dict:
         if n is not None and n > UNPAID_DAYS:
             alerts.append({"code": "UNPAID", "level": "alert", "text": f"계산서 발행 후 {n}일 미입금(이전 기록)"})
     rent = quote.get("rental") or {}
+    if rent.get("unverified"):                       # 대여 조건 기록이 없는 예전 판으로 수주(사용자 2026-10-26)
+        alerts.append({"code": "RENTAL_UNVERIFIED", "level": "review",
+                       "text": f"수주한 판에 대여 조건 기록이 없어 지금 값({rent.get('months')}개월)을 유지했습니다 — 개월 수·월 납입금을 확인해 주세요"})
     if stage == "대여 중" and not rent.get("start"):   # 출하했는데 대여 시작일을 안 정함(사용자 2026-10-22)
         alerts.append({"code": "RENTAL_START", "level": "review", "text": "대여 시작일을 정해 주세요 — 끝나는 날·회수 알림의 기준입니다"})
     if stage == "대여 중" and rent.get("end"):         # 대여 기간이 끝났는데 회수를 시작하지 않음(사용자 2026-10-22)

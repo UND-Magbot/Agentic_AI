@@ -11,6 +11,7 @@ AI 가 만든 견적서를 내려받아 엑셀에서 고쳤거나 프로그램 �
 from __future__ import annotations
 
 import base64
+import datetime as dt
 import json
 import logging
 import re
@@ -109,9 +110,9 @@ async def read(data: bytes, filename: str, mime: str) -> dict[str, Any]:
             "vat_included": vat, "doc_no": po_compare._in_text(out.get("doc_no"), text), "summary": summary}
 
 
-def clean_items(items: Any) -> list[dict[str, Any]]:
+def clean_items(items: Any, *, check_total: bool = True) -> list[dict[str, Any]]:
     """담당자가 확인한 품목 → 영업 건 품목({name, unit_price, qty}). 품명은 '품명\\n- 규격'(견적서 표기·거래명세서 나눔과 같게).
-    틀리면 ValueError(무엇이 틀렸는지)."""
+    틀리면 ValueError(무엇이 틀렸는지). check_total=False = 합계 0원 검사는 호출부가(대여: × 개월 뒤에, 검증 2026-10-26)."""
     if not isinstance(items, list) or not items:
         raise ValueError("품목을 한 줄 이상 적어 주세요.")
     if len(items) > MAX_ITEMS:
@@ -135,7 +136,7 @@ def clean_items(items: Any) -> list[dict[str, Any]]:
                              else f"{i}번째 NEGO 줄의 단가는 할인 금액을 음수로 적어 주세요.")
         out.append({"name": f"{name}\n- {spec}" if spec else name, "qty": int(qty) if qty.is_integer() else qty,
                     "unit_price": int(price) if price.is_integer() else price})
-    if sum(x["qty"] * x["unit_price"] for x in out) <= 0:     # 0원 견적 발행 막음(검증 QT-066, 2026-10-15)
+    if check_total and sum(x["qty"] * x["unit_price"] for x in out) <= 0:     # 0원 견적 발행 막음(검증 QT-066, 2026-10-15)
         raise ValueError("합계가 0원 이하입니다 — 품목 단가·NEGO 를 확인해 주세요.")
     return out
 
@@ -182,6 +183,9 @@ class UploadConfirmIn(BaseModel):
     overwrite: bool = False
     # 작성 상태도 올린 파일 내용으로 맞추기(사용자 2026-10-15) — 끄면 예전처럼 발행 기록만
     sync: bool = True
+    # 대여 견적서는 발행 전에 대여 시작일을 한 번 더 확인(사용자 2026-10-27) — 비우면 미정
+    rental_start: dt.date | None = None
+    rental_checked: bool = False
 
 
 async def store_and_read(file, folder: str) -> dict[str, Any]:

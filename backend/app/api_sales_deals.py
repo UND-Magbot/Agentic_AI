@@ -38,7 +38,7 @@ import re
 import urllib.parse
 import uuid
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, StreamingResponse
@@ -203,9 +203,14 @@ class StatementIn(BaseModel):
         return self
 
 
+# 줄 번호로 고치는 요청에 함께 보내는 '화면에서 본 그 줄'(검증 2026-10-26 — 여러 명이 같이 쓸 때 엉뚱한 줄이 바뀌지 않게)
+Expect = dict[str, Any] | None
+
+
 class RemoveIn(BaseModel):
     kind: Literal["invoices", "payments", "shipments", "po_files"]
     index: int = Field(ge=0)
+    expect: Expect = None
 
 
 class ReviewIn(BaseModel):
@@ -237,6 +242,7 @@ class DueExtendIn(BaseModel):
     date: dt.date
     reason: str = Field(default="", max_length=500)
     recipients: list[int] = Field(default_factory=list, max_length=20)
+    expect: Expect = None
 
 
 class DecideIn(BaseModel):
@@ -303,7 +309,7 @@ async def list_deals(biz: Literal["sale", "rental"] | None = None, user: User = 
                      db: AsyncSession = Depends(get_db)) -> dict:
     # me.admin — 화면이 관리자 전용 버튼(삭제·되돌리기·취소)을 숨기는 데 쓴다(실제 막는 것은 각 API)
     # biz — 제품 판매 관리 / 제품 대여 관리 탭(사용자 2026-10-22)
-    return {**await svc.list_deals(db, dt.date.today(), biz), "me": {"admin": is_admin(user), "name": user.alias or user.username}}
+    return {**await svc.list_deals(db, svc.kst_today(), biz), "me": {"admin": is_admin(user), "name": user.alias or user.username}}
 
 
 @router.get("/export")
@@ -313,8 +319,8 @@ async def export_deals(_: User = Depends(require_sales), db: AsyncSession = Depe
 
     from .sales_deals import export
 
-    data = export.build_xlsx(await svc.list_deals(db, dt.date.today()))
-    name = f"제품영업건_{dt.date.today():%Y%m%d}.xlsx"
+    data = export.build_xlsx(await svc.list_deals(db, svc.kst_today()))
+    name = f"제품영업건_{svc.kst_today():%Y%m%d}.xlsx"
     return Response(content=data, media_type=PO_TYPES[".xlsx"], headers={
         "Content-Disposition": f"attachment; filename=\"deals.xlsx\"; filename*=UTF-8''{urllib.parse.quote(name, safe='')}",
         "Cache-Control": "private, no-store"})
@@ -387,6 +393,7 @@ class UnitsIn(BaseModel):
     partial: bool = False
     # 이미 남긴 출하 기록에 S/N 등록(사용자 2026-10-23) — 그 출하 번호(0부터). 보낸 줄의 안 묶인 S/N 을 그 출하로 묶는다
     shipment_index: int | None = Field(default=None, ge=0, le=500)
+    shipment_expect: Expect = None
 
 
 class CaseIn(BaseModel):
@@ -431,9 +438,25 @@ async def _units_call(db: AsyncSession, coro):
         raise _fail(e) from e
 
 
+async def _checked(db: AsyncSession, deal_id: int, kind: str, index: int | None, expect: Expect, coro):
+    """줄 번호 요청 — 그 줄이 화면에서 본 것과 같을 때만 coro 를 실행(svc.check_entry)."""
+    try:
+        if index is not None:
+            await svc.check_entry(db, deal_id, kind, index, expect)
+    except BaseException:
+        coro.close()
+        raise
+    return await coro
+
+
+UNIT_LIST_MAX, CASE_LIST_MAX = 50, 200
+
+
 @router.get("/units/search")
 async def search_units(q: str = "", _: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
-    return {"items": await units.search_units(db, q, svc.kst_today())}
+    # 보이는 수보다 많으면 more = True — 화면이 '최근 N개만'이라고 알린다(검증 2026-10-26: 말없이 잘리던 일)
+    items = await units.search_units(db, q, svc.kst_today(), limit=UNIT_LIST_MAX + 1)
+    return {"items": items[:UNIT_LIST_MAX], "more": len(items) > UNIT_LIST_MAX}
 
 
 @router.get("/units/{unit_id}")
@@ -445,7 +468,8 @@ async def unit_detail(unit_id: int, _: User = Depends(require_sales), db: AsyncS
 async def list_cases(case_status: Literal["접수", "진행 중", "완료"] | None = None, user: User = Depends(require_sales),
                      db: AsyncSession = Depends(get_db)) -> dict:
     # admin — 화면이 [삭제]를 관리자에게만 보인다(실제 막는 것은 /as-cases/delete)
-    return {"items": await units.list_cases(db, status=case_status), "admin": is_admin(user)}
+    items = await units.list_cases(db, status=case_status, limit=CASE_LIST_MAX + 1)
+    return {"items": items[:CASE_LIST_MAX], "more": len(items) > CASE_LIST_MAX, "admin": is_admin(user)}
 
 
 @router.post("/as-cases/delete")
@@ -528,15 +552,16 @@ async def get_units(deal_id: int, quote_id: int, revision: int, _: User = Depend
 
 @router.post("/{deal_id}/units")
 async def save_units(deal_id: int, body: UnitsIn, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
-    return await _units_call(db, units.save_units(db, deal_id, user.id, body.quote_id, body.revision,
-                                                  [ln.model_dump() for ln in body.lines], partial=body.partial,
-                                                  shipment_index=body.shipment_index))
+    return await _units_call(db, _checked(db, deal_id, "shipments", body.shipment_index, body.shipment_expect,
+                                          units.save_units(db, deal_id, user.id, body.quote_id, body.revision,
+                                                           [ln.model_dump() for ln in body.lines], partial=body.partial,
+                                                           shipment_index=body.shipment_index)))
 
 
 @router.get("/{deal_id}")
 async def get_deal(deal_id: int, _: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
     try:
-        return await svc.get_deal(db, deal_id, dt.date.today())
+        return await svc.get_deal(db, deal_id, svc.kst_today())
     except svc.DealError as e:
         raise _fail(e) from e
 
@@ -548,7 +573,7 @@ async def create_deal(body: DealIn, user: User = Depends(require_sales), db: Asy
     except svc.DealError as e:
         await db.rollback()
         raise _fail(e) from e
-    return await svc.get_deal(db, new_id, dt.date.today())
+    return await svc.get_deal(db, new_id, svc.kst_today())
 
 
 async def _act(db: AsyncSession, deal_id: int, coro) -> dict:
@@ -557,7 +582,7 @@ async def _act(db: AsyncSession, deal_id: int, coro) -> dict:
     except svc.DealError as e:
         await db.rollback()
         raise _fail(e) from e
-    return await svc.get_deal(db, deal_id, dt.date.today())
+    return await svc.get_deal(db, deal_id, svc.kst_today())
 
 
 @router.post("/{deal_id}/won")
@@ -594,6 +619,7 @@ class RentalReturnIn(BaseModel):
 class TermConfirmIn(BaseModel):
     index: int = Field(ge=0, le=10)
     date: dt.date | None = None
+    expect: Expect = None
 
 
 class MeetingIn(BaseModel):
@@ -625,7 +651,8 @@ async def due_extend(deal_id: int, body: DueExtendIn, user: User = Depends(requi
     """입금 예정일이 지난 회차의 예정일 연장 — 관리자만(고객사와 협의한 날짜)."""
     from .sales_deals import approvals as ap
 
-    return await _act(db, deal_id, ap.extend_due(db, deal_id, user.id, body.index, body.date, body.reason))
+    return await _act(db, deal_id, _checked(db, deal_id, "pay_terms", body.index, body.expect,
+                                            ap.extend_due(db, deal_id, user.id, body.index, body.date, body.reason)))
 
 
 @router.post("/{deal_id}/due-request")
@@ -634,7 +661,9 @@ async def due_request(deal_id: int, body: DueExtendIn, user: User = Depends(requ
     """입금 예정일 연장 요청 — 받을 관리자(recipients)를 골라 보낸다. 관리자는 [기한 연장]으로 바로 바꾸면 된다."""
     from .sales_deals import approvals as ap
 
-    return await _act(db, deal_id, ap.request_extend(db, deal_id, user.id, body.index, body.date, body.reason, body.recipients))
+    return await _act(db, deal_id, _checked(db, deal_id, "pay_terms", body.index, body.expect,
+                                            ap.request_extend(db, deal_id, user.id, body.index, body.date, body.reason,
+                                                              body.recipients)))
 
 
 @router.post("/{deal_id}/rental-start")
@@ -655,14 +684,16 @@ async def rental_return(deal_id: int, body: RentalReturnIn, user: User = Depends
 async def confirm_term(deal_id: int, body: TermConfirmIn, user: User = Depends(require_sales),
                        db: AsyncSession = Depends(get_db)) -> dict:
     """회차 입금 확인 — 회사가 따로 확인한 뒤 버튼으로."""
-    return await _act(db, deal_id, svc.confirm_term(db, deal_id, user.id, body.index, body.date or dt.date.today()))
+    return await _act(db, deal_id, _checked(db, deal_id, "pay_terms", body.index, body.expect,
+                                            svc.confirm_term(db, deal_id, user.id, body.index, body.date or svc.kst_today())))
 
 
 @router.post("/{deal_id}/unconfirm-term")
 async def unconfirm_term(deal_id: int, body: TermConfirmIn, user: User = Depends(require_admin),
                          db: AsyncSession = Depends(get_db)) -> dict:
     """회차 입금 확인 취소 — 관리자만."""
-    return await _act(db, deal_id, svc.unconfirm_term(db, deal_id, user.id, body.index))
+    return await _act(db, deal_id, _checked(db, deal_id, "pay_terms", body.index, body.expect,
+                                            svc.unconfirm_term(db, deal_id, user.id, body.index)))
 
 
 @router.post("/{deal_id}/meeting")
@@ -674,10 +705,10 @@ async def set_meeting(deal_id: int, body: MeetingIn, user: User = Depends(requir
 
 @router.post("/{deal_id}/drop")
 async def set_drop(deal_id: int, body: DropIn, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
-    """드랍(진행을 접음)은 누구나, 되살리기는 관리자만."""
+    """드랍(진행을 접음)은 누구나 — 출하·입금 기록이 있는 건은 관리자만(사용자 2026-10-27), 되살리기는 관리자만."""
     if not body.dropped and not is_admin(user):
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="드랍한 건을 되살리기는 관리자만 할 수 있습니다.")
-    return await _act(db, deal_id, svc.set_dropped(db, deal_id, user.id, body.dropped, body.reason))
+    return await _act(db, deal_id, svc.set_dropped(db, deal_id, user.id, body.dropped, body.reason, admin=is_admin(user)))
 
 
 @router.post("/{deal_id}/invoices")
@@ -710,6 +741,7 @@ async def add_shipment(deal_id: int, body: ShipmentIn, user: User = Depends(requ
 
 class ShipmentEditIn(ShipmentIn):
     index: int = Field(ge=0, le=500)
+    expect: Expect = None
 
 
 @router.post("/{deal_id}/shipment-edit")
@@ -719,7 +751,9 @@ async def edit_shipment(deal_id: int, body: ShipmentEditIn, user: User = Depends
     if any(not SHIP_PHOTO_ID.match(p) for ln in body.lines for p in ln.photos):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="출하 사진을 다시 올려 주세요.")
     p = body.model_dump()
-    return await _act(db, deal_id, svc.update_shipment(db, deal_id, user.id, p.pop("index"), p))
+    index, expect = p.pop("index"), p.pop("expect")
+    return await _act(db, deal_id, _checked(db, deal_id, "shipments", index, expect,
+                                            svc.update_shipment(db, deal_id, user.id, index, p)))
 
 
 @router.post("/{deal_id}/reset-to-quote")
@@ -739,19 +773,20 @@ async def reset_to_quote(deal_id: int, user: User = Depends(require_admin), db: 
             remove_object(k)
     except Exception:  # 기록은 이미 되돌렸다 — 저장소 정리 실패는 화면 동작을 막지 않는다
         pass
-    return await svc.get_deal(db, deal_id, dt.date.today())
+    return await svc.get_deal(db, deal_id, svc.kst_today())
 
 
 @router.post("/{deal_id}/remove")
 async def remove_entry(deal_id: int, body: RemoveIn, user: User = Depends(require_admin),
                        db: AsyncSession = Depends(get_db)) -> dict:
     try:
+        await svc.check_entry(db, deal_id, body.kind, body.index, body.expect)
         await svc.remove_entry(db, deal_id, user.id, body.kind, body.index)
     except svc.DealError as e:
         await db.rollback()
         raise _fail(e) from e
     # 발주서 파일은 지우지 않는다 — 히스토리 되돌리기로 그 줄이 다시 살아날 수 있어서(사용자 2026-10-08)
-    return await svc.get_deal(db, deal_id, dt.date.today())
+    return await svc.get_deal(db, deal_id, svc.kst_today())
 
 
 @router.post("/{deal_id}/po")
@@ -794,7 +829,7 @@ async def upload_po(deal_id: int, file: UploadFile = File(...), user: User = Dep
         if isinstance(e, svc.DealError):
             raise _fail(e) from e
         raise
-    return await svc.get_deal(db, deal_id, dt.date.today())
+    return await svc.get_deal(db, deal_id, svc.kst_today())
 
 
 @router.post("/{deal_id}/po/{index}/compare")
@@ -804,7 +839,7 @@ async def compare_po(deal_id: int, index: int, user: User = Depends(require_sale
     from .sales_deals import po_compare
 
     try:
-        d = await svc.get_deal(db, deal_id, dt.date.today())
+        d = await svc.get_deal(db, deal_id, svc.kst_today())
         f = await svc.get_po_file(db, deal_id, index)
     except svc.DealError as e:
         raise _fail(e) from e
@@ -821,7 +856,7 @@ async def compare_po(deal_id: int, index: int, user: User = Depends(require_sale
     except svc.DealError as e:
         await db.rollback()
         raise _fail(e) from e
-    return await svc.get_deal(db, deal_id, dt.date.today())
+    return await svc.get_deal(db, deal_id, svc.kst_today())
 
 
 @router.get("/{deal_id}/po/{index}")
@@ -902,7 +937,7 @@ async def upload_ship_photo(deal_id: int, file: UploadFile = File(...), _: User 
                             db: AsyncSession = Depends(get_db)) -> dict:
     """출하 사진 한 장 — 저장소에 올리고 id 를 돌려준다(출하 기록을 저장할 때 제품 줄에 붙인다)."""
     try:
-        await svc.get_deal(db, deal_id, dt.date.today())
+        await svc.get_deal(db, deal_id, svc.kst_today())
     except svc.DealError as e:
         raise _fail(e) from e
     ext = PurePosixPath(file.filename or "").suffix.lower()
@@ -976,7 +1011,7 @@ async def quote_upload(deal_id: int, file: UploadFile = File(...), _: User = Dep
     from .sales_deals import quote_upload as qu
 
     try:
-        await svc.get_deal(db, deal_id, dt.date.today())
+        await svc.get_deal(db, deal_id, svc.kst_today())
     except svc.DealError as e:
         raise _fail(e) from e
     await db.rollback()                                   # AI 판독 동안 트랜잭션을 잡아 두지 않는다
@@ -999,7 +1034,8 @@ async def quote_upload_confirm(deal_id: int, body: "QuoteUploadConfirm", user: U
     try:
         await pr.quote_issue_upload(qid=None, deal_id=deal_id, user_id=user.id, owner_check=False,
                                     upload=body.upload.model_dump(), items=[x.model_dump() for x in body.items],
-                                    initials=body.initials, doc_no=body.doc_no, overwrite=body.overwrite, sync=body.sync)
+                                    initials=body.initials, doc_no=body.doc_no, overwrite=body.overwrite, sync=body.sync,
+                                    rental_start=body.rental_start, rental_checked=body.rental_checked)
     except svc.DealError as e:
         raise _fail(e) from e
     except pr.OverwriteNeeded as e:                       # 같은 건의 같은 번호 — 화면이 덮어쓸지 묻는다
@@ -1009,7 +1045,7 @@ async def quote_upload_confirm(deal_id: int, body: "QuoteUploadConfirm", user: U
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(e)) from e
     except pr.RecommendError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
-    return await svc.get_deal(db, deal_id, dt.date.today())
+    return await svc.get_deal(db, deal_id, svc.kst_today())
 
 
 @router.get("/{deal_id}/quote-file")
@@ -1021,7 +1057,7 @@ async def deal_quote_file(deal_id: int, quote: int, revision: int | None = None,
     from .company_knowledge import product_recommend as pr
 
     try:
-        d = await svc.get_deal(db, deal_id, dt.date.today())
+        d = await svc.get_deal(db, deal_id, svc.kst_today())
     except svc.DealError as e:
         raise _fail(e) from e
     if not any(q["id"] == quote for q in d.get("quotes") or []):
@@ -1153,7 +1189,7 @@ async def order_preview(deal_id: int, _: User = Depends(require_sales), db: Asyn
     except svc.DealError as e:
         raise _fail(e) from e
     if not draft.get("date"):
-        draft = {**draft, "date": dt.date.today().isoformat()}
+        draft = {**draft, "date": svc.kst_today().isoformat()}
     draft = {**draft, "no": draft.get("no") or "(발급 시 부여)"}
     try:
         data = await qx.to_pdf(sx.build_xlsx(draft, strict=False))

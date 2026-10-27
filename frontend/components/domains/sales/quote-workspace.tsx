@@ -8,6 +8,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { QuoteBlock, QuoteDelivery, QuoteForm, QuoteLine, QuoteListItem, QuoteNego, QuoteHangulCell, QuotePurpose, QuoteSession, QuoteWork } from "@/lib/shared/product-recommend";
 import { RichText } from "@/components/domains/sales/agent-chat";
+import { ConfirmDialog } from "@/components/shared/ui/confirm-dialog";
 import { Icon } from "@/components/shared/ui/icon";
 import { useDragMove } from "@/components/shared/ui/use-drag-move";
 import { cn, keepInPlace, scrollChatToEnd } from "@/lib/shared/utils";
@@ -543,6 +544,8 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
   const [enNote, setEnNote] = useState<string | null>(null);
   const [saving, setSaving] = useState<{ revision: number; fileName: string; title: string } | null>(null);
   const [uploading, setUploading] = useState(false);
+  // 완납한 건에 발행 — 한 번 확인(사용자 2026-10-26)
+  const [paidAsk, setPaidAsk] = useState(false);
   const chatEnd = useRef<HTMLDivElement>(null);
 
   function load(s: QuoteSession) {
@@ -672,8 +675,9 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
   }
 
   /** 발행·재발행(늘 새 발행번호, 사용자 2026-10-12) → 바로 내려받기 창(PDF·엑셀 고르기, 다른 이름으로 저장). */
-  async function issue() {
+  async function issue(paidConfirmed = false) {
     if (!q) return;
+    if (q.deal_paid_full && !paidConfirmed) { setPaidAsk(true); return; }   // 완납한 건 — 발행 전에 한 번 확인(사용자 2026-10-26)
     if ((q.hangul ?? []).some((c) => c.en == null && !c.keep)) {
       setEnNote("한글 칸을 AI 가 영어로 바꿨습니다 — 미리보기와 아래 'AI 번역' 목록을 확인한 뒤 다시 [발행]을 눌러 주세요.");
       setPreview(true);
@@ -1232,9 +1236,13 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
       {preview && <PreviewDialog url={`/api/product-recommend/quotes/${q.id}/preview`} title="견적서 미리보기"
                                   sub={en && hangul.length ? "한글 칸은 AI 영어로 · 발행 전이면 견적번호는 발행 때 정해집니다" : "지금 저장된 내용 그대로 · 발행 전이면 견적번호는 발행 때 정해집니다"}
                                   onClose={() => setPreview(false)} onLoaded={() => void reloadAfterPreview()} />}
+      <ConfirmDialog open={paidAsk} icon="help" variant="default" title="완납한 건입니다"
+                     description="완납한 건입니다. 새로 발행해도 이 건의 견적 금액·품목은 바뀌지 않고 견적서 목록에만 남습니다. 추가 주문이면 새 영업 건으로 만들어 주세요."
+                     confirmLabel="그래도 발행" onClose={() => setPaidAsk(false)}
+                     onConfirm={() => { setPaidAsk(false); void issue(true); }} />
       {uploading && (
         <QuoteUploadDialog title="고친 견적서 파일로 발행" uploadUrl={`/api/product-recommend/quotes/${q.id}/upload`}
-                           confirmUrl={`/api/product-recommend/quotes/${q.id}/upload/confirm`}
+                           confirmUrl={`/api/product-recommend/quotes/${q.id}/upload/confirm`} paidFull={!!q.deal_paid_full}
                            onDone={(d) => { setUploading(false); load(d as QuoteSession); }} onClose={() => setUploading(false)} />
       )}
       {saving && <DownloadDialog urlFor={(fmt) => `/api/product-recommend/quotes/${q.id}/file?fmt=${fmt}&revision=${saving.revision}`}

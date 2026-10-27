@@ -179,6 +179,10 @@ def parse(data: bytes) -> dict[str, Any] | None:
     form["total_note"] = t[1].strip() if len(t) > 1 else ""
     if rent:                                                  # 대여 견적서 — 월 납입금 식의 개월 수
         form.update(purpose="rental", rental_months=int(rent[1]))
+    elif re.search(r"월 납입금|Monthly", _s(ws.cell(head, 5).value)):   # 식은 지웠어도 단가 칸 머리가 월 납입금이면 대여(개월 수 모름)
+        form["purpose"] = "rental"
+    else:
+        form["purpose"] = "sale"
     r = find(1, {lab["delivery"]}, total)
     pos["delivery"] = r
     if r:

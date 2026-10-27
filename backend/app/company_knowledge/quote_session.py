@@ -233,6 +233,8 @@ TIME_UNITS = {"개월", "월", "년", "일", "주", "month", "months", "year", "
 ONCE_UNITS = {"식", "lot", "lots"}
 # '비·료'까지 붙어야 물류비로 본다 — '물류 로봇'·'운반 로봇' 같은 제품 이름은 아니다
 FREIGHT_RE = re.compile(r"(물류|운송|화물|배송|운반|택배)\s*(비|료)|freight|shipping", re.I)
+# 종류(kind·row) 표시가 없는 줄(올린 견적서 파일)도 이름으로 한 번만 — NEGO 는 파일에 이미 총 할인액, 설치비·인건비는 한 번(검증 2026-10-26)
+ONCE_NAME_RE = re.compile(r"^\s*NEGO|설치\s*(인건)?\s*비|인건비", re.I)
 
 
 def month_factor(form: dict[str, Any], ln: dict[str, Any]) -> int:
@@ -250,7 +252,7 @@ def month_factor(form: dict[str, Any], ln: dict[str, Any]) -> int:
         return 1
     if str(ln.get("unit") or "").strip().lower() in TIME_UNITS | ONCE_UNITS:
         return 1
-    if FREIGHT_RE.search(f"{ln.get('commodity') or ''} {ln.get('name') or ''}"):
+    if FREIGHT_RE.search(f"{ln.get('commodity') or ''} {ln.get('name') or ''}") or ONCE_NAME_RE.search(str(ln.get("name") or "")):
         return 1
     return m
 

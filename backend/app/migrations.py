@@ -1043,6 +1043,9 @@ _SALES_DEALS_STMTS = [
     text("ALTER TABLE product_units ALTER COLUMN purpose SET DEFAULT 'S'"),
     text("UPDATE product_units SET purpose = CASE purpose WHEN '판매' THEN 'S' WHEN '대여' THEN 'R' "
          "WHEN 'A/S 교체' THEN 'E' ELSE 'O' END WHERE purpose NOT IN ('S', 'R', 'D', 'A', 'E', 'O')"),
+    # 무상 0개월 = 무상 없음(사용자 2026-10-26) — 예전엔 종료일을 비워 '미정'으로 보였다. 이미 출하한 것은 출하 전날로 채운다(구조 변경 없음)
+    text("UPDATE product_units SET warranty_until = warranty_start - 1 "
+         "WHERE warranty_months = 0 AND warranty_start IS NOT NULL AND warranty_until IS NULL"),
     # 무상 기간 기본값 — 제품마다 정하기 나름(사용자 2026-10-19). 부품명·품목 줄·제조사에 keyword 가 들어 있으면 그 개월 수
     # (여러 개 맞으면 긴 keyword). 시리얼 등록 때 기본값으로 채우고 건마다 고칠 수 있다. months NULL = 미정.
     text(

@@ -79,17 +79,21 @@ const fromUnit = (u: ProductUnit): Draft => ({ key: `u${u.id}`, id: u.id, part_n
                                                note: u.note, locked: u.shipment_index != null });
 
 /** 품목 줄 하나의 S/N 칸 — 출하 수량만큼. 저장하면 이 줄만 바뀐다(다른 줄 S/N은 그대로). */
-export function SnPanel({ dealId, view, line, need, editIndex, bindIndex, onSaved, onClose }: {
+export function SnPanel({ dealId, view, line, need, editIndex, bindIndex, bindExpect, onSaved, onClose }: {
   dealId: number; view: IssueUnits; line: SnLine; need: number; editIndex?: number;
   /** 이미 남긴 출하 기록에 적을 때 — 저장하면 그 출하로 바로 묶인다(그 출하일부터 무상 기간) */
   bindIndex?: number;
+  /** 그 출하 기록(화면에서 본 것) — 그사이 다른 사람이 출하를 지워 번호가 밀렸으면 서버가 막는다 */
+  bindExpect?: unknown;
   onSaved: (v: IssueUnits) => void; onClose: () => void;
 }) {
   const purpose = view.biz === "rental" ? "R" : "S";      // 대여 건은 R(대여), 판매 건은 S(판매)(사용자 2026-10-22)
   // 앞선 출하로 이미 나간 부품 — 보기만(지울 수 없음)
   const earlier = line.units.filter((u) => u.shipment_index != null && u.shipment_index !== editIndex);
+  // 남긴 출하에 적을 때는 그 출하에 묶인 것만 칸에 — 다른 출하 몫으로 적어 둔(안 나간) S/N 은 그대로 두고 보기만(검증 2026-10-26)
+  const waiting = bindIndex != null ? line.units.filter((u) => u.shipment_index == null) : [];
   const [rows, setRows] = useState<Draft[]>(() => {
-    const have = usableUnits(line, editIndex).map(fromUnit);
+    const have = usableUnits(line, editIndex).filter((u) => !waiting.includes(u)).map(fromUnit);
     return [...have, ...Array.from({ length: Math.max(0, need - have.length) }, () => blank(line, purpose))];
   });
   const [busy, setBusy] = useState(false);
@@ -123,13 +127,13 @@ export function SnPanel({ dealId, view, line, need, editIndex, bindIndex, onSave
       const toUnit = (d: Draft) => ({ id: d.id ?? null, part_name: d.part_name, serial: d.serial, maker: d.maker, purpose: d.purpose,
                                        warranty_months: d.months.trim() === "" ? null : Number(d.months), note: d.note });
       const units = [
-        ...earlier.map((u) => toUnit(fromUnit(u))),
+        ...[...earlier, ...waiting].map((u) => toUnit(fromUnit(u))),
         ...rows.filter((d) => d.serial.trim()).map(toUnit),
       ];
       const r = await fetch(`/api/sales-deals/${dealId}/units`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ quote_id: view.quote_id, revision: view.revision, partial: true, lines: [{ line_no: line.line_no, units }],
-                               shipment_index: bindIndex ?? null }),
+                               shipment_index: bindIndex ?? null, shipment_expect: bindIndex != null ? bindExpect ?? null : null }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(typeof d?.detail === "string" ? d.detail : Array.isArray(d?.detail) ? "입력값을 확인해 주세요(무상 기간은 0~120개월)." : "저장하지 못했습니다.");
@@ -154,6 +158,11 @@ export function SnPanel({ dealId, view, line, need, editIndex, bindIndex, onSave
       {earlier.length > 0 && (
         <p className="mb-2 text-[11.5px] text-foreground-subtle">
           앞선 출하로 나간 S/N: {earlier.map((u) => u.serial).join(", ")}
+        </p>
+      )}
+      {waiting.length > 0 && (
+        <p className="mb-2 text-[11.5px] text-foreground-subtle">
+          아직 출하 전으로 적어 둔 S/N(이 출하에 묶지 않음): {waiting.map((u) => u.serial).join(", ")}
         </p>
       )}
       <ul className="flex flex-col gap-2">

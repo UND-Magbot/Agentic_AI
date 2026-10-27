@@ -17,7 +17,6 @@
 """
 from __future__ import annotations
 
-import calendar
 import datetime as dt
 import json
 import math
@@ -27,7 +26,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .service import COLS, DealError, _iso, _issue_no, _lock, _log, _row, deal_quotes
+from .service import COLS, DealError, _iso, _issue_no, _lock, _log, _row, deal_quotes, kst_today, term_end
 
 # 제품 상태 이니셜 — 영문 단어 첫 글자. 시리얼 옆에 'S · 판매'처럼 보인다. 바꾸면 프런트 lib/shared/unit-states.ts 도 같이.
 UNIT_STATES = (
@@ -49,6 +48,8 @@ def state_code(value: Any) -> str:
 CAUSES = ("확인 중", "제품 결함", "고객 과실", "기타")
 CHARGES = ("미정", "무상", "유상")
 AS_STATUS = ("접수", "진행 중", "완료")
+# 영업 건을 지운 S/N 의 상태(사용자 2026-10-26) — 기록은 남기고, 같은 번호 다시 등록은 막는다
+DELETED = "건 삭제"
 SERIAL_MAX, PART_MAX, MAKER_MAX, NOTE_MAX = 80, 120, 40, 300
 MONTHS_MAX = 120
 _NOT_TARGET = ("work", "freight", "note")
@@ -98,15 +99,10 @@ def default_part(name: str) -> str:
     return ((sub[0] if sub else rows[0]) if rows else "")[:PART_MAX]
 
 
-def add_months(day: dt.date, months: int) -> dt.date:
-    y, m = divmod(day.month - 1 + months, 12)
-    y, m = day.year + y, m + 1
-    return dt.date(y, m, min(day.day, calendar.monthrange(y, m)[1]))
-
-
 def warranty_until(start: dt.date | None, months: int | None) -> dt.date | None:
-    """무상 종료일 = 시작일 + 개월 − 하루(1년이면 2026-10-19 → 2027-10-18)."""
-    return add_months(start, months) - dt.timedelta(days=1) if start and months else None
+    """무상 종료일 = 시작일 + 개월 − 하루(1년이면 2026-10-19 → 2027-10-18), 그 달에 같은 날이 없으면 말일(service.term_end).
+    0개월 = 무상 없음(사용자 2026-10-26) — 출하 전날로 끝나 출하일부터 유상. 개월을 안 정했으면(None) 미정."""
+    return term_end(start, months) if start and months is not None else None
 
 
 # ── 무상 기간 기본값 ─────────────────────────────────────────────────────────
@@ -245,7 +241,7 @@ async def save_units(db: AsyncSession, deal_id: int, user_id: int | None, quote_
         if not 0 <= shipment_index < len(d["shipments"]):
             raise DealError("S/N 을 묶을 출하 기록이 없습니다. 화면을 새로 열어 주세요.")
         raw_day = d["shipments"][shipment_index].get("date")
-        ship_day = dt.date.fromisoformat(raw_day) if raw_day else dt.date.today()
+        ship_day = dt.date.fromisoformat(raw_day) if raw_day else kst_today()
     by_line = {ln["line_no"]: ln for ln in iss["lines"]}
     only = " AND line_no = ANY(:lines)" if partial else ""
     old = {r["id"]: r for r in (await db.execute(text(
@@ -288,12 +284,15 @@ async def save_units(db: AsyncSession, deal_id: int, user_id: int | None, quote_
     reals = [(v["maker"].lower(), v["serial"].lower(), uid) for uid, v in keep if not v["no_serial"]]
     if reals:
         dup = (await db.execute(text(
-            "SELECT u.serial, u.maker, u.issue_no, s.customer FROM product_units u LEFT JOIN sales_deals s ON s.id = u.deal_id "
+            "SELECT u.serial, u.maker, u.issue_no, u.status, u.note, s.customer FROM product_units u LEFT JOIN sales_deals s ON s.id = u.deal_id "
             "WHERE NOT u.no_serial AND (lower(u.maker), lower(u.serial)) IN (SELECT * FROM unnest(CAST(:m AS text[]), CAST(:s AS text[]))) "
             "AND NOT (u.id = ANY(:own))"),
             {"m": [m for m, _, _ in reals], "s": [s for _, s, _ in reals], "own": list(old)})).mappings().all()
         if dup:
             x = dup[0]
+            if x["status"] == DELETED:                  # 지운 건의 S/N — 기록으로 남겨 둔 것(사용자 2026-10-26: 다시 쓰지 않는다)
+                raise DealError(f"지운 영업 건에 등록됐던 S/N입니다: {x['serial']} ({x['maker']}) — {x['note'][:80]}. "
+                                "S/N은 겹치지 않으므로 다시 등록할 수 없습니다. 번호를 확인해 주세요.")
             raise DealError(f"이미 등록된 S/N입니다: {x['serial']} ({x['maker']}) — {x['customer'] or '고객사 없음'} "
                             f"{x['issue_no'] or ''}".rstrip())
     if gone:
@@ -309,22 +308,30 @@ async def save_units(db: AsyncSession, deal_id: int, user_id: int | None, quote_
             "no_serial = :no_serial, maker = :maker, purpose = :purpose, warranty_months = :warranty_months, note = :note, "
             "warranty_until = :until, updated_by = :u, updated_at = NOW() WHERE id = :id"),
             {**v, "until": until, "u": user_id, "id": uid})
+    new_ids: dict[int, list[int]] = {}
     for uid, v in keep:
         if uid is None:
-            await db.execute(text(
+            nid = (await db.execute(text(
                 "INSERT INTO product_units (deal_id, quote_id, quote_revision, issue_no, line_no, line_name, part_name, serial, "
                 "no_serial, maker, purpose, warranty_months, note, created_by, updated_by) VALUES (:d, :q, :r, :no, :line_no, "
-                ":line_name, :part_name, :serial, :no_serial, :maker, :purpose, :warranty_months, :note, :u, :u)"),
-                {**v, "d": deal_id, "q": quote_id, "r": revision, "no": iss["issue_no"], "u": user_id})
+                ":line_name, :part_name, :serial, :no_serial, :maker, :purpose, :warranty_months, :note, :u, :u) RETURNING id"),
+                {**v, "d": deal_id, "q": quote_id, "r": revision, "no": iss["issue_no"], "u": user_id})).scalar_one()
+            new_ids.setdefault(v["line_no"], []).append(nid)
     if ship_day is not None:
-        rs = (await db.execute(text(
-            "SELECT id, warranty_months FROM product_units WHERE deal_id = :d AND " + SRC + " "
-            "AND line_no = ANY(:lines) AND shipment_index IS NULL"),
-            {"d": deal_id, "q": quote_id, "r": revision, "lines": [b.get("line_no") for b in payload]})).mappings().all()
-        for r in rs:
-            await db.execute(text("UPDATE product_units SET shipment_index = :x, warranty_start = :s, warranty_until = :w, "
-                                  "status = '출하', updated_at = NOW() WHERE id = :i"),
-                             {"x": shipment_index, "s": ship_day, "w": warranty_until(ship_day, r["warranty_months"]), "i": r["id"]})
+        # 이번에 새로 적은 S/N 만, 그 출하로 나간 수량까지 묶는다 — 다른 출하 몫으로 미리 적어 둔(안 묶인) S/N 은 그대로
+        # (검증 2026-10-26: 안 묶인 S/N 을 전부 그 출하로 묶어 다음 출하가 막히고 무상 기간이 잘못 시작되던 문제)
+        sh = d["shipments"][shipment_index]
+        for line_no, ids in new_ids.items():
+            cap = await _bind_room(db, deal_id, quote_id, revision, sh, shipment_index, by_line[line_no])
+            if len(ids) > cap:
+                raise DealError(f"이 출하로 나간 '{by_line[line_no]['name'].splitlines()[0][:40]}' 는 {cap}개 더 적을 수 있습니다 "
+                                f"(새로 적은 S/N {len(ids)}개). 다른 출하 몫은 그 출하에서 적어 주세요.")
+            rs = (await db.execute(text("SELECT id, warranty_months FROM product_units WHERE id = ANY(:i)"),
+                                   {"i": ids})).mappings().all()
+            for r in rs:
+                await db.execute(text("UPDATE product_units SET shipment_index = :x, warranty_start = :s, warranty_until = :w, "
+                                      "status = '출하', updated_at = NOW() WHERE id = :i"),
+                                 {"x": shipment_index, "s": ship_day, "w": warranty_until(ship_day, r["warranty_months"]), "i": r["id"]})
     await _log(db, deal_id, user_id, "units", {"no": iss["issue_no"], "count": len(keep), "removed": len(gone),
                                                **({"shipment": shipment_index + 1} if ship_day is not None else {})})
     await db.commit()
@@ -349,21 +356,82 @@ async def won_summary(db: AsyncSession, d: dict) -> dict | None:
     return {"quote_id": won[0], "revision": won[1], "issue_no": (d.get("quote") or {}).get("no"), **s}
 
 
+def _flat(name: str) -> str:
+    """품목 줄 이름 한 줄로(화면 flatName 과 같게) — 줄 번호 없는 예전 출하 줄을 이름으로 짝 지을 때."""
+    return re.sub(r"\s*\n\s*-?\s*", " ", name or "").strip()
+
+
+def ship_need(lines: list[dict] | None) -> tuple[dict[int, int], dict[int, str]]:
+    """출하 줄 → 품목 줄 번호마다 출하 수량 합(같은 줄이 두 번이면 더한다)·이름."""
+    need: dict[int, int] = {}
+    names: dict[int, str] = {}
+    for ln in lines or []:
+        if ln.get("line_no") is None or not (ln.get("qty") or 0) > 0:
+            continue
+        need[ln["line_no"]] = need.get(ln["line_no"], 0) + math.ceil(ln["qty"])
+        names.setdefault(ln["line_no"], str(ln.get("name") or "")[:40])
+    return need, names
+
+
+async def _bind_room(db: AsyncSession, deal_id: int, quote_id: int, revision: int, sh: dict, index: int, line: dict) -> int:
+    """이미 남긴 출하(index)에 품목 줄 하나의 S/N 을 몇 개 더 묶을 수 있는지 = 그 출하의 그 품목 수량 − 이미 묶인 수.
+    출하 줄에 줄 번호가 없으면(예전 기록) 이름으로, 그래도 없으면(세트 출하) 수주 수량 − 다른 출하로 나간 수."""
+    lines = sh.get("lines") or []
+    need, _ = ship_need(lines)
+    qty = need.get(line["line_no"])
+    if qty is None:
+        same = [ln for ln in lines if ln.get("line_no") is None and _flat(ln.get("name") or "") == _flat(line["name"])]
+        if same:
+            qty = sum(math.ceil(ln.get("qty") or 0) for ln in same)
+    rs = (await db.execute(text(
+        "SELECT shipment_index FROM product_units WHERE deal_id = :d AND " + SRC + " AND line_no = :l AND shipment_index IS NOT NULL"),
+        {"d": deal_id, "q": quote_id, "r": revision, "l": line["line_no"]})).scalars().all()
+    if qty is None:
+        if need or any(ln.get("line_no") is None and not ln.get("qty_text") for ln in lines):
+            return 0                                 # 이 출하에 없는 품목
+        qty = line["qty"] - sum(1 for x in rs if x != index)
+    return max(0, qty - sum(1 for x in rs if x == index))
+
+
+async def _ship_counts(db: AsyncSession, deal_id: int, s: dict, ids: list[int]) -> dict[int, int]:
+    return dict((await db.execute(text(
+        "SELECT line_no, COUNT(*) FROM product_units WHERE deal_id = :d AND " + SRC + " AND id = ANY(:ids) GROUP BY line_no"),
+        {"d": deal_id, "q": s["quote_id"], "r": s["revision"], "ids": ids})).all())
+
+
+def _over(need: dict[int, int], have: dict[int, int], names: dict[int, str], *, strict: bool) -> None:
+    """출하 수량보다 많은 S/N 을 묶으려 하면 막는다(검증 2026-10-26 — 나눠 출하 때 다음 출하 몫까지 묶이던 문제).
+    strict = 이 출하에 없는 품목의 S/N 도 막는다(새 출하). 고치기는 줄 짝이 안 맞는 예전 기록의 S/N 이 있어 막지 않는다."""
+    over = [f"{names[no]}(출하 {need[no]}개, S/N {n}개)" for no, n in have.items() if no in need and n > need[no]]
+    if strict and any(no not in need for no in have):
+        over.append("이번 출하에 없는 품목의 S/N")
+    if over:
+        raise DealError("이번 출하 수량보다 S/N 이 많습니다 — " + ", ".join(over) + ". 화면을 새로 열어 다시 골라 주세요.")
+
+
+async def check_ship_over(db: AsyncSession, d: dict, p: dict) -> None:
+    """남긴 출하 고치기 — 줄마다 묶는 S/N 이 출하 수량을 넘지 않는지만(모자란 것은 막지 않는다)."""
+    need, names = ship_need(p.get("lines"))
+    if not need or p.get("unit_ids") is None:
+        return
+    s = await won_summary(db, d)
+    if s:
+        _over(need, await _ship_counts(db, d["id"], s, p["unit_ids"]), names, strict=False)
+
+
 async def check_before_ship(db: AsyncSession, d: dict, p: dict | None = None) -> tuple[int, int] | None:
     """출하 전 확인. 반환 = 수주 판(없으면 None).
     출하 줄에 수주 판 품목 줄 번호(line_no)가 있으면 그 줄마다 이 출하로 묶는 S/N 이 출하 수량만큼인지(사용자 2026-10-23 —
-    출하 기록을 쓰며 품목마다 등록, 나눠 출하 가능). 없으면(세트로 묶어 출하 등) 수주 판의 S/N 을 다 적었는지."""
+    출하 기록을 쓰며 품목마다 등록, 나눠 출하 가능 — 모자라도·넘쳐도 막는다). 없으면(세트로 묶어 출하 등) 수주 판의 S/N 을 다 적었는지."""
     s = await won_summary(db, d)
-    shipped = [ln for ln in (p or {}).get("lines") or [] if ln.get("line_no") is not None and (ln.get("qty") or 0) > 0]
-    if s and shipped and (p or {}).get("unit_ids") is not None:
-        have = dict((await db.execute(text(
-            "SELECT line_no, COUNT(*) FROM product_units WHERE deal_id = :d AND " + SRC + " "
-            "AND id = ANY(:ids) GROUP BY line_no"),
-            {"d": d["id"], "q": s["quote_id"], "r": s["revision"], "ids": p["unit_ids"]})).all())
-        short = [ln["name"][:40] for ln in shipped if have.get(ln["line_no"], 0) < math.ceil(ln["qty"])]
+    need, names = ship_need((p or {}).get("lines"))
+    if s and need and (p or {}).get("unit_ids") is not None:
+        have = await _ship_counts(db, d["id"], s, p["unit_ids"])
+        short = [names[no] for no, n in need.items() if have.get(no, 0) < n]
         if short:
             raise DealError("출하 전에 S/N을 등록해 주세요 — " + ", ".join(short) + ". S/N이 없는 품목은 '특주'처럼 적으면 됩니다.",
                             code="SERIALS_REQUIRED")
+        _over(need, have, names, strict=True)
         return s["quote_id"], s["revision"]
     if s and s["missing"] > 0:
         raise DealError(f"출하 전에 S/N을 등록해 주세요 — {s['issue_no']} 기준 {s['total']}개 중 {s['done']}개 등록. "
@@ -374,7 +442,8 @@ async def check_before_ship(db: AsyncSession, d: dict, p: dict | None = None) ->
 async def ship_units(db: AsyncSession, deal_id: int, index: int, day: dt.date, unit_ids: list[int] | None,
                      issue: tuple[int, int] | None) -> int:
     """출하 기록 index 에 부품을 묶는다 — 출하일 = 무상 기간 시작일, 종료일 확정. unit_ids None 이면 수주 판에서 아직 안 나간 것 전부.
-    이 출하에 묶였다가 빠진 부품은 '등록'으로 되돌린다. 반환 = 묶은 개수."""
+    이 출하에 묶였다가 빠진 부품은 '등록'으로 되돌린다. 반환 = 묶은 개수.
+    이미 이 출하에 묶여 회수까지 마친 부품('회수')은 출하 기록을 고쳐도 '회수' 그대로(검증 2026-10-26)."""
     if unit_ids is None:
         if not issue:
             return 0
@@ -392,7 +461,8 @@ async def ship_units(db: AsyncSession, deal_id: int, index: int, day: dt.date, u
         raise DealError("이미 다른 출하로 나간 S/N이 있습니다.")
     for r in rs:
         await db.execute(text("UPDATE product_units SET shipment_index = :x, warranty_start = :s, warranty_until = :w, "
-                              "status = '출하', updated_at = NOW() WHERE id = :i"),
+                              "status = CASE WHEN status = '회수' AND shipment_index = :x THEN '회수' ELSE '출하' END, "
+                              "updated_at = NOW() WHERE id = :i"),
                          {"x": index, "s": day, "w": warranty_until(day, r["warranty_months"]), "i": r["id"]})
     return len(rs)
 
@@ -418,9 +488,11 @@ async def deal_units(db: AsyncSession, deal_id: int) -> list[dict]:
 # ── 조회(제품·A/S 탭) ────────────────────────────────────────────────────────
 
 def warranty_state(u: dict, day: dt.date) -> str:
-    """'무상 기간 (D-120)' / '무상 기간 지남' / '출하 전' / '무상 기간 미정'."""
+    """'무상 기간 (D-120)' / '무상 기간 지남' / '무상 없음'(0개월) / '출하 전' / '무상 기간 미정'."""
     if not u.get("warranty_start"):
         return "출하 전"
+    if u.get("warranty_months") == 0:
+        return "무상 없음"
     until = u.get("warranty_until")
     if until is None:
         return "무상 기간 미정"
@@ -437,9 +509,10 @@ async def search_units(db: AsyncSession, q: str, today: dt.date, limit: int = 50
         "  (SELECT COUNT(*) FROM as_cases a WHERE a.unit_id = u.id AND a.status <> '완료') AS as_open "
         "FROM product_units u LEFT JOIN sales_deals s ON s.id = u.deal_id "
         "WHERE :q = '' OR u.serial ILIKE :p OR u.part_name ILIKE :p OR u.line_name ILIKE :p OR s.customer ILIKE :p "
-        "  OR u.issue_no ILIKE :p OR u.maker ILIKE :p "
+        "  OR u.issue_no ILIKE :p OR u.maker ILIKE :p OR u.note ILIKE :p "
         "ORDER BY u.updated_at DESC, u.id DESC LIMIT :n"),
-        {"q": q, "p": f"%{q}%", "n": limit})).mappings().all()
+        # %·_ 는 글자 그대로 찾는다(검증 2026-10-26 — 와일드카드로 동작해 '_' 하나로 전부 나오던 일). LIKE 기본 이스케이프 = 역슬래시
+        {"q": q, "p": "%" + re.sub(r"([\\%_])", r"\\\1", q) + "%", "n": limit})).mappings().all()
     out = []
     for r in rs:
         u = _unit_view(r)
@@ -519,6 +592,18 @@ def _clean_case(p: dict) -> dict:
     return out
 
 
+async def _no_open_case(db: AsyncSession, unit_id: int, serial: str, *, except_id: int | None = None) -> None:
+    """같은 S/N 에 끝나지 않은 A/S(접수·진행 중)가 있으면 막는다(사용자 2026-10-27) — 그 기록에 내용을 더하게.
+    제품 줄을 잠가 두 사람이 동시에 접수해도 하나만 들어간다."""
+    await db.execute(text("SELECT id FROM product_units WHERE id = :i FOR UPDATE"), {"i": unit_id})
+    r = (await db.execute(text("SELECT received_on, symptom FROM as_cases WHERE unit_id = :u AND status <> '완료' "
+                               "AND (CAST(:x AS BIGINT) IS NULL OR id <> :x) ORDER BY received_on, id LIMIT 1"),
+                          {"u": unit_id, "x": except_id})).mappings().first()
+    if r:
+        what = f"{_iso(r['received_on'])} 접수" + (f" · {str(r['symptom'])[:30]}" if r["symptom"] else "")
+        raise DealError(f"{serial} 은(는) 이미 A/S 가 진행 중입니다({what}). 새로 접수하지 말고 그 A/S 기록에 내용을 더해 주세요.", 409)
+
+
 async def create_case(db: AsyncSession, user_id: int | None, unit_id: int, p: dict, *, commit: bool = True) -> dict:
     """A/S 접수 — 무상·유상을 고르지 않았으면 접수일·원인으로 제안한 값. commit=False 면 여러 건을 한 번에 저장할 때(create_cases)."""
     u = (await db.execute(text("SELECT u.id, u.deal_id, u.serial, u.part_name, u.warranty_until, s.customer FROM product_units u "
@@ -526,11 +611,15 @@ async def create_case(db: AsyncSession, user_id: int | None, unit_id: int, p: di
     if not u:
         raise DealError("S/N을 찾을 수 없습니다.", 404)
     c = _clean_case(p)
-    received = c.get("received_on") or dt.date.today()
+    if c.get("status", "접수") != "완료":         # 이미 끝난 A/S 를 기록으로 남기는 건 막지 않는다
+        await _no_open_case(db, unit_id, u["serial"])
+    received = c.get("received_on") or kst_today()
     cause = c.get("cause", "확인 중")
     inside, suggested = suggest_charge(dict(u), received, cause)
     status = c.get("status", "접수")
     closed = c.get("closed_on") or (received if status == "완료" else None)
+    # 접수하면서 바로 '진행 중'이면 제품 상태도 A(A/S 중)로 — 고칠 때(update_case)와 같게(검증 2026-10-26). 이력에 남겨 완료 때 되돌린다
+    follow = await _follow_unit_state(db, {"unit_id": unit_id, "id": 0, "history": []}, status) if status == "진행 중" else {}
     new_id = (await db.execute(text(
         "INSERT INTO as_cases (unit_id, deal_id, serial, part_name, customer, contact, photos, received_on, symptom, cause, in_warranty, "
         "charge, status, action, closed_on, note, history, created_by) VALUES (:u, :d, :sn, :pn, :c, :ct, CAST(:ph AS jsonb), :r, :sy, "
@@ -540,7 +629,7 @@ async def create_case(db: AsyncSession, user_id: int | None, unit_id: int, p: di
          "sy": c.get("symptom", ""), "ca": cause, "iw": inside, "ch": c.get("charge", suggested), "st": status,
          "ac": c.get("action", ""), "cl": closed, "no": c.get("note", ""),
          "h": json.dumps([{"at": dt.datetime.now(dt.timezone.utc).isoformat(), "by": user_id, "what": "접수",
-                           "suggested": suggested}], ensure_ascii=False), "by": user_id})).scalar_one()
+                           "suggested": suggested, **follow}], ensure_ascii=False), "by": user_id})).scalar_one()
     if u["deal_id"]:
         await _log(db, u["deal_id"], user_id, "as_case", {"serial": u["serial"], "status": status, "charge": c.get("charge", suggested)})
     if not commit:
@@ -627,8 +716,10 @@ async def update_case(db: AsyncSession, user_id: int | None, case_id: int, p: di
         raise DealError("A/S 기록을 찾을 수 없습니다.", 404)
     old = _case_view(r)
     c = _clean_case(p)
+    if old["status"] == "완료" and c.get("status") in ("접수", "진행 중") and old["unit_id"]:   # 끝난 A/S 를 다시 열 때도 같게
+        await _no_open_case(db, old["unit_id"], old["serial"], except_id=case_id)
     if c.get("status") == "완료" and not (c.get("closed_on") or old["closed_on"]):
-        c["closed_on"] = dt.date.today()
+        c["closed_on"] = kst_today()
     if c.get("status") in ("접수", "진행 중") and "closed_on" not in p:
         c["closed_on"] = None
     if "received_on" in c:                               # 접수일이 바뀌면 무상 기간 안인지 다시

@@ -42,6 +42,11 @@ def expected_total(d: dict) -> float | None:
     return supply_total(d)
 
 
+def pay_tolerance(d: dict) -> float:
+    """완납으로 보는 차이 — 원화만 PAY_TOLERANCE, 외화는 1(달러 건에서 $999 덜 받아도 완납되던 문제)."""
+    return PAY_TOLERANCE if ((d.get("quote") or {}).get("currency") or "KRW") == "KRW" else 1
+
+
 def terms(d: dict) -> list[dict[str, Any]]:
     """결제 조건 회차 + 금액(공급가액 × %, 마지막 회차가 끝전) + 확인 여부. 조건을 안 정했으면 []."""
     if not d.get("pay_case"):

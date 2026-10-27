@@ -20,6 +20,16 @@ export const UNIT_STATE_TONE: Record<string, string> = {
   O: "bg-foreground/8 text-foreground-muted",
 };
 
+/** 대여 단계(사용자 2026-10-27) — 따로 저장하지 않고 S/N 진행(status)으로 읽는다: 등록 = 대여 전, 출하 = 대여 중, 회수 = 대여 완료.
+ *  R 이거나, 대여 건에서 나가 A/S 중(A)인 제품만. 그 밖은 null. */
+export function rentalPhase(code: string, status: string | null | undefined, rentalDeal = false): string | null {
+  if (code !== "R" && !(code === "A" && rentalDeal)) return null;
+  if (status === "출하") return "대여 중";
+  if (status === "회수") return "대여 완료";
+  if (status === "등록" && code === "R") return "대여 전";
+  return null;
+}
+
 /** 'S' → 'S · 판매' (모르는 값은 그대로) */
 export function unitStateText(code: string): string {
   const s = UNIT_STATES.find((x) => x.code === code);

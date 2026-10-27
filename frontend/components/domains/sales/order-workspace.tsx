@@ -8,7 +8,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AgentBubble, type AgentStep, streamNdjson } from "@/components/domains/sales/agent-chat";
 import { type Act, BUYER_HINT, GroupHead, ShipDialog, type ShipDraft, ShipForm, StatementDialog, StatementItems, shipmentDraft } from "@/components/domains/sales/deal-flow";
-import { INPUT, Muted, STAGE_DONE, STAGE_SHIP_ONLY, STAGE_TONE, dealRequest, shortDate, todayIso, won } from "@/components/domains/sales/deal-format";
+import { INPUT, Muted, STAGE_DONE, STAGE_SHIP_ONLY, STAGE_TONE, dealRequest, shortDate, termExpect, todayIso, won } from "@/components/domains/sales/deal-format";
 import { DownloadDialog, PreviewDialog } from "@/components/domains/sales/quote-workspace";
 import { Icon } from "@/components/shared/ui/icon";
 import type { DealListData, DealRow, DealStatement, PayTerm } from "@/lib/shared/sales-deals";
@@ -107,7 +107,7 @@ function PayQueue({ onOpen }: { onOpen: (id: number) => void }) {
     setBusy(key);
     setErr(null);
     try {
-      const after = await dealRequest(`/${deal.id}/confirm-term`, { index: t.index, date: dates[key] || todayIso() });
+      const after = await dealRequest(`/${deal.id}/confirm-term`, { index: t.index, date: dates[key] || todayIso(), expect: termExpect(t) });
       await getJson(`/api/sales-deals/${deal.id}/order/note`, { event: "payment" }).catch(() => null);
       if (after.stage === STAGE_DONE) setFinished(after);
       setTick((x) => x + 1);
@@ -440,10 +440,10 @@ export function OrderWorkspace({ id, onBack }: { id: number; onBack: () => void 
   }
   const act: Act = (path, body) => confirm(path, body, path === "shipments" || path === "shipment-edit" ? "ship" : path === "confirm-term" ? "payment" : "case");
   /** 회차 입금 확인 — 회사가 따로 확인한 뒤 버튼으로(사용자 2026-10-08). 금액 = 그 회차 공급가액. */
-  const confirmTerm = (index: number) => confirm("confirm-term", { index, date: payDate || todayIso() }, "payment");
+  const confirmTerm = (t: PayTerm) => confirm("confirm-term", { index: t.index, date: payDate || todayIso(), expect: termExpect(t) }, "payment");
   /** 입금 확인 취소 — 관리자만. 대화에는 남기지 않고 화면만 다시 받는다. */
-  const unconfirmTerm = (index: number) => run("저장 중", async () => {
-    await dealRequest(`/${id}/unconfirm-term`, { index });
+  const unconfirmTerm = (t: PayTerm) => run("저장 중", async () => {
+    await dealRequest(`/${id}/unconfirm-term`, { index: t.index, expect: termExpect(t) });
     load(await getJson<Order>(`/api/sales-deals/${id}/order`));
   });
 
@@ -651,12 +651,12 @@ export function OrderWorkspace({ id, onBack }: { id: number; onBack: () => void 
                         {t.confirmed ? (
                           <>
                             <span className="text-emerald-700 dark:text-emerald-300">✓ 입금 확인 {shortDate(t.paid_date)}</span>
-                            {admin && <button type="button" disabled={!!busy} onClick={() => void unconfirmTerm(t.index)}
+                            {admin && <button type="button" disabled={!!busy} onClick={() => void unconfirmTerm(t)}
                                               className="text-[11.5px] text-foreground-subtle hover:text-red-600 hover:underline">확인 취소</button>}
                           </>
                         ) : (
                           <button type="button" disabled={!!busy || !now && !late.has(t.index)}
-                                  onClick={() => void confirmTerm(t.index)} className={cn(now ? primaryBtn : secondaryBtn, "h-8")}>
+                                  onClick={() => void confirmTerm(t)} className={cn(now ? primaryBtn : secondaryBtn, "h-8")}>
                             입금 확인
                           </button>
                         )}
@@ -726,8 +726,8 @@ export function OrderWorkspace({ id, onBack }: { id: number; onBack: () => void 
                   ) : a.type === "ship" ? (
                     <ActBtn key={j} disabled={!!busy || !st || !deal.pay_case} onClick={() => setShipOpen(true)}>출하 칸 열기</ActBtn>
                   ) : (
-                    <ActBtn key={j} disabled={!!busy || !!terms[a.index]?.confirmed}
-                            onClick={() => void confirmTerm(a.index)}>
+                    <ActBtn key={j} disabled={!!busy || !terms[a.index] || !!terms[a.index]?.confirmed}
+                            onClick={() => void confirmTerm(terms[a.index])}>
                       {terms[a.index]?.confirmed ? "확인됨" : `입금 확인 — ${a.label} ${won(a.amount)}원`}
                     </ActBtn>
                   ))}
@@ -856,7 +856,8 @@ function TermsEditor({ deal, busy, onSave }: { deal: DealRow; busy: boolean; onS
                          onChange={(e) => setRow(i, { when: e.target.value })} className={HEAD_FIELD} />
                 </td>
                 <td className="py-1.5 pr-1.5">
-                  <input type="date" value={r.expected_date} disabled={off} aria-label={`${r.label} 예정 입금일`}
+                  {/* 지난 날짜는 새로 고를 수 없게(검증 2026-10-26) — 이미 저장된 지난 예정일은 그대로 보인다 */}
+                  <input type="date" value={r.expected_date} disabled={off} aria-label={`${r.label} 예정 입금일`} min={locked ? undefined : todayIso()}
                          onChange={(e) => setRow(i, { expected_date: e.target.value })} className={HEAD_FIELD} />
                 </td>
                 <td className="py-1.5 text-right font-bold tabular-nums">

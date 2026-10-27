@@ -5,6 +5,7 @@
 // ② 읽은 품목·발행번호를 확인·수정 → [이 내용으로 발행] = 견적서 발행 한 번(판 +1, 영업 건 금액 갱신).
 //    발행번호는 견적서에 적힌 번호를 따른다(담당자가 고치면서 정한 번호). 적힌 번호가 없을 때만 새 번호 QT-이니셜+오늘-NN.
 // ③ 발행하면 작성 상태도 올린 파일 내용으로 맞춘다(사용자 2026-10-15) — [견적서 고치기]·미리보기·AI 대화가 이어진다(끌 수 있음).
+// ④ 대여 견적서는 대여 시작일을 한 번 더 확인해야 발행된다(사용자 2026-10-27) — 날짜를 고르거나 [확인]에 체크.
 import { useEffect, useState } from "react";
 
 import { Icon } from "@/components/shared/ui/icon";
@@ -14,7 +15,11 @@ type Item = { name: string; spec: string; qty: number | null; unit_price: number
 type Upload = { key: string; filename: string; mime: string; size: number };
 type ReadResult = { status: "ok" | "unreadable" | "failed"; items: Item[]; supply_total?: number | null;
                     vat_included?: boolean | null; doc_no?: string | null; summary: string; template?: boolean };
-type SyncPreview = { applies: boolean; template: boolean; changes: string[]; warnings: string[]; message: string };
+type SyncPreview = { applies: boolean; template: boolean; changes: string[]; warnings: string[]; message: string;
+                     /** 대여 견적서 — 개월 수(파일 기준)·지금 정해진 시작일 */
+                     rental?: { months: number | null; start: string | null };
+                     /** 판매/대여가 작성 중인 견적과 다름 — 발행 막음 */
+                     blocked?: string };
 
 const ACCEPT = ".xlsx,.pdf";
 const inputCls = "h-8 w-full min-w-0 rounded-md border border-border bg-surface px-2 text-[12.5px] outline-none focus:border-accent";
@@ -26,8 +31,10 @@ function detail(d: unknown, fallback: string): string {
 }
 
 /** 열 때만 렌더({open && <QuoteUploadDialog …/>}). uploadUrl = multipart 올리기, confirmUrl = JSON 발행. onDone 에 발행 응답. */
-export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClose }: {
+export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClose, paidFull = false }: {
   title: string; uploadUrl: string; confirmUrl: string; onDone: (data: unknown) => void; onClose: () => void;
+  /** 이어진 영업 건이 완납 — 발행 전에 한 번 확인(사용자 2026-10-26) */
+  paidFull?: boolean;
 }) {
   const [file, setFile] = useState<File | null>(null);
   const [initials, setInitials] = useState("");
@@ -37,12 +44,17 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
   const [docNo, setDocNo] = useState("");
   const [sync, setSync] = useState<SyncPreview | null>(null);
   const [doSync, setDoSync] = useState(true);
+  const [rentStart, setRentStart] = useState("");
+  const [rentOk, setRentOk] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // 이미 있는 발행번호로 발행하려 할 때 팝업(사용자 2026-10-13) — [확인]이면 발행번호 칸으로 돌아가 고친다
   const [dupMsg, setDupMsg] = useState<string | null>(null);
   // 같은 영업 건에 같은 번호의 판이 있을 때 — 덮어쓸지 묻는 팝업(사용자 2026-10-13)
   const [overMsg, setOverMsg] = useState<string | null>(null);
+  // 완납한 건에 발행 — [그래도 발행]을 누르면 이번 창에서는 다시 묻지 않는다
+  const [paidAsk, setPaidAsk] = useState(false);
+  const [paidOk, setPaidOk] = useState(false);
   // 파일을 끌어다 놓는 중(사용자 2026-10-16) — 끌어 놓으면 accept 가 안 걸러서 확장자를 직접 본다
   const [over, setOver] = useState(false);
   const pick = (f: File | undefined) => {
@@ -60,10 +72,10 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
     return () => { alive = false; };
   }, []);
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !busy && !dupMsg && !overMsg) onClose(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !busy && !dupMsg && !overMsg && !paidAsk) onClose(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [busy, dupMsg, overMsg, onClose]);
+  }, [busy, dupMsg, overMsg, paidAsk, onClose]);
 
   function closeDup() {
     setDupMsg(null);
@@ -89,7 +101,10 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
       setRead(rd);
       setItems(rd.items.length ? rd.items : [{ name: "", spec: "", qty: 1, unit_price: null }]);
       setDocNo(rd.doc_no ?? "");
-      setSync((d.sync as SyncPreview | undefined) ?? null);
+      const sp = (d.sync as SyncPreview | undefined) ?? null;
+      setSync(sp);
+      setRentStart(sp?.rental?.start ?? "");
+      setRentOk(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "견적서를 올리지 못했습니다.");
     } finally {
@@ -97,8 +112,9 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
     }
   }
 
-  async function issue(overwrite = false) {
+  async function issue(overwrite = false, paidConfirmed = paidOk) {
     if (!upload) return;
+    if (paidFull && !paidConfirmed) { setPaidAsk(true); return; }
     if (!docNo.trim() && !/^[A-Za-z]{2}$/.test(initials.trim())) {
       setError("견적서에 발행번호가 없으면 발행자 이니셜을 영문 2자로 적어 주세요(예: LU) — 새 번호를 매깁니다.");
       return;
@@ -110,7 +126,7 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
       const r = await fetch(confirmUrl, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ upload, doc_no: docNo.trim(), initials: initials.trim().toUpperCase(), items, overwrite,
-                               sync: doSync }),
+                               sync: doSync, rental_start: rentStart || null, rental_checked: rentOk }),
       });
       const d = await r.json().catch(() => ({}));
       if (r.status === 409) {
@@ -132,6 +148,9 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
   const num = (s: string) => (s.trim() === "" ? null : Number(s.replace(/,/g, "")));
   const total = items.reduce((a, x) => a + (x.qty ?? 0) * (x.unit_price ?? 0), 0);
   const filled = items.length > 0 && items.every((x) => x.name.trim() && x.qty && x.qty > 0 && x.unit_price != null);
+  const rental = sync?.rental ?? null;
+  const why = sync?.blocked ? sync.blocked : !filled ? "품명·수량·단가를 모두 채워 주세요"
+    : rental && !rentOk ? "대여 시작일을 확인해 주세요(날짜를 고르거나 확인에 체크)" : "";
   const SHOWN = 8;
   const today = new Date();
   const ymd = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, "0")}${String(today.getDate()).padStart(2, "0")}`;
@@ -248,6 +267,35 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
                 ))}
               </div>
             )}
+            {sync?.blocked && (
+              <p className="rounded-lg border border-red-500/40 bg-red-500/[0.05] px-3 py-2 text-[12.5px] text-red-700 dark:text-red-300">{sync.blocked}</p>
+            )}
+            {rental && (
+              <div className="flex flex-col gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/[0.05] px-3 py-2.5 text-[12.5px]">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-full bg-emerald-600 px-2 py-0.5 text-[11px] font-bold text-white">대여</span>
+                  <b className="text-emerald-900 dark:text-emerald-200">대여 시작일 확인</b>
+                  <span className="text-[11.5px] text-foreground-subtle">
+                    대여 {rental.months ? `${rental.months}개월` : "개월 수 미정"} · 견적서 파일에는 시작일이 없어 발행 전에 한 번 더 확인합니다
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <label className="flex items-center gap-2">
+                    <span className="font-medium">대여 시작일</span>
+                    <input type="date" value={rentStart} disabled={!!busy} aria-label="대여 시작일"
+                           onChange={(e) => { setRentStart(e.target.value); setRentOk(true); }}
+                           className={cn(inputCls, "w-40 border-emerald-500/40")} />
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input type="checkbox" checked={rentOk} disabled={!!busy} onChange={(e) => setRentOk(e.target.checked)} />
+                    {rentStart ? "이 시작일로 확인했습니다" : "시작일은 아직 미정으로 둡니다"}
+                  </label>
+                </div>
+                <span className="text-[11.5px] text-foreground-subtle">
+                  발행하면 이 날짜가 영업 건의 대여 시작일이 되고 끝나는 날을 다시 계산합니다. 비워 두면 미정 — 나중에 영업 건 화면에서 정할 수 있습니다.
+                </span>
+              </div>
+            )}
             <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-surface px-3 py-2 text-[12.5px]">
               <label className="flex flex-wrap items-center gap-2">
                 <span className="font-medium">발행번호</span>
@@ -279,8 +327,8 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
               올리고 읽기
             </button>
           ) : (
-            <button type="button" disabled={!filled || !!busy} onClick={() => void issue()}
-                    title={filled ? "" : "품명·수량·단가를 모두 채워 주세요"}
+            <button type="button" disabled={!!why || !!busy} onClick={() => void issue()}
+                    title={why}
                     className="h-9 rounded-lg bg-accent px-5 text-[13px] font-semibold text-white hover:brightness-105 disabled:opacity-50">
               {docNo.trim() ? `${docNo.trim()} 로 발행` : "이 내용으로 발행 (새 번호)"}
             </button>
@@ -301,6 +349,21 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
           </div>
         </div>
       )}
+      {paidAsk && (
+        <div role="alertdialog" aria-modal="true" aria-labelledby="qup-paid-title"
+             className="anim-fade-in fixed inset-0 z-[60] grid place-items-center bg-black/30 px-4">
+          <div className="anim-fade-in-up w-full max-w-[440px] rounded-2xl border border-border bg-surface-raised p-5 text-[13px] shadow-[0_30px_70px_-30px_rgba(15,30,70,0.55)]">
+            <h3 id="qup-paid-title" className="text-[15px] font-semibold text-amber-700 dark:text-amber-300">완납한 건입니다</h3>
+            <p className="mt-2 text-[13px] leading-relaxed text-foreground">완납한 건입니다. 새로 발행해도 이 건의 견적 금액·품목은 바뀌지 않고 견적서 목록에만 남습니다. 추가 주문이면 새 영업 건으로 만들어 주세요.</p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" autoFocus onClick={() => setPaidAsk(false)}
+                      className="h-9 rounded-lg border border-border px-4 text-[13px] font-semibold hover:bg-foreground/5">취소</button>
+              <button type="button" onClick={() => { setPaidAsk(false); setPaidOk(true); void issue(false, true); }}
+                      className="h-9 rounded-lg bg-amber-600 px-5 text-[13px] font-semibold text-white hover:brightness-105">그래도 발행</button>
+            </div>
+          </div>
+        </div>
+      )}
       {overMsg && (
         <div role="alertdialog" aria-modal="true" aria-labelledby="qup-over-title" aria-describedby="qup-over-msg"
              className="anim-fade-in fixed inset-0 z-[60] grid place-items-center bg-black/30 px-4">
@@ -311,7 +374,7 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
             <div className="mt-4 flex justify-end gap-2">
               <button type="button" onClick={() => { setOverMsg(null); closeDup(); }}
                       className="h-9 rounded-lg border border-border px-4 text-[13px] font-semibold hover:bg-foreground/5">취소</button>
-              <button type="button" autoFocus onClick={() => void issue(true)}
+              <button type="button" autoFocus onClick={() => void issue(true, true)}
                       className="h-9 rounded-lg bg-amber-600 px-5 text-[13px] font-semibold text-white hover:brightness-105">덮어쓰기</button>
             </div>
           </div>

@@ -139,8 +139,13 @@ async def run() -> None:
         check(st["items"][0]["unit"] == "SET" and st["parts"][0]["name"] == "TCV3" and st["totals"]["supply"] == 3_000_000,
               "세트로 묶어 발급: 단위 SET + 구성 품목 보관", str(st["items"]))
         past = (TODAY - dt.timedelta(days=3)).isoformat()
-        await svc.set_terms(db, t_id, uid, [{"label": "선금", "pct": 30, "when": "발주 시", "expected_date": past},
+        # 지난 날짜를 새로 넣는 건 막으므로(검증 2026-10-26) 미래 날짜로 정한 뒤 날이 지난 것처럼 바꾼다
+        await svc.set_terms(db, t_id, uid, [{"label": "선금", "pct": 30, "when": "발주 시",
+                                             "expected_date": (TODAY + dt.timedelta(days=3)).isoformat()},
                                             {"label": "잔금", "pct": 70, "expected_date": None}])
+        await db.execute(text("UPDATE sales_deals SET pay_terms = jsonb_set(pay_terms, '{0,expected_date}', to_jsonb(CAST(:p AS text))) "
+                              "WHERE id = :i"), {"p": past, "i": t_id})
+        await db.commit()
         d = await svc.get_deal(db, t_id, TODAY)
         check([t["when"] for t in d["flow"]["terms"]] == ["발주 시", ""] and "선금 30%(발주 시)" in (d["flow"]["pay_case_label"] or ""),
               "시점(수기) 저장·상세 표시, 안 적은 회차는 빈칸", str([t["when"] for t in d["flow"]["terms"]]))

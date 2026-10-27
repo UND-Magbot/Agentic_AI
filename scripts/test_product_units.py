@@ -58,8 +58,8 @@ check(units.default_part(LINES[0]["name"]) == "TCV1 MASTER T.C (Robot Side)" and
 check(units.is_no_serial("특주") and units.is_no_serial("실주") and not units.is_no_serial("DT1802-4619-0048"),
       "숫자 없는 글(특주·실주) = 시리얼 없음")
 check(units.warranty_until(dt.date(2026, 10, 19), 12) == dt.date(2027, 10, 18)
-      and units.warranty_until(dt.date(2026, 1, 31), 1) == dt.date(2026, 2, 27)
-      and units.warranty_until(dt.date(2026, 10, 19), None) is None, "무상 종료일 = 시작 + 개월 − 하루(월말 보정), 개월 없으면 미정")
+      and units.warranty_until(dt.date(2026, 1, 31), 1) == dt.date(2026, 2, 28)
+      and units.warranty_until(dt.date(2026, 10, 19), None) is None, "무상 종료일 = 시작 + 개월 − 하루(그 달에 같은 날이 없으면 말일 — 민법, 사용자 2026-10-27), 개월 없으면 미정")
 u_in = {"warranty_until": "2027-10-18"}
 check(units.suggest_charge(u_in, dt.date(2027, 1, 5), "제품 결함") == (True, "무상")
       and units.suggest_charge(u_in, dt.date(2027, 1, 5), "고객 과실") == (True, "유상")
@@ -240,7 +240,8 @@ async def flow(db, deal_id: int, qid: int) -> None:
     check(c2["charge"] == "유상", "고객 과실이면 유상 제안")
     check(c2["customer"] == "(주)바뀐고객" and c2["contact"].startswith("김철수") and c2["photos"] == [pid] and "received_by" in c2,
           "A/S 접수서 = 고객사(고칠 수 있음)·담당자·사진(겹침 하나로)·접수자", str(c2)[:300])
-    c3 = await units.create_case(db, None, rs[s2]["id"], {"received_on": dt.date(2027, 3, 2), "charge": "무상"})
+    # 같은 S/N 에 진행 중 A/S(c2)가 있으면 새 접수는 막으므로(사용자 2026-10-27) 끝난 기록으로 남겨 확인한다
+    c3 = await units.create_case(db, None, rs[s2]["id"], {"received_on": dt.date(2027, 3, 2), "charge": "무상", "status": "완료"})
     check(c3["charge"] == "무상" and c3["in_warranty"] is True, "무상·유상 직접 고르면 그 값(제안은 출하일 기준 무상 기간)")
     await db.execute(text("DELETE FROM as_cases WHERE id = :i"), {"i": c3["id"]})
     await db.commit()

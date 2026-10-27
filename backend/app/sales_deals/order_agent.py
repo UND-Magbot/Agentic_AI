@@ -154,7 +154,9 @@ def build_messages(deal: dict, state: dict, message: str) -> list[dict[str, str]
     talk = "\n".join(f"{'담당자' if h['role'] == 'user' else 'AI'}: {str(h.get('text') or h.get('answer') or '')[:300]}"
                      for h in (state.get("chat") or [])[-8:])
     return [{"role": "system", "content": SYSTEM},
-            {"role": "user", "content": f"[상황]\n{_situation(deal, state)}\n\n[대화]\n{talk or '(없음)'}\n\n[말]\n{message}"}]
+            # 오늘 날짜(한국) — 연도 없이 '3월 30일'처럼 말하면 오늘 이후로 잡게(검증 2026-10-26: 지난 연도로 넣던 일)
+            {"role": "user", "content": f"[오늘] {_today().isoformat()}\n\n[상황]\n{_situation(deal, state)}\n\n[대화]\n"
+                                        f"{talk or '(없음)'}\n\n[말]\n{message}"}]
 
 
 def apply_ops(deal: dict, state: dict, ops: Any, message: str) -> tuple[dict, list[tuple[bool, str]], list[dict], str | None]:
@@ -167,6 +169,15 @@ def apply_ops(deal: dict, state: dict, ops: Any, message: str) -> tuple[dict, li
     steps: list[tuple[bool, str]] = []
     actions: list[dict] = []
     case: str | None = None
+    # 품목 빼기는 이 차례 끝에 한꺼번에 — 앞에서 뺀 만큼 번호가 밀려 엉뚱한 품목이 빠지지 않게(검증 2026-10-26:
+    # [A,B,C,D]에서 1·2번을 빼면 B·D 가 빠졌다). 번호는 이 차례가 시작될 때의 목록 기준
+    gone: list[dict] = []
+
+    def flush() -> None:
+        if gone:
+            items[:] = [x for x in items if not any(x is g for g in gone)]
+            gone.clear()
+
     for op in (ops if isinstance(ops, list) else [])[:20]:
         if not isinstance(op, dict) or op.get("op") not in OPS:
             continue
@@ -191,8 +202,9 @@ def apply_ops(deal: dict, state: dict, ops: Any, message: str) -> tuple[dict, li
                 steps.append((False, f"{i}번 품목이 없습니다"))
                 continue
             if kind == "remove_item":
-                gone = items.pop(i)
-                steps.append((True, f"품목 빼기 — {gone.get('name')}"))
+                if not any(items[i] is g for g in gone):
+                    gone.append(items[i])
+                    steps.append((True, f"품목 빼기 — {items[i].get('name')}"))
                 continue
             it = items[i]
             for k, lab in (("qty", "수량"), ("unit_price", "단가")):
@@ -216,6 +228,7 @@ def apply_ops(deal: dict, state: dict, ops: Any, message: str) -> tuple[dict, li
             items.append({"name": name, "spec": _in_msg(op.get("spec"), message) or "", "qty": qty, "unit_price": price, "note": ""})
             steps.append((True, f"품목 추가 — {name} × {qty:g}, {price:,.0f}원"))
         elif kind == "statement":
+            flush()
             if op.get("bundle") is True and not d.get("parts") and re.search(r"세트|set|묶", message, re.I):
                 n = _num(op.get("bundle_qty"), nums) or 1
                 name = _in_msg(op.get("bundle_name"), message) or default_set_name(deal)
@@ -271,6 +284,7 @@ def apply_ops(deal: dict, state: dict, ops: Any, message: str) -> tuple[dict, li
                 sh["mode"], sh["set_qty"] = "set", f"{n:g} SET"
                 steps.append((True, f"세트로 묶어서 → {sh['set_qty']}"))
             actions.append({"type": "ship"})
+    flush()
     if any(a["type"] == "issue" for a in actions):
         try:
             sx.check(d)
@@ -287,6 +301,12 @@ def _plain(answer: str) -> str:
     """답 다듬기 — 모델이 그래도 쓴 영어 코드를 한국어로, 코드 목록 괄호는 뺀다."""
     a = re.sub(r"\((?:[^()]*\b(?:after|split|prepay)\b[^()]*)\)", "", answer.strip())
     return re.sub(r"\b(after|split|prepay)\b", lambda m: _CODE_KO[m.group(1)], a).strip()
+
+
+def _today():
+    from .service import kst_today      # service 가 이 모듈을 불러 쓰므로 여기서 불러온다
+
+    return kst_today()
 
 
 def _terms_from(items: Any, nums: set[float], message: str) -> list[dict] | str:

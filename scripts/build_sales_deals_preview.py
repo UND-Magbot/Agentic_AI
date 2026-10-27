@@ -24,7 +24,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from PIL import Image, ImageOps  # noqa: E402
 
-from app.sales_deals.legacy_import import build_preview, build_snapshot  # noqa: E402
+from app.sales_deals.legacy_import import DISABLED_MSG, ENABLED, build_preview, build_snapshot  # noqa: E402
 
 OUT = ROOT / "backend" / "app" / "sales_deals" / "data"
 PHOTO_MAX = 1280
@@ -57,6 +57,9 @@ def main() -> None:
     ap.add_argument("--shipments", default=str(ROOT / "docs" / "sources" / "영업출하시트파일_ma261006.xlsx"))
     a = ap.parse_args()
     sys.stdout.reconfigure(encoding="utf-8")
+    if not ENABLED:                     # 엑셀 이관은 꺼 둠(사용자 2026-10-27)
+        print(DISABLED_MSG)
+        sys.exit(1)
 
     snapshot = build_snapshot(a.management, a.shipments)
     photos = save_photos(Path(a.shipments), snapshot)
