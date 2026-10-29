@@ -1051,7 +1051,7 @@ async def quote_upload_confirm(deal_id: int, body: "QuoteUploadConfirm", user: U
 @router.get("/{deal_id}/quote-file")
 async def deal_quote_file(deal_id: int, quote: int, revision: int | None = None, fmt: Literal["pdf", "xlsx"] = "pdf",
                           _: User = Depends(require_sales), db: AsyncSession = Depends(get_db)):
-    """이 건의 견적서 발행본 내려받기(영업부 누구나 — 작성자만 열 수 있는 견적서 탭과 달리). 이 건의 견적서가 아니면 404."""
+    """이 건의 견적서 발행본 내려받기(영업부 누구나 — 발행·건 연결 견적서는 견적서 작업 화면도 영업부끼리 같이 쓴다, 2026-10-28). 이 건의 견적서가 아니면 404."""
     from fastapi.responses import Response
 
     from .company_knowledge import product_recommend as pr

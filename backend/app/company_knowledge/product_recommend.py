@@ -926,11 +926,35 @@ def _quote_view(r: dict[str, Any]) -> dict[str, Any]:
             "created_at": r["created_at"].isoformat(), "updated_at": r["updated_at"].isoformat()}
 
 
+async def sales_staff(db, user_id: int | None) -> bool:
+    """영업부(또는 전체 권한·최고 관리자)인지 — 서로의 견적서·확정 제안을 이어받아 고칠 수 있는 사람."""
+    if user_id is None:
+        return False
+    r = (await db.execute(text("SELECT CAST(role AS text) AS role, CAST(domain AS text) AS domain FROM users WHERE id = :u"),
+                          {"u": user_id})).mappings().first()
+    return r is not None and (r["role"] == "superadmin" or r["domain"] in ("sales", "all"))
+
+
+async def quote_shared(db, r: dict[str, Any]) -> bool:
+    """영업부끼리 같이 쓰는 견적서인지(사용자 2026-10-28 — 담당 넘김·퇴사 뒤 이어받기): 발행했거나, 영업 건에 이어졌거나,
+    최종 제안으로 확정한 추천의 견적서. 발행 전이고 어디에도 안 이어진 작성 중 견적서는 쓴 사람만."""
+    if r.get("status") == "issued" or r.get("deal_id") is not None:
+        return True
+    if r.get("recommendation_id") is None:
+        return False
+    return (await db.execute(text("SELECT 1 FROM product_proposals WHERE recommendation_id = :r LIMIT 1"),
+                             {"r": r["recommendation_id"]})).scalar() is not None
+
+
 async def _quote_row(db, qid: int, user_id: int | None) -> dict[str, Any]:
     r = (await db.execute(text(f"SELECT {_QUOTE_COLS} FROM product_quotes WHERE id = :i"), {"i": qid})).mappings().first()
-    if r is None or (user_id is not None and r["user_id"] not in (None, user_id)):
+    if r is None:
         raise RecommendError("견적서를 찾을 수 없습니다.")
-    return dict(r)
+    r = dict(r)
+    if user_id is not None and r["user_id"] not in (None, user_id) \
+            and not (await quote_shared(db, r) and await sales_staff(db, user_id)):
+        raise RecommendError("견적서를 찾을 수 없습니다.")
+    return r
 
 
 async def _save_state(db, qid: int, st: dict[str, Any]) -> None:
@@ -956,6 +980,12 @@ async def quote_draft(rid: int, *, user_id: int | None, form: dict[str, Any] | N
     async with SessionLocal() as db:
         r = (await db.execute(text(f"SELECT {_QUOTE_COLS} FROM product_quotes WHERE recommendation_id = :r AND user_id "
                                    "IS NOT DISTINCT FROM :u ORDER BY id DESC LIMIT 1"), {"r": rid, "u": user_id})).mappings().first()
+        if r is None:
+            # 내 것이 없으면 — 동료가 이 확정 제안으로 만든 견적서를 이어서(새 초안을 또 만들지 않게, 사용자 2026-10-28)
+            other = (await db.execute(text(f"SELECT {_QUOTE_COLS} FROM product_quotes WHERE recommendation_id = :r "
+                                           "ORDER BY id DESC LIMIT 1"), {"r": rid})).mappings().first()
+            if other is not None and await quote_shared(db, dict(other)) and await sales_staff(db, user_id):
+                r = other
     rec = await get_recommendation(rid, user_id)
     if r is not None:
         r = dict(r)
@@ -1089,7 +1119,7 @@ async def quote_chat(qid: int, *, user_id: int | None, message: str, chat=None) 
     if done:
         tot = qs.subtotal_usd(new) if new["form"].get("lang") == "en" else None
         parts.append("반영했습니다.\n" + "\n".join(f"- {x}" for x in done)
-                     + (f"\n\n합계 **${tot:,.2f}**(VAT 별도)" if tot is not None else f"\n\n합계 **{qs.subtotal(new):,}원**(VAT 별도)"))
+                     + (f"\n\n합계 **${tot:,.2f}**(VAT 별도)" if tot is not None else f"\n\n합계 {qs.total_text(new)}"))
     elif answer:
         parts.append(answer)
     else:
@@ -1270,7 +1300,8 @@ async def quote_issue(qid: int, *, user_id: int | None) -> dict[str, Any]:
             "currency": qx.CURRENCY[lang], "title": "", "note": "",
             # 품목(commodity)·단위도 넘긴다 — 거래명세서 초안의 품명·단위(사용자 2026-10-13: 명세서가 견적서와 같게)
             # 대여 견적서 줄은 단가(월 납입금) × 개월 = 1대당 계약 금액으로 영업 건에(사용자 2026-10-22)
-            "items": [{"name": ln["desc"], "unit_price": ln["unit_price"] * ln.get("months", 1), "qty": ln["qty"],
+            # 영업 건은 공급가액 — 부가세 포함 견적서의 × 1.1 단가가 아니라 supply_unit(사용자 2026-10-28, 명세서가 부가세를 또 붙이지 않게)
+            "items": [{"name": ln["desc"], "unit_price": ln.get("supply_unit", ln["unit_price"]) * ln.get("months", 1), "qty": ln["qty"],
                        **({"commodity": ln["commodity"]} if ln.get("commodity") else {}),
                        **({"unit": ln["unit"]} if ln.get("unit") else {}),
                        "statement": deals.for_statement(ln)} for ln in lines
@@ -1398,6 +1429,7 @@ async def quote_line_photo(qid: int, line_id: str, *, user_id: int | None, data:
             raise RecommendError("품목 줄을 찾을 수 없습니다. 먼저 변경을 저장해 주세요.")
         if ln.get("kind") in ("work", "freight"):
             raise RecommendError("물류비·설치 인건비 줄에는 사진을 넣지 않습니다.")
+        ln.pop("photo_sig", None)                # 올린 파일에서 가져온 사진 지문 — 바꾼 사진과는 다르다
         if data is None:
             ln.pop("photo", None)
         else:
@@ -1579,7 +1611,7 @@ async def quote_issue_upload(*, qid: int | None, deal_id: int | None, user_id: i
                     await deals.put_rental_start(db, link, user_id, rental_start)
                 if sync and target["quote_id"] == r["id"]:
                     if target["latest"]:
-                        new, ch, wn = _synced_state(st, key=key, ext=ext, items=items, no=given, parsed=parsed)
+                        new, ch, wn = _synced_state(st, qid=r["id"], key=key, ext=ext, items=items, no=given, parsed=parsed)
                         new["chat"] = [*(st.get("chat") or []), {"role": "assistant", "text": _sync_note(given, ch, wn)}][-QUOTE_CHAT_MAX:]
                     else:
                         new = {**st, "chat": [*(st.get("chat") or []), {"role": "assistant", "text": (
@@ -1599,10 +1631,16 @@ async def quote_issue_upload(*, qid: int | None, deal_id: int | None, user_id: i
             else:
                 no = await dn.allocate(db, dn.QUOTE, ini, day, deal_id=link, quote_id=r["id"], user_id=user_id)
             fname = f"(주)유엔디로보틱스_견적서_{_FILE_BAD.sub(' ', customer).strip()}_{subject}_{no}{ext}"
+            # 부가세 포함 견적서 파일이면 영업 건에는 공급가액으로(÷ 1.1, 원 단위) — 명세서가 부가세를 또 붙이지 않게(사용자 2026-10-28).
+            # 발행 기록 줄에도 supply_unit 을 남겨 나중에 이 판으로 수주 확정해도(snapshot_items) 공급가액으로
+            if qs.vat_included({"form": f}):
+                lines = [{**ln, "supply_unit": round(float(ln["unit_price"]) / 1.1)} if isinstance(ln.get("unit_price"), (int, float))
+                         else ln for ln in lines]
+            deal_lines = [{**ln, "unit_price": ln["supply_unit"]} if "supply_unit" in ln else ln for ln in lines]
             did, _ = await deals.quote_deal(db, user_id, pid, {
                 "quote_date": day, "customer": customer, "contact": str(f.get("to") or "").strip() or None,
                 "owner": str(f.get("contact_name") or "").strip() or None, "vat_included": False, "initials": ini,
-                "currency": qx.CURRENCY[lang], "title": "", "note": "", "items": lines, "doc_no": no,
+                "currency": qx.CURRENCY[lang], "title": "", "note": "", "items": deal_lines, "doc_no": no,
                 "file": str(upload.get("filename") or "")[:200], **_deal_rental(f)}, rev + 1, deal_id=r.get("deal_id") or deal_id, action="quote_upload")
             await dn.link_deal(db, no, did)
             if f.get("purpose") == "rental":
@@ -1621,7 +1659,7 @@ async def quote_issue_upload(*, qid: int | None, deal_id: int | None, user_id: i
                 "영업 건 관리에도 반영했습니다.")
         if sync:
             chat = st.get("chat") or []
-            st, ch, wn = _synced_state(st, key=key, ext=ext, items=items, no=no, parsed=parsed)
+            st, ch, wn = _synced_state(st, qid=r["id"], key=key, ext=ext, items=items, no=no, parsed=parsed)
             st["chat"] = [*chat, {"role": "assistant", "text": f"{note} {_sync_note(no, ch, wn)}"}][-QUOTE_CHAT_MAX:]
         else:
             st["chat"] = [*(st.get("chat") or []), {"role": "assistant", "text": (
@@ -1663,6 +1701,8 @@ def _upload_biz(form: dict[str, Any], parsed: dict[str, Any] | None) -> dict[str
     """올린 파일 기준 판매·대여 조건(사용자 2026-10-27) — 대여 개월 수는 파일에 적힌 값(월 납입금 식)으로.
     판매/대여가 작성 중인 견적과 다르면 막는다(파일 교체로 대여 기록이 슬쩍 바뀌지 않게). 파일을 못 읽으면 작성 중인 값."""
     pf = (parsed or {}).get("form") or {}
+    if pf.get("vat"):                     # 부가세 별도/포함은 파일에 적힌 대로(사용자 2026-10-28 — 영업 건엔 공급가액으로 바꿔 넣는다)
+        form = {**form, "vat": pf["vat"]}
     if not pf.get("purpose"):
         return form
     if (pf["purpose"] == "rental") != (form.get("purpose") == "rental"):
@@ -1672,7 +1712,7 @@ def _upload_biz(form: dict[str, Any], parsed: dict[str, Any] | None) -> dict[str
     return {**form, "rental_months": pf["rental_months"]} if pf.get("rental_months") else form
 
 
-def _synced_state(st: dict[str, Any], *, key: str, ext: str, items: list[dict[str, Any]],
+def _synced_state(st: dict[str, Any], *, qid: int, key: str, ext: str, items: list[dict[str, Any]],
                   no: str = "", parsed: dict[str, Any] | None = None) -> tuple[dict[str, Any], list[str], list[str]]:
     """올린 견적서 → 새 작성 상태(사용자 2026-10-15). 회사 양식 엑셀이면 칸 그대로(머리·묶음·NEGO·주석까지)이고,
     그 파일을 바탕(base_file)으로 기억해 이후 미리보기·발행을 그 파일 위에서 고친다(엑셀 서식 유지, quote_patch).
@@ -1681,12 +1721,54 @@ def _synced_state(st: dict[str, Any], *, key: str, ext: str, items: list[dict[st
 
     if parsed is not None:
         new, ch, wn = rb.merge(st, parsed)
+        _take_photos(new, parsed.get("pics") or {}, qid, ch, wn)
         if parsed["lang"] == ((st.get("form") or {}).get("lang") or "ko"):
             new["base_file"] = {"key": key, "quote_no": no or parsed["quote_no"], "state": _snapshot(new)}
         return new, ch, wn
     new, ch, wn = rb.merge_items(st, [x for x in items if not str(x.get("name") or "").upper().startswith("NEGO")])
     new.pop("base_file", None)                   # 회사 양식이 아닌 파일 — 이후엔 회사 양식으로 새로 그린다
     return new, ch, wn
+
+
+def _take_photos(st: dict[str, Any], pics: dict[str, bytes], qid: int, changes: list[str], warns: list[str]) -> None:
+    """올린 파일 Remark 칸 사진 → 작성 상태 품목 사진(사용자 2026-10-29). merge 가 줄마다 단 _pic(사진 지문, None = 사진 없음)을 보고
+    새 사진만 줄여 저장한다. photo_sig = 가져온 원본의 지문 — 다음에 같은 파일을 올리면 다시 저장하지 않는다."""
+    import io
+    import uuid
+
+    from ..storage import put_object
+    from . import quote_readback as rb
+
+    for ln in st.get("lines") or []:
+        if "_pic" not in ln:
+            continue
+        sig = ln.pop("_pic")
+        if not sig:
+            ln.pop("photo", None)
+            ln.pop("photo_sig", None)
+            continue
+        if ln.get("photo") and ln.get("photo_sig") == sig:
+            continue
+        if ln.get("photo") and not ln.get("photo_sig"):          # 앱에서 넣은 사진 — 파일에 들어간 바이트 그대로인지
+            have = line_photos([ln]).get(ln["photo"])
+            if have is not None and rb.photo_sig(have) == sig:
+                ln["photo_sig"] = sig
+                continue
+        name = rb._label(ln)
+        try:
+            small = _shrink_photo(pics[sig])
+            pkey = f"product-quotes/{qid}/photos/{uuid.uuid4().hex}.jpg"
+            put_object(key=pkey, data=io.BytesIO(small), length=len(small), mime="image/jpeg")
+        except (KeyError, ValueError):
+            warns.append(f"{name} 사진을 읽지 못해 이전 사진을 그대로 둡니다." if ln.get("photo") else f"{name} 사진을 읽지 못했습니다.")
+            continue
+        except Exception:  # noqa: BLE001 — 저장소 장애, 견적은 이어 간다
+            logging.getLogger("quote_upload").exception("올린 견적서 사진 저장 실패")
+            warns.append(f"{name} 사진을 저장하지 못했습니다.")
+            continue
+        if ln.get("photo"):
+            changes.append(f"{name} 사진 변경")
+        ln["photo"], ln["photo_sig"] = pkey, sig
 
 
 def _snapshot(st: dict[str, Any]) -> dict[str, Any]:
@@ -1715,7 +1797,7 @@ def _patched(st: dict[str, Any], lines: list[dict[str, Any]], header: dict[str, 
         pogo = any(ln.get("key") in ("PPM", "PPF") for ln in blines if not ln.get("row"))
         bheader = qx.quote_header(f, lang=lang, quote_no=base.get("quote_no") or "", day=day, pogo=pogo)
         bheader["date"] = ""                     # 날짜 칸은 늘 새로 쓴다
-        out, notes = qp.patch(data, blines, bheader, lines, header)
+        out, notes = qp.patch(data, blines, bheader, lines, header, line_photos(lines))
         return out, " ".join(notes)
     except qp.PatchError as e:
         return None, f"올린 파일 위에서 고치지 못해 회사 양식으로 새로 그렸습니다 — {e}"
@@ -1851,8 +1933,14 @@ async def get_recommendation(rid: int, user_id: int | None = None) -> dict[str, 
     async with SessionLocal() as db:
         r = (await db.execute(text("SELECT id, user_id, request, result FROM product_recommendations WHERE id = :i"),
                               {"i": rid})).mappings().first()
-    if r is None or (user_id is not None and r["user_id"] not in (None, user_id)):
-        return None
+        if r is None:
+            return None
+        if user_id is not None and r["user_id"] not in (None, user_id):
+            # 최종 제안으로 확정한 추천은 영업부끼리 이어받는다(사용자 2026-10-28). 확정 전 추천 대화는 쓴 사람만
+            finalized = (await db.execute(text("SELECT 1 FROM product_proposals WHERE recommendation_id = :r LIMIT 1"),
+                                          {"r": rid})).scalar() is not None
+            if not (finalized and await sales_staff(db, user_id)):
+                return None
     return {"id": r["id"], "request": r["request"], **(r["result"] or {})}
 
 

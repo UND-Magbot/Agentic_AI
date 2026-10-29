@@ -7,6 +7,7 @@
   없어진 줄은 행을 지우고, 새 줄은 행을 넣어 회사 양식으로 만든 같은 줄의 서식·병합·높이를 옮긴다.
   새 줄의 겉모습(글꼴·색·채우기·정렬·테두리)은 올린 파일의 같은 종류 줄을 따른다(사용자 2026-10-16) — 칸마다 가장 흔한 모양,
   같으면 위쪽 줄. 한 줄만 강조한 서식은 퍼지지 않는다. 같은 종류 줄이 없으면 회사 양식 그대로.
+- 품목 사진(Remark 칸): 새 줄·바뀐 사진은 그 칸에 넣고, 뺀 사진·지운 줄의 사진은 지운다(사용자 2026-10-29).
 - 금액 수식(수량×단가·소계·합계)은 행이 움직인 뒤 다시 쓴다. 머리·조건·비고·주석 칸은 바뀐 것만.
 - openpyxl 은 열었다 저장할 때 도형·텍스트 상자를 버린다 — 원본 그림판(drawing) XML 에서 도형만 꺼내 행 이동만큼 옮겨 다시 넣는다.
 - 맞지 않으면 PatchError — 부르는 쪽이 회사 양식으로 새로 그리고 이유를 알린다.
@@ -101,6 +102,8 @@ class _Sheet:
         self._shift(at, n)
 
     def delete(self, at: int, n: int = 1) -> None:
+        for r in range(at, at + n):                            # 지운 줄의 품목 사진은 위 행으로 밀려 남지 않게 뺀다
+            _drop_photos(self.ws, r)
         for rng in list(self.ws.merged_cells.ranges):           # 지울 행에 걸친 병합은 먼저 푼다
             if at <= rng.min_row < at + n or at <= rng.max_row < at + n:
                 if not (at <= rng.min_row and rng.max_row < at + n):
@@ -120,6 +123,32 @@ class _Sheet:
                 if r >= at + n:
                     r -= n
         return r
+
+
+def _drop_photos(ws, r: int) -> None:
+    """r 행 Remark(G) 칸에 걸친 그림을 뺀다."""
+    ws._images = [img for img in ws._images
+                  if not ((fr := getattr(img.anchor, "_from", None)) is not None and fr.col == 6 and fr.row + 1 == r)]
+
+
+def _put_photo(ws, r: int, n: dict[str, Any], photos: dict[str, bytes], auto: dict[int, str], sh: "_Sheet",
+               notes: list[str]) -> None:
+    """r 행 Remark 칸의 사진을 줄(n)의 사진으로 — 있던 그림은 빼고, 사진이 있으면 회사 양식과 같은 자리·크기로 넣는다."""
+    _drop_photos(ws, r)
+    key = str(n.get("photo") or "")
+    if not key:
+        return
+    data = photos.get(key)
+    if data is None:
+        notes.append(f"'{str(n.get('desc') or '').splitlines()[0][:20]}' 사진을 불러오지 못해 넣지 못했습니다.")
+        return
+    has_text = bool(n.get("remark"))
+    if has_text:                                               # 사진 자리만큼 글 오른쪽을 비운다(회사 양식과 같게)
+        cell = ws.cell(r, 7)
+        if type(cell).__name__ != "MergedCell":
+            cell.alignment = cell.alignment.copy(horizontal="left", vertical="center", wrap_text=True)
+    qx._photo_at(ws, data, row=r, has_text=has_text)
+    _grow(ws, r, 48, auto, sh)
 
 
 def _copy_row(src_ws, sr: int, ws, tr: int) -> None:
@@ -180,8 +209,11 @@ def _qty_fmt(r: dict[str, Any], en: bool) -> str:
 # ── 고치기 ───────────────────────────────────────────────────────────────────
 
 def patch(base: bytes, base_lines: list[dict[str, Any]], base_header: dict[str, Any],
-          new_lines: list[dict[str, Any]], new_header: dict[str, Any]) -> tuple[bytes, list[str]]:
-    """올린 파일(base) + 그 파일에 맞춘 줄·머리(base_*) + 지금 줄·머리(new_*) → (고친 파일, 알림)."""
+          new_lines: list[dict[str, Any]], new_header: dict[str, Any],
+          photos: dict[str, bytes] | None = None) -> tuple[bytes, list[str]]:
+    """올린 파일(base) + 그 파일에 맞춘 줄·머리(base_*) + 지금 줄·머리(new_*) → (고친 파일, 알림).
+    photos = {사진 키: 바이트} — 새 줄·바뀐 사진을 Remark 칸에 넣을 때."""
+    photos = photos or {}
     parsed = rb.parse(base)
     if parsed is None:
         raise PatchError("올린 파일이 회사 견적서 양식이 아닙니다.")
@@ -238,6 +270,8 @@ def patch(base: bytes, base_lines: list[dict[str, Any]], base_header: dict[str, 
         if bi is not None:
             r = sh.marks[f"row{bi}"]
             _update(ws, r, base_lines[bi], new_lines[ni], en, money, notes)
+            if _kind(new_lines[ni]) == "item" and (new_lines[ni].get("photo") or "") != (base_lines[bi].get("photo") or ""):
+                _put_photo(ws, r, new_lines[ni], photos, auto, sh, notes)
             grow(r, ref_rows[ni], _texts(new_lines[ni]), _texts(base_lines[bi]))
         else:
             r = max([at, *[x + 1 for x in final]])
@@ -246,7 +280,7 @@ def patch(base: bytes, base_lines: list[dict[str, Any]], base_header: dict[str, 
             if _kind(new_lines[ni]) in looks:
                 _dress(ws, r, looks[_kind(new_lines[ni])], ref_ws, ref_rows[ni])
             if new_lines[ni].get("photo"):
-                notes.append(f"새 줄 '{str(new_lines[ni].get('desc') or '').splitlines()[0][:20]}'의 사진은 올린 파일에 넣지 못했습니다.")
+                _put_photo(ws, r, new_lines[ni], photos, auto, sh, notes)
         final.append(r)
     _formulas(ws, new_lines, final, sh.marks["total"], money, new_header.get("rental_months"))
 
@@ -271,9 +305,17 @@ def patch(base: bytes, base_lines: list[dict[str, Any]], base_header: dict[str, 
             _set(ws, sh.marks[k], 5, n["issuer"].get(k))
     lab = {**qx.pp.QUOTE_LABELS[n["lang"]], **n["labels"]}
     rp = ref_p["pos"]
-    if n.get("total_note") != b.get("total_note"):
+    b_total = {**qx.pp.QUOTE_LABELS[b.get("lang") or n["lang"]], **(b.get("labels") or {})}["total"]
+    if n.get("total_note") != b.get("total_note") or lab["total"] != b_total:      # 부가세 별도↔포함도(사용자 2026-10-28)
         _set(ws, sh.marks["total"], 1, "\n".join(x for x in (lab["total"], n.get("total_note") or "") if x))
         grow(sh.marks["total"], rp.get("total"), (lab["total"], n.get("total_note")), (lab["total"], b.get("total_note")))
+    n_vat, b_vat = (n.get("terms") or {}).get("vat"), (b.get("terms") or {}).get("vat")
+    if n_vat and b_vat and n_vat != b_vat:
+        # 표 머리 위 'VAT 별도/포함' — 'Goods Description & Details' 줄의 G 칸(행을 넣고 지워도 글로 찾는다)
+        goods = next((r for r in range(1, min(ws.max_row, 60) + 1)
+                      if str(ws.cell(r, 1).value or "").strip() == lab["goods"]), None)
+        if goods and str(ws.cell(goods, 7).value or "").strip() == b_vat:
+            _set(ws, goods, 7, n_vat)
     if sh.marks.get("delivery"):
         if n["delivery"] != b["delivery"]:
             _set(ws, sh.marks["delivery"], 2, n["delivery"])
@@ -345,8 +387,6 @@ def _update(ws, r: int, b: dict[str, Any], n: dict[str, Any], en: bool, money: s
         _set(ws, r, 5, n["unit_price"], money)
     if (n.get("remark") or "") != (b.get("remark") or ""):
         _set(ws, r, 7, n.get("remark") or "")
-    if (n.get("photo") or "") != (b.get("photo") or ""):
-        notes.append(f"'{str(n['desc']).splitlines()[0][:20]}' 사진 변경은 올린 파일에 반영하지 못했습니다.")
     blank = k == "option" and "in_total" not in n          # 예전 옵션만 공급가액 칸을 비운다(반영/미반영 옵션은 수량×단가)
     if blank != (b.get("row") == "option" and "in_total" not in b) or (k == "option") != (b.get("row") == "option"):
         _set(ws, r, 6, None if blank else f"=D{r}*E{r}{qx._times(n)}", money)

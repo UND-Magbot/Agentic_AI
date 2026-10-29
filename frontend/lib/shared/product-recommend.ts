@@ -315,8 +315,11 @@ export type QuoteForm = {
   contact_name_en?: string; contact_honorific?: string;
   /** 판매 / 대여(사용자 2026-10-22) — 대여면 계약 개월 수로 Total 옆 월 납입금, 시작일은 영업 건 대여 기간(YYYY-MM-DD) */
   purpose?: QuotePurpose; rental_months?: number | null; rental_start?: string;
+  /** 부가세 별도 / 포함(사용자 2026-10-28, 공공기관) — 국내만. 포함이면 견적서 단가부터 × 1.1(작성 단가는 공급가액 그대로) */
+  vat?: QuoteVat | "";
 };
 export type QuotePurpose = "sale" | "rental";
+export type QuoteVat = "excluded" | "included";
 /** 해외 견적서의 한글 칸(원문은 칸에 그대로) — en: AI·담당자 영어(null = 아직 번역 전, 미리보기·발행 때 번역),
  *  by: ai|user, name: 이름·회사명(확인 필요), keep: [한글 그대로](번역 안 함, 발행 막지 않음) — 사용자 2026-10-14 */
 export type QuoteHangulCell = { path: string; label: string; text: string; name: boolean; en: string | null; by: "ai" | "user" | null; keep: boolean };

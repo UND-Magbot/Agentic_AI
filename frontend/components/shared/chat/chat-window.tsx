@@ -688,7 +688,7 @@ export function ChatWindow({
         {isStartingFromProject ? (
           // 프로젝트 컨텍스트 첫 발화의 짧은 부트 구간 — 사용자가 입력한 첫 메시지를
           // 미리 보여주어 환영 화면이 잠깐 깜빡이는 것을 막는다.
-          <div className="mx-auto flex max-w-3xl flex-col gap-5 px-4 py-8">
+          <div className="mx-auto flex max-w-4xl flex-col gap-5 px-4 py-8">
             <div className="anim-fade-in-up rounded-2xl bg-foreground/5 px-4 py-3 text-[14px] leading-relaxed text-foreground">
               {initialUserMessage}
             </div>
@@ -820,7 +820,7 @@ export function ChatWindow({
             </div>
           )
         ) : (
-          <div className="anim-fade-in-up mx-auto flex max-w-3xl flex-col gap-5 px-4 py-8">
+          <div className="anim-fade-in-up mx-auto flex max-w-4xl flex-col gap-5 px-4 py-8">
             {title && (
               <div className="-mt-2 mb-1 text-[15px] font-semibold tracking-tight text-foreground">
                 {title}

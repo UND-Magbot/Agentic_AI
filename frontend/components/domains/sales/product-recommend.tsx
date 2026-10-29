@@ -939,8 +939,10 @@ const TAB_HEAD: Record<RecommendTab, { title: string; desc: string }> = {
     desc: "AI 가 대화에서 배운 내용(경험·정정·기준)과 나에게 온 승인 요청을 확인합니다. 영업 관리자가 승인한 내용만 AI 답에 반영됩니다." },
 };
 
-export function ProductRecommend({ initial, initialTab, startManual, writer = "", initialSub }: {
+export function ProductRecommend({ initial, initialTab, startManual, writer = "", initialSub, initialDeal, initialQuote, initialFocus }: {
   initial: CorrectionList; initialTab?: RecommendTab; startManual?: boolean; initialSub?: "approvals";
+  /** 채팅 답의 이동 버튼(사용자 2026-10-28) — 열 건(판매·대여 관리 탭이면 건 상세, 수주 진행 탭이면 작업 화면) · 열 견적서 · 출하 칸 */
+  initialDeal?: number; initialQuote?: number; initialFocus?: "ship";
   /** 로그인 계정의 영문 이름 — 질문지 고객 정보의 작성자(영업 담당) 기본값 */
   writer?: string;
 }) {
@@ -963,14 +965,16 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
     const t = window.setInterval(poll, 60_000);
     return () => { alive = false; window.clearInterval(t); };
   }, []);
-  const [quoteId, setQuoteId] = useState<number | null>(null);
+  const [quoteId, setQuoteId] = useState<number | null>(initialTab === "quote" ? initialQuote ?? null : null);
   const [testSamples, setTestSamples] = useState<AtcTestSample[] | null>(null);
   const [showTest, setShowTest] = useState(false);
   // 최종 제안 확정 — 이번 추천을 확정 제안으로 저장했는지(id), 내역 탭 새로고침·열기
   const [finalized, setFinalized] = useState<{ recId: number; id: number; dealNo: string | null } | null>(null);
   const [needIni, setNeedIni] = useState(false);
   const [meetingId, setMeetingId] = useState<number | null>(null);
-  const [orderId, setOrderId] = useState<number | null>(null);
+  const [orderId, setOrderId] = useState<number | null>(initialTab === "order" ? initialDeal ?? null : null);
+  // 출하 칸을 펼쳐 여는 건 처음 연 건 하나만 — 다른 건을 열면 평소처럼
+  const [orderFocus, setOrderFocus] = useState(initialFocus);
   // 제품 종류 탭 — 종류마다 질문지가 다르다(ATC 는 영업부 질문지, 그 외는 임시 질문)
   const [product, setProduct] = useState<"atc" | "other">("atc");
   const [phase, setPhase] = useState<"form" | "session">("form");
@@ -999,7 +1003,7 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
   const manualStarted = useRef(false);
   const [askManual, setAskManual] = useState(false);
   // [제품·A/S] 탭 → [프로젝트 건 열기] — 판매·대여 관리 탭을 열며 그 건 상세를 띄운다(사용자 2026-10-22)
-  const [dealOpen, setDealOpen] = useState<number | null>(null);
+  const [dealOpen, setDealOpen] = useState<number | null>(initialTab === "deals" || initialTab === "rentals" ? initialDeal ?? null : null);
   useEffect(() => {
     if (!startManual || manualStarted.current) return;
     manualStarted.current = true;
@@ -2207,7 +2211,7 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
       )}
 
       {tab === "quote" && <QuoteTab openId={quoteId} onOpen={(id) => { setAskManual(false); setQuoteId(id); }} askManual={askManual} />}
-      {tab === "order" && <OrderTab openId={orderId} onOpen={setOrderId} />}
+      {tab === "order" && <OrderTab openId={orderId} focus={orderFocus} onOpen={(id) => { setOrderFocus(undefined); setOrderId(id); }} />}
       {tab === "deals" && <DealsTab openDealId={dealOpen} onMeeting={setMeetingId} onOrder={(id) => { setOrderId(id); setTab("order"); }}
                                      onQuote={(id) => { setQuoteId(id); setTab("quote"); }} />}
       {/* 제품 대여 관리(사용자 2026-10-22) — 대여 견적서로 낸 건만, 흐름은 판매와 같다 */}

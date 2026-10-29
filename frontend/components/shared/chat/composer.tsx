@@ -244,7 +244,7 @@ export function Composer({
 
   return (
     <form onSubmit={onForm} className={cn("px-4", compact ? "pb-6" : "pb-[160px]")}>
-      <div className="mx-auto max-w-3xl rounded-[20px] bg-[linear-gradient(135deg,rgba(37,99,235,0.45),rgba(6,182,212,0.32))] p-px shadow-[0_20px_50px_-26px_rgba(15,30,70,0.45)]">
+      <div className="mx-auto max-w-4xl rounded-[20px] bg-[linear-gradient(135deg,rgba(37,99,235,0.45),rgba(6,182,212,0.32))] p-px shadow-[0_20px_50px_-26px_rgba(15,30,70,0.45)]">
         <div
           className={cn(
             "flex flex-col gap-1 rounded-[19px] und-glass p-2 transition focus-within:ring-2",

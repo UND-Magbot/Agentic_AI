@@ -143,39 +143,56 @@ export async function POST(req: NextRequest) {
   }
 
   const encoder = new TextEncoder();
+  const projectInstructions = body.projectInstructions?.trim() || undefined;
+  // 첨부/사용자 컨텍스트 — 단일 도메인 경로에서만 system prompt 에 inject.
+  // (multi-domain orchestrator 는 아직 컨텍스트 inject 미지원 — 후속 작업.)
+  const attachments = body.attachments ?? [];
+  const userName = displayName(user);
+  const userId = user?.id;
+  const gen =
+    domains.length === 1
+      ? runDomain({
+          domain: domains[0],
+          history: body.history ?? [],
+          userText: body.text,
+          projectInstructions,
+          ragContext,
+          attachments,
+          userName,
+          userId,
+          ...diversify,
+        })
+      : runMultiDomain({
+          domains,
+          history: body.history ?? [],
+          userText: body.text,
+          projectInstructions,
+          userId,
+          ...diversify,
+        });
+  // 첫 조각을 먼저 받아 본다 — backend 가 DB 에서 바로 답했으면(대여 목록·영업 데이터·건 이동) 출처 칩을 빼야 하는데
+  // 출처는 응답 헤더라 스트림 시작 전에 정해야 한다(사용자 2026-10-28: 엉뚱한 사칙 출처가 붙음).
+  let first: IteratorResult<{ delta: string; done?: boolean; fromDb?: boolean }> | null = null;
+  let firstError: unknown = null;
+  try {
+    first = await gen.next();
+  } catch (err) {
+    firstError = err;
+  }
+  if (first && !first.done && first.value.fromDb) ragSources = [];
+
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       try {
-        const projectInstructions = body.projectInstructions?.trim() || undefined;
-        // 첨부/사용자 컨텍스트 — 단일 도메인 경로에서만 system prompt 에 inject.
-        // (multi-domain orchestrator 는 아직 컨텍스트 inject 미지원 — 후속 작업.)
-        const attachments = body.attachments ?? [];
-        const userName = displayName(user);
-        const userId = user?.id;
-        const gen =
-          domains.length === 1
-            ? runDomain({
-                domain: domains[0],
-                history: body.history ?? [],
-                userText: body.text,
-                projectInstructions,
-                ragContext,
-                attachments,
-                userName,
-                userId,
-                ...diversify,
-              })
-            : runMultiDomain({
-                domains,
-                history: body.history ?? [],
-                userText: body.text,
-                projectInstructions,
-                userId,
-                ...diversify,
-              });
-        for await (const chunk of gen) {
-          if (chunk.delta) controller.enqueue(encoder.encode(chunk.delta));
-          if (chunk.done) break;
+        if (firstError) throw firstError;
+        if (first && !first.done) {
+          if (first.value.delta) controller.enqueue(encoder.encode(first.value.delta));
+          if (!first.value.done) {
+            for await (const chunk of gen) {
+              if (chunk.delta) controller.enqueue(encoder.encode(chunk.delta));
+              if (chunk.done) break;
+            }
+          }
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

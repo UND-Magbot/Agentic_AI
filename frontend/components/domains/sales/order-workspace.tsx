@@ -41,7 +41,7 @@ async function getJson<T>(url: string, body?: unknown): Promise<T> {
   return d as T;
 }
 
-export function OrderTab({ openId, onOpen }: { openId: number | null; onOpen: (id: number | null) => void }) {
+export function OrderTab({ openId, onOpen, focus }: { openId: number | null; onOpen: (id: number | null) => void; focus?: "ship" }) {
   const [view, setView] = useState<"deal" | "statement" | "pay" | "ship">("deal");
   // 건 하나를 끝까지(건별 진행) + 단계별로 여러 건을(거래명세서 발급·입금 확인·출하) — 사용자 2026-10-07.
   // 건을 연 상태(작업 화면)에서도 보기 버튼은 늘 보인다 — 건을 열면 '건별 진행', 다른 보기를 누르면 건을 닫고 그 보기로.
@@ -59,7 +59,7 @@ export function OrderTab({ openId, onOpen }: { openId: number | null; onOpen: (i
           </button>
         ))}
       </div>
-      {openId ? <OrderWorkspace id={openId} onBack={() => onOpen(null)} /> : (
+      {openId ? <OrderWorkspace id={openId} openShip={focus === "ship"} onBack={() => onOpen(null)} /> : (
         <>
           {view === "deal" && <OrderList onOpen={onOpen} />}
           {view === "statement" && <StatementQueue onOpen={onOpen} />}
@@ -382,7 +382,7 @@ function OrderList({ onOpen }: { onOpen: (id: number) => void }) {
   );
 }
 
-export function OrderWorkspace({ id, onBack }: { id: number; onBack: () => void }) {
+export function OrderWorkspace({ id, onBack, openShip = false }: { id: number; onBack: () => void; openShip?: boolean }) {
   const [o, setO] = useState<Order | null>(null);
   const [draft, setDraft] = useState<DealStatement | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -392,7 +392,8 @@ export function OrderWorkspace({ id, onBack }: { id: number; onBack: () => void 
   const [live, setLive] = useState<{ user: string; think: string; steps: AgentStep[]; answer: string } | null>(null);
   const [saving, setSaving] = useState(false);
   // 출하 작성은 왼쪽 출하 칸 안에서(대화와 같이 쓰도록 — 사용자 2026-10-07). shipRef = 화면에서 고친 최신 내용
-  const [shipOpen, setShipOpen] = useState(false);
+  // 채팅 [출하 기록 …으로 이동]으로 왔으면 출하 칸을 펼쳐 둔다(사용자 2026-10-28)
+  const [shipOpen, setShipOpen] = useState(openShip);
   const shipRef = useRef<ShipDraft | null>(null);
   const [preview, setPreview] = useState<number | null>(null);
   const [finished, setFinished] = useState<DealRow | null>(null);
@@ -416,6 +417,14 @@ export function OrderWorkspace({ id, onBack }: { id: number; onBack: () => void 
     return () => { alive = false; };
   }, [id]);
   useEffect(() => { scrollChatToEnd(chatEnd.current); }, [o?.state.chat.length, live?.answer, live?.think]);
+  // 출하 칸을 펼쳐 열었으면 처음 한 번 그 칸까지 내려 준다
+  const shipSection = useRef<HTMLElement>(null);
+  const shipScrolled = useRef(false);
+  useEffect(() => {
+    if (!openShip || !o || shipScrolled.current) return;
+    shipScrolled.current = true;
+    shipSection.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [openShip, o]);
 
   async function run<T>(label: string, f: () => Promise<T>): Promise<T | null> {
     setBusy(label);
@@ -671,7 +680,7 @@ export function OrderWorkspace({ id, onBack }: { id: number; onBack: () => void 
             )}
           </section>
         ) : (
-          <section key="ship" className={cn("flex flex-col gap-2 rounded-2xl border bg-surface-raised p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04),0_16px_36px_-24px_rgba(15,30,70,0.30)] text-[12.5px]",
+          <section key="ship" ref={shipSection} className={cn("flex flex-col gap-2 rounded-2xl border bg-surface-raised p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04),0_16px_36px_-24px_rgba(15,30,70,0.30)] text-[12.5px]",
             shipNow ? HL : "border-border")}>
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="text-[16px] font-extrabold tracking-tight">출하</h3>

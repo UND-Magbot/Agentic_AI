@@ -8,12 +8,15 @@ AI 가 만든 견적서를 엑셀에서 고쳐 올려 발행(또는 같은 번�
 - 읽은 내용과 지금 작성 상태를 맞춰 새 작성 상태를 만든다(merge). 품목 줄은 지금 상태가 그리던 줄과 순서·글로 짝지어
   같은 줄이면 바뀐 칸만 고치고(줄 id·종류·사진 유지), 새 줄은 추가, 없어진 줄은 뺀다. 묶음·NEGO·머리 문구·주석도.
 - 회사 양식이 아니거나 PDF 면 담당자가 확인한 품목·금액만 품목 줄에 맞춘다(머리 문구·묶음·NEGO 는 그대로).
-- 엑셀에서만 한 서식(글꼴·색·병합·그림)은 작성 상태에 없는 것이라 여기서는 옮기지 않는다.
+- 엑셀에서만 한 서식(글꼴·색·병합·도형)은 작성 상태에 없는 것이라 여기서는 옮기지 않는다.
+  Remark(G) 칸의 품목 사진은 줄마다 읽어(pic = 사진 지문, pics = 지문 → 바이트) 작성 상태의 품목 사진으로 잇는다
+  (사용자 2026-10-29 — 저장은 product_recommend._take_photos).
 """
 from __future__ import annotations
 
 import copy
 import difflib
+import hashlib
 import io
 import re
 from typing import Any
@@ -74,9 +77,32 @@ def _sum_rows(formula: Any) -> set[int] | None:
 
 # ── 읽기 ─────────────────────────────────────────────────────────────────────
 
+def photo_sig(data: bytes) -> str:
+    """사진 지문 — 올린 파일의 사진과 작성 상태 사진이 같은지 볼 때."""
+    return hashlib.sha1(data).hexdigest()
+
+
+def _pics(ws) -> tuple[dict[int, str], dict[str, bytes]]:
+    """Remark(G) 칸에 걸친 그림 → ({엑셀 행: 지문}, {지문: 바이트}). 한 행에 여럿이면 첫 그림."""
+    at: dict[int, str] = {}
+    pics: dict[str, bytes] = {}
+    for img in getattr(ws, "_images", []):
+        fr = getattr(img.anchor, "_from", None)
+        if fr is None or fr.col != 6:
+            continue
+        try:
+            raw = img._data()
+        except Exception:  # noqa: BLE001 — 깨진 그림은 없는 것으로
+            continue
+        sig = photo_sig(raw)
+        at.setdefault(fr.row + 1, sig)
+        pics[sig] = raw
+    return at, pics
+
+
 def parse(data: bytes) -> dict[str, Any] | None:
-    """회사 양식 견적서 엑셀 → {lang, quote_no, form, rows, nego}. 회사 양식이 아니면 None.
-    rows: [{row: item|option|section|subtotal|gap|spec|text, ...}] — 표 머리 아래 ~ Total 위."""
+    """회사 양식 견적서 엑셀 → {lang, quote_no, form, rows, nego, pics}. 회사 양식이 아니면 None.
+    rows: [{row: item|option|section|subtotal|gap|spec|text, ...}] — 표 머리 아래 ~ Total 위. 품목 줄의 pic = Remark 칸 사진 지문."""
     from openpyxl import load_workbook
 
     try:
@@ -86,6 +112,7 @@ def parse(data: bytes) -> dict[str, Any] | None:
         return None
     ws, vs = wb.worksheets[0], wv.worksheets[0]
     merged = {(m.min_row, m.min_col): m for m in ws.merged_cells.ranges}
+    pic_at, pics = _pics(ws)
 
     def val(r: int, c: int) -> Any:
         v = ws.cell(r, c).value
@@ -173,10 +200,12 @@ def parse(data: bytes) -> dict[str, Any] | None:
         flag = {} if f_raw in (None, "") or in_sum is None or r in in_sum else {"in_total": False}
         rows.append({"row": "option" if f_raw in (None, "") or flag else "item", **flag, "commodity": a, "desc": desc, "qty": qty,
                      "unit": "" if unit.lower() in ("ea", "") else unit, "unit_price": price,
-                     "remark": _s(ws.cell(r, 7).value)})
+                     "remark": _s(ws.cell(r, 7).value), **({"pic": pic_at[r]} if r in pic_at else {})})
 
     t = _s(ws.cell(total, 1).value).split("\n", 1)
     form["total_note"] = t[1].strip() if len(t) > 1 else ""
+    if lang == "ko":                                          # 'Total (부가세 포함)' — 부가세 포함 견적서(사용자 2026-10-28)
+        form["vat"] = "included" if "포함" in t[0] else "excluded"
     if rent:                                                  # 대여 견적서 — 월 납입금 식의 개월 수
         form.update(purpose="rental", rental_months=int(rent[1]))
     elif re.search(r"월 납입금|Monthly", _s(ws.cell(head, 5).value)):   # 식은 지웠어도 단가 칸 머리가 월 납입금이면 대여(개월 수 모름)
@@ -211,7 +240,7 @@ def parse(data: bytes) -> dict[str, Any] | None:
                 foot.append(re.sub(r"^\*\s*", "", x))
         form["foot_notes"] = foot
     return {"lang": lang, "quote_no": _s(ws.cell(pos["no"], 5).value) if pos["no"] else "", "form": form, "rows": rows,
-            "rownums": nums, "pos": pos}
+            "rownums": nums, "pos": pos, "pics": {k: v for k, v in pics.items() if k in {x.get("pic") for x in rows}}}
 
 
 def items_of(parsed: dict[str, Any]) -> list[dict[str, Any]]:
@@ -228,10 +257,23 @@ def items_of(parsed: dict[str, Any]) -> list[dict[str, Any]]:
 
 # ── 맞추기 ───────────────────────────────────────────────────────────────────
 
+def _to_supply(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """부가세 포함 견적서에서 읽은 단가·NEGO 금액 → 공급가액(÷ 1.1, 원 단위). 작성 상태는 늘 공급가액이다."""
+    out = []
+    for r in rows:
+        r = dict(r)
+        for k in ("unit_price", "amount") if r.get("row") == "nego" else ("unit_price",):
+            if isinstance(r.get(k), (int, float)):
+                r[k] = round(r[k] / 1.1)
+        out.append(r)
+    return out
+
+
 def _render(state: dict[str, Any]) -> list[dict[str, Any]]:
     """지금 상태가 그리는 견적서 줄(품목 줄엔 상태 줄 id). 단가가 비어 그릴 수 없는 줄은 단가 0 으로 본다."""
     st = copy.deepcopy(state)
     f = st["form"]
+    f["vat"] = "excluded"          # 공급가액으로 그려 짝짓는다 — 올린 파일 금액도 공급가액으로 바꿔 비교(_to_supply, 사용자 2026-10-28)
     en = f.get("lang") == "en"
     if en and not f.get("fx_rate"):                          # 환율 없는 해외 견적 — 원화로만 있는 물류비·인건비 줄은 그릴 수 없다
         st["lines"] = [ln for ln in st["lines"] if ln.get("kind") not in ("work", "freight")]
@@ -319,6 +361,8 @@ def merge(state: dict[str, Any], parsed: dict[str, Any]) -> tuple[dict[str, Any]
     if parsed["lang"] != lang:
         return st, [], [f"올린 견적서가 {'해외(영문)' if parsed['lang'] == 'en' else '국내'} 양식이라 작성 상태는 바꾸지 않았습니다."]
     en = lang == "en"
+    if not en and parsed["form"].get("vat") == "included":
+        parsed = {**parsed, "rows": _to_supply(parsed["rows"])}
     rendered = _render(state)
     by_id = {ln["id"]: ln for ln in st["lines"]}
 
@@ -378,11 +422,11 @@ def merge(state: dict[str, Any], parsed: dict[str, Any]) -> tuple[dict[str, Any]
             continue
         blk, n = new_rows[ni]
         if oi is None:
-            keep.append(_new_line(st, n, blk, en, changes))
+            keep.append(_with_pic(_new_line(st, n, blk, en, changes), n, changes))
             continue
         o = old_rows[oi]
         ln = by_id[o.get("id") or o.get("note_id")]
-        keep.append(_update_line(st, ln, o, n, blk, en, changes, warns))
+        keep.append(_with_pic(_update_line(st, ln, o, n, blk, en, changes, warns), n, changes))
     # 그리지 못해 짝짓기에 안 들어간 물류비·인건비 줄(환율 없는 해외)은 그대로 둔다 — 납품 방식이 다시 만든다
     seen = {o.get("id") or o.get("note_id") for o in old_rows}
     keep += [ln for ln in st["lines"] if ln["kind"] in ("work", "freight") and ln["id"] not in seen]
@@ -425,6 +469,9 @@ def merge(state: dict[str, Any], parsed: dict[str, Any]) -> tuple[dict[str, Any]
         if _norm(pf[k]) != _norm(now):
             f[k] = qs.clean_comments(pf[k]) if k == "comments" else pf[k]
             changes.append(f"{labels[k]}: {now[:20] or '(없음)'} → {pf[k][:20] or '(없음)'}")
+    if pf.get("vat") and pf["vat"] != (f.get("vat") or "excluded"):
+        changes.append(f"부가세: {qs.VAT_MODES[f.get('vat') or 'excluded']} → {qs.VAT_MODES[pf['vat']]}")
+        f["vat"] = pf["vat"]
     if pf.get("rental_months") and (f.get("purpose") != "rental" or f.get("rental_months") != pf["rental_months"]):
         changes.append(f"대여 개월 수: {f.get('rental_months') or '(없음)'} → {pf['rental_months']}")
         f.update(purpose="rental", rental_months=pf["rental_months"])
@@ -440,6 +487,19 @@ def merge(state: dict[str, Any], parsed: dict[str, Any]) -> tuple[dict[str, Any]
         f["foot_notes"] = qs.clean_notes(pf["foot_notes"])
         changes.append(f"표 아래 주석 {len(f['foot_notes'])}개로 변경")
     return st, changes, warns
+
+
+def _with_pic(ln: dict[str, Any], n: dict[str, Any], changes: list[str]) -> dict[str, Any]:
+    """품목 줄에 올린 파일의 사진 지문을 달아 둔다(_pic, 없으면 None = 사진 뺌) — 저장소에 옮기는 것은 부르는 쪽.
+    서술형·물류비·인건비 줄은 사진을 쓰지 않는다."""
+    if n["row"] == "spec" or ln.get("kind") in ("note", "work", "freight") or not (n.get("pic") or ln.get("photo")):
+        return ln
+    ln["_pic"] = n.get("pic")
+    if n.get("pic") and not ln.get("photo"):
+        changes.append(f"{_label(ln)} 사진 추가")
+    elif not n.get("pic") and ln.get("photo"):
+        changes.append(f"{_label(ln)} 사진 삭제")
+    return ln
 
 
 def _new_line(st: dict[str, Any], n: dict[str, Any], blk: str, en: bool, changes: list[str]) -> dict[str, Any]:
@@ -530,6 +590,8 @@ def merge_items(state: dict[str, Any], items: list[dict[str, Any]]) -> tuple[dic
     rows = [{"row": "item", "commodity": _s(it.get("name")), "desc": _s(it.get("spec")) or _s(it.get("name")),
              "qty": _num(it.get("qty")), "unit": "", "unit_price": _num(it.get("unit_price")), "remark": ""}
             for it in items if _num(it.get("unit_price")) is None or _num(it.get("unit_price")) >= 0]
+    if qs.vat_included(state):            # 부가세 포함 견적의 금액으로 확인한 품목 — 작성 상태엔 공급가액으로
+        rows = _to_supply(rows)
     # 합계에 드는 품목 줄만 짝짓는다 — 옵션·서술형 줄·묶음 구조는 그대로
     cur_rows = [r for r in _render(state) if r.get("row") is None and r.get("id")]
     st = copy.deepcopy(state)

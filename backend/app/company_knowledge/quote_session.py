@@ -36,8 +36,35 @@ FORM_FIELDS = {   # 대화·직접 수정으로 바꿀 수 있는 머리 칸 →
     "total_note": ("Total 아래 문구", "text"), "foot_notes": ("표 아래 주석", "list"),
     # 판매 / 대여(사용자 2026-10-22, 방역 로봇 3년 렌탈 견적서 기준) — 대여면 계약 개월 수로 Total 옆에 월 납입금
     "purpose": ("목적", "purpose"), "rental_months": ("대여 개월 수", "number"), "rental_start": ("대여 시작일", "date"),
+    # 부가세 별도 / 포함(사용자 2026-10-28 — 공공기관 견적은 부가세 포함) — 국내 견적만. 포함이면 견적서 단가부터 × 1.1
+    "vat": ("부가세", "vat"),
 }
 PURPOSES = {"sale": "제품 판매", "rental": "제품 대여"}
+VAT_MODES = {"excluded": "VAT 별도", "included": "VAT 포함"}
+VAT_RATE = Decimal("0.1")
+
+
+def vat_included(state: dict[str, Any]) -> bool:
+    """부가세 포함 견적서인지 — 국내(원화)만. 작성 상태의 단가는 늘 공급가액이고, 견적서에 찍을 때만 × 1.1."""
+    f = state.get("form") or {}
+    return f.get("vat") == "included" and (f.get("lang") or "ko") != "en"
+
+
+def with_vat(v: float) -> float:
+    """공급가액 → 부가세 포함 금액(10%, 원 단위 반올림 — 0.5 는 올림)."""
+    return float((Decimal(str(v)) * (1 + VAT_RATE)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def total_text(state: dict[str, Any]) -> str:
+    """대화 답의 합계 글 — '12,000,000원(VAT 별도)' · 부가세 포함이면 견적서에 찍힐 합계와 공급가액 둘 다."""
+    sub = subtotal(state)
+    if not vat_included(state):
+        return f"**{sub:,}원**(VAT 별도)"
+    try:
+        doc = int(qx.total(render_lines(state, "ko", None)))
+    except (ValueError, TypeError, KeyError, qx.QuoteError):
+        doc = int(with_vat(sub))
+    return f"**{doc:,}원**(VAT 포함 · 공급가액 {sub:,}원)"
 CLEARABLE_FIELDS = ("total_note", "foot_notes")
 # 견적서 칸 안에서 줄을 바꿀 수 있는 머리 칸(Alt+Enter, 사용자 2026-10-16). 고객사·받는 분·참조·담당자는 영업 건·파일명에도 쓰여 한 줄 그대로
 MULTILINE_FIELDS = ("delivery", "place", "payment", "note", "total_note")
@@ -646,6 +673,9 @@ def apply_ops(state: dict[str, Any], ops: Any, message: str | None) -> tuple[dic
             elif typ == "purpose":
                 if v not in PURPOSES:
                     continue
+            elif typ == "vat":
+                if v not in VAT_MODES:
+                    continue
             elif typ == "date":
                 v = clean_date(v)
                 if not v:
@@ -684,7 +714,7 @@ def apply_ops(state: dict[str, Any], ops: Any, message: str | None) -> tuple[dic
                 swap = RENTAL_NOTE_EN if v == "en" else RENTAL_NOTE     # 대여 중도 해지 주석도 그 언어로
                 st["form"]["foot_notes"] = [swap if x in (RENTAL_NOTE, RENTAL_NOTE_EN) else x
                                             for x in (st["form"].get("foot_notes") or [])]
-            done.append(f"{FORM_FIELDS[field][0]}: {v}")
+            done.append(f"{FORM_FIELDS[field][0]}: {VAT_MODES[v] if typ == 'vat' else v}")
         elif kind == "delivery":
             try:
                 case = int(op.get("case"))
@@ -1031,6 +1061,8 @@ ops 종류:
    answer 로 새 은행·계좌번호·예금주를 물어본다. 계좌 변경을 거절하거나 내부 정책·담당 부서 확인 같은 말을 지어내지 않는다.)
 - {"op":"set","field":<purpose|rental_months|rental_start>,"value":...}  — 판매/대여 견적서: purpose 는 "sale"(판매) 또는 "rental"(대여·렌탈),
   rental_months 는 대여 계약 개월 수(정수, '3년'이면 36), rental_start 는 대여 시작일(YYYY-MM-DD) — [말]에 있을 때만.
+- {"op":"set","field":"vat","value":"included"|"excluded"}  — 부가세 포함/별도 견적서(국내만): '부가세 포함으로'·'VAT 포함 견적'·'공공기관용'
+  이면 "included", '부가세 별도로' 면 "excluded". 단가는 공급가액 그대로 두고(바꾸지 않는다) 견적서에 찍을 때만 부가세 10%를 더한다.
 - {"op":"delivery","case":1|2|3|4|5,"freight":물류비}  — 납품 방식: 1 택배 발송(품목 그대로), 2 화물 직납(물류비 추가),
   3 우리 인원이 설치하며 납품(설치 인건비 추가), 4 화물로 보내고 우리 인원이 설치(물류비+인건비), 5 별도 협의(품목 그대로). freight 는 물류비 금액(말에 있을 때만).
 - {"op":"work","people":명,"days":일,"rate":1인1일단가}  — 설치 인건비(인원·일수·단가). 설치를 빼라고 하면 {"op":"work","needed":false}
@@ -1138,11 +1170,14 @@ def render_lines(state: dict[str, Any], lang: str, fx_rate: float | None) -> lis
                 out.append({"row": "subtotal", "text": "Sub total", "amount": round(sum(r["amount"] for r in rows if not r.get("row")), 2)})
         if multi:
             out.append({"row": "gap"})
-    base = round(sum(r["amount"] for r in out if not r.get("row") or r.get("in_total")), 2)
+    billed = [r for r in out if not r.get("row") or r.get("in_total")]
+    # NEGO 는 공급가액으로 셈하고(금액·% 모두 담당자가 적은 공급가액 기준), 부가세 포함 견적서면 × 1.1 로 찍는다
+    base = round(sum(r["qty"] * r.get("supply_unit", r["unit_price"]) * r.get("months", 1) for r in billed), 2)
     cut = nego_amount(state, base)
     if cut > 0:
+        shown = with_vat(cut) if lang != "en" and vat_included(state) else cut
         out.append({"row": "nego", "key": "nego", "commodity": "", "desc": nego_label(state), "qty": 1,
-                    "unit_price": -cut, "amount": -cut, "remark": ""})
+                    "unit_price": -shown, "amount": -shown, "supply_unit": -cut, "remark": ""})
     if (multi or cut > 0) and out and out[-1].get("row") != "gap":
         out.append({"row": "gap"})                     # Total 바로 위에도 회색 줄(사용자 2026-10-13)
     return out
@@ -1186,6 +1221,10 @@ def _item_rows(state: dict[str, Any], lines: list[dict[str, Any]], lang: str, fx
             remark = ln.get("remark") or ""
         krw = float(ln["unit_price"]) if ln.get("unit_price") else None
         unit = usd_price(ln, fx_rate) if lang == "en" else krw
+        # 부가세 포함 견적서 — 단가부터 × 1.1(사용자 2026-10-28). 영업 건에는 공급가액(supply_unit)으로 넘긴다
+        supply = unit
+        if lang != "en" and unit is not None and vat_included(state):
+            unit = with_vat(unit)
         if unit is None:
             raise ValueError(f"{ln['name']} — " + ("달러 단가가 없습니다(직접 적거나 환율 입력)" if lang == "en" else "단가가 없습니다"))
         # id — 올린 견적서 파일을 작성 상태로 되읽을 때 줄 짝짓기에 쓴다(quote_readback, 사용자 2026-10-15)
@@ -1193,6 +1232,7 @@ def _item_rows(state: dict[str, Any], lines: list[dict[str, Any]], lang: str, fx
         mf = month_factor(state["form"], ln)
         out.append({"id": ln.get("id"), "key": k, "commodity": qx.commodity_of(ln), "desc": desc, "qty": int(ln["qty"]),
                     **({"photo": ln["photo"]} if ln.get("photo") else {}), "unit_price": unit, "unit_price_krw": krw,
+                    "supply_unit": supply,
                     **({"months": mf} if mf > 1 else {}),
                     "amount": round(int(ln["qty"]) * unit * mf, 2), "remark": remark, "option": ln["kind"] == "option", "kind": ln["kind"],
                     **({"unit": unit_label("인·일", lang, int(ln["qty"]))} if ln["kind"] == "work"

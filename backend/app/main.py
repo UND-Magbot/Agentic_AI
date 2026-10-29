@@ -1253,6 +1253,64 @@ async def _stream_rentals(text_: str, user_id: int | None):
     yield _rq.answer(data, when["since"], when["until"], when["unclear"])
 
 
+async def _sales_user(user_id: int | None) -> bool:
+    """영업부(또는 전체 권한)인지 — 영업 건을 보여 줘도 되는 사람."""
+    from .database import SessionLocal
+    from .models import User, UserDomain, UserRole
+
+    if not user_id:
+        return False
+    async with SessionLocal() as db:
+        user = await db.get(User, user_id)
+    return user is not None and (user.role == UserRole.superadmin or user.domain in (UserDomain.sales, UserDomain.all))
+
+
+async def _deal_goto_reply(intent: dict, user_id: int | None) -> str | None:
+    """영업 건 찾아 화면으로 보내는 답 — 이동은 답에 붙은 버튼으로. None 이면 AI 대화로(권한은 _sales_user 로 먼저 확인)."""
+    from .database import SessionLocal
+    from .sales_deals import deal_goto as _dg
+    from .sales_deals.service import kst_today
+
+    async with SessionLocal() as db:
+        return await _dg.answer(db, intent, kst_today(), user_id)
+
+
+async def _spec_reply(question: str) -> str | None:
+    """제품 사양 질문의 답 — 사양 DB 를 읽어 그대로. 모델을 못 찾으면 None(AI 대화로)."""
+    from .company_knowledge import spec_answer as _sa
+    from .database import SessionLocal
+
+    async with SessionLocal() as db:
+        return await _sa.answer(db, question)
+
+
+async def _price_reply(question: str, allowed: bool) -> str | None:
+    """제품 단가 질문의 답 — 영업부면 단가 DB 값, 아니면 '영업부만'. 모델을 못 찾으면 None(AI 대화로)."""
+    from .company_knowledge import price_answer as _pa
+    from .database import SessionLocal
+
+    async with SessionLocal() as db:
+        return await _pa.answer(db, question, allowed=allowed)
+
+
+async def _deal_query_reply(intent: dict) -> str | None:
+    """영업 데이터 질문의 답 — DB 를 읽어 그대로. None 이면 다음 흐름으로(권한은 _sales_user 로 먼저 확인)."""
+    from .database import SessionLocal
+    from .sales_deals import deal_query as _dq
+    from .sales_deals.service import kst_today
+
+    async with SessionLocal() as db:
+        return await _dq.answer(db, intent, kst_today())
+
+
+# DB 에서 바로 읽은 답(대여 목록·영업 데이터·건 찾아 이동) — 채팅 중계가 사내 자료 '출처' 칩을 붙이지 않게 알린다(사용자 2026-10-28)
+_DB_ANSWER_HEADERS = {"Cache-Control": "no-store", "X-Answer-Source": "db"}
+
+
+async def _stream_text(text_: str):
+    yield text_
+
+
 @app.post("/v1/generate")
 async def generate(req: GenerateRequest, _auth: None = Depends(require_internal_token)):
     msgs = [m.model_dump() for m in req.messages]
@@ -1285,7 +1343,81 @@ async def generate(req: GenerateRequest, _auth: None = Depends(require_internal_
         return StreamingResponse(
             _stream_rentals(msgs[-1].get("content") or "", req.user_id),
             media_type="text/plain; charset=utf-8",
-            headers={"Cache-Control": "no-store"},
+            headers=_DB_ANSWER_HEADERS,
+        )
+
+    # ── 제품 사양 바로 답하기 fast-path(사용자 2026-10-28) — 'TCV1 페이로드'·'UR5e 도달거리'를 소개서 검색 대신 제품 사양 DB
+    #    (맥봇 공식 스펙 카드·타사 로봇 비교표)에서 그대로. 모델을 못 찾으면 다음 흐름. 영업 데이터보다 먼저('TCV1 무게 얼마야'가
+    #    건 제목 'TCV1 MASTER…'로 잡히지 않게). 제품 정보라 부서 제한 없음 · 첨부가 있으면 가로채지 않는다.
+    from . import expense_parser as _ep_spec
+    from .company_knowledge import spec_answer as _sa
+
+    spec_q = None if _ep_spec.extract_attachment_ids_from_system(req.systemPrompt or "") else _sa.detect(msgs)
+    spec_reply = await _spec_reply(spec_q) if spec_q else None
+    if spec_reply is not None:
+        logger.warning("[spec] TAKING FAST-PATH: user_id=%s", req.user_id)
+        return StreamingResponse(
+            _stream_text(spec_reply),
+            media_type="text/plain; charset=utf-8",
+            headers=_DB_ANSWER_HEADERS,
+        )
+
+    # ── 제품 단가 바로 답하기 fast-path(사용자 2026-10-28) — 'TCV3 가격 얼마야?'를 단가 DB 에서. 영업부만 — 다른 부서는
+    #    AI 로 넘기지 않고 '영업부만'(짐작해 답하지 않게). 영업 데이터보다 먼저('TCV1 가격'이 건 제목으로 잡히지 않게).
+    from .company_knowledge import price_answer as _pa
+
+    price_q = None if _ep_spec.extract_attachment_ids_from_system(req.systemPrompt or "") else _pa.detect(msgs)
+    price_reply = await _price_reply(price_q, await _sales_user(req.user_id)) if price_q else None
+    if price_reply is not None:
+        logger.warning("[price] TAKING FAST-PATH: user_id=%s", req.user_id)
+        return StreamingResponse(
+            _stream_text(price_reply),
+            media_type="text/plain; charset=utf-8",
+            headers=_DB_ANSWER_HEADERS,
+        )
+
+    # ── 영업 데이터 바로 답하기 fast-path(사용자 2026-10-28) — 분기 수주 금액·미입금·담당자별 건·건 하나의 금액·품목·출하·입금을
+    #    DB 에서 읽어 답한다(AI 가 숫자를 지어내거나 '확인할 수 없다'고 하지 않게). 영업부만 · 첨부가 있으면 가로채지 않는다.
+    from . import expense_parser as _ep_query
+    from .sales_deals import deal_query as _dq
+
+    query = None if _ep_query.extract_attachment_ids_from_system(req.systemPrompt or "") else _dq.detect(msgs)
+    query_reply = await _deal_query_reply(query) if query is not None and await _sales_user(req.user_id) else None
+    if query_reply is not None:
+        logger.warning("[deal-query] TAKING FAST-PATH: kind=%s user_id=%s", query["kind"], req.user_id)
+        return StreamingResponse(
+            _stream_text(query_reply),
+            media_type="text/plain; charset=utf-8",
+            headers=_DB_ANSWER_HEADERS,
+        )
+
+    # ── 영업 건 찾아 이동 fast-path(사용자 2026-10-28) — 'OO 견적서 수정하려면?' → 방법 설명 대신 건을 찾아 상태와
+    #    [견적서 고치기로 이동] 버튼. 건 이름이 없는 일반 질문·영업부 밖 사용자는 AI 로. 첨부가 있으면(서류 처리 요청) 가로채지 않는다.
+    from . import expense_parser as _ep_goto
+    from .sales_deals import deal_goto as _dg
+
+    goto = None if _ep_goto.extract_attachment_ids_from_system(req.systemPrompt or "") else _dg.detect(msgs)
+    # 영업부가 아니면 가로채지 않는다(재무팀 '거래명세서' 이야기 등은 AI 대화로)
+    goto_reply = await _deal_goto_reply(goto, req.user_id) if goto is not None and await _sales_user(req.user_id) else None
+    if goto_reply is not None:
+        logger.warning("[deal-goto] TAKING FAST-PATH: kind=%s names=%s user_id=%s", goto["kind"], goto.get("names"), req.user_id)
+        return StreamingResponse(
+            _stream_text(goto_reply),
+            media_type="text/plain; charset=utf-8",
+            headers=_DB_ANSWER_HEADERS,
+        )
+
+    # ── 영업 화면으로 이동 버튼(사용자 2026-10-28) — 'AI 제품 추천 페이지로 이동해줘'. 건을 집는 말은 위에서, 남은 화면 이동만.
+    from .sales_deals import screen_goto as _sg
+
+    screens = None if goto_reply is not None or _ep_goto.extract_attachment_ids_from_system(req.systemPrompt or "") \
+        else _sg.detect(msgs)
+    if screens and await _sales_user(req.user_id):
+        logger.warning("[screen-goto] TAKING FAST-PATH: %s user_id=%s", [h for _, h in screens], req.user_id)
+        return StreamingResponse(
+            _stream_text(_sg.answer(screens)),
+            media_type="text/plain; charset=utf-8",
+            headers=_DB_ANSWER_HEADERS,
         )
 
     # ── 자금계획 자동작성 fast-path — 자금계획 + 월마감 xlsx 첨부 기반. LLM 우회.

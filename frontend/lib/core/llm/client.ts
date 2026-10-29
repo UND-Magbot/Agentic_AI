@@ -14,7 +14,8 @@ export type GenerationRequest = {
   userId?: number;
 };
 
-export type GenerationChunk = { delta: string; done?: boolean };
+/** fromDb = backend 가 LLM 없이 DB 에서 바로 답함(첫 조각에만) — 사내 자료 출처를 붙이지 않는다. */
+export type GenerationChunk = { delta: string; done?: boolean; fromDb?: boolean };
 
 const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:8002";
 // 내부 서비스 토큰 — BFF(이 서버) 만 backend /v1/generate 를 호출하도록 식별. 비어 있으면 미첨부.
@@ -46,6 +47,8 @@ export async function* streamLlama(req: GenerationRequest): AsyncGenerator<Gener
     const text = await resp.text().catch(() => "");
     throw new Error(`backend ${resp.status}: ${text || resp.statusText}`);
   }
+
+  if (resp.headers.get("X-Answer-Source") === "db") yield { delta: "", fromDb: true };
 
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();

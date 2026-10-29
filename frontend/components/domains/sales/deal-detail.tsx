@@ -313,7 +313,8 @@ function DropForm({ busy, act, onDone }: { busy: boolean; act: Act; onDone: () =
 function DropBlock({ deal, busy, act }: { deal: DealRow; busy: boolean; act: Act }) {
   const admin = useContext(AdminCtx);
   const [open, setOpen] = useState(false);
-  if (deal.dropped) {
+  // 예전 '실주'(won=false)도 서버가 드랍 단계로 보인다 — 되살리기가 보여야 한다(사용자 2026-10-28)
+  if (deal.dropped || deal.won === false) {
     return (
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-zinc-400/50 bg-zinc-500/[0.06] px-4 py-2.5 text-[12.5px]">
         <b>드랍한 건</b>

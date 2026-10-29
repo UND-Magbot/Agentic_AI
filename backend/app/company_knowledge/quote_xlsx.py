@@ -129,6 +129,9 @@ def quote_header(form: dict[str, Any], *, lang: str, quote_no: str, day: date, p
         raise QuoteError("영문 견적서에 필요한 회사 정보가 아직 등록되지 않았습니다: "
                          + ", ".join(names.get(m, m) for m in f["missing"]))
     en = lang == "en"
+    if not en and form.get("vat") == "included":
+        # 부가세 포함 견적서(사용자 2026-10-28) — 표 위 'VAT 포함', Total 옆 '(부가세 포함)'. 단가는 render_lines 에서 × 1.1
+        f = {**f, "terms": {**f["terms"], "vat": "VAT 포함"}, "labels": {**f["labels"], "total": "Total (부가세 포함)"}}
     # 해외 담당자 = 'Mr. Alex Jeon'(호칭 + 영문 이름, 직함 없음 — 해외 기준 견적서). 영문 이름이 비면 이름 칸
     name = (str(form.get("contact_name_en") or "").strip() if en else "") or str(form.get("contact_name") or "").strip()
     need = {"customer": "고객사", "contact_mobile": "담당자 휴대폰", "contact_email": "담당자 이메일"}

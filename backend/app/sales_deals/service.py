@@ -566,12 +566,17 @@ def for_statement(ln: dict) -> bool:
     return ln.get("row") is None and ln.get("block", "B0") == "B0" and ln.get("kind") not in ("work", "freight", "note")
 
 
+def _supply_unit(ln: dict) -> float | None:
+    return ln["supply_unit"] if ln.get("supply_unit") is not None else ln.get("unit_price")
+
+
 def snapshot_items(lines: list[dict]) -> list[dict]:
     """발행 기록의 줄 → 영업 건 품목 — 합계에 들어가는 줄(품목·Total 반영 옵션·NEGO)만. AI 견적은 desc, 첨부 견적은 name."""
     return [{"name": ln.get("name") or ln.get("desc") or "",
              # 대여 견적서 줄은 단가(월 납입금) × 개월 = 1대당 계약 금액(사용자 2026-10-22)
-             "unit_price": (ln.get("unit_price") or 0) * ln["months"] if ln.get("months") and ln.get("unit_price") is not None
-             else ln.get("unit_price"), "qty": ln.get("qty"),
+             # 부가세 포함 견적서의 줄은 공급가액(supply_unit)으로 — 영업 건 금액은 늘 공급가액(사용자 2026-10-28)
+             "unit_price": (_supply_unit(ln) or 0) * ln["months"] if ln.get("months") and _supply_unit(ln) is not None
+             else _supply_unit(ln), "qty": ln.get("qty"),
              **({"commodity": ln["commodity"]} if ln.get("commodity") else {}), **({"unit": ln["unit"]} if ln.get("unit") else {}),
              **({"statement": for_statement(ln)} if "block" in ln or ln.get("row") == "nego" else {})}
             for ln in lines or [] if ln.get("row") in (None, "nego") or (ln.get("row") == "option" and ln.get("in_total"))]
@@ -947,8 +952,13 @@ async def set_dropped(db: AsyncSession, deal_id: int, user_id: int | None, dropp
     d = await _lock(db, deal_id)
     if dropped and not admin and drop_locked(d):
         raise DealError(DROP_LOCKED, 403)
-    await _save(db, deal_id, dropped=dropped, drop_reason=(reason or "").strip()[:200] or None if dropped else None)
-    await _log(db, deal_id, user_id, "drop" if dropped else "undrop", {"from": d.get("dropped"), "reason": reason})
+    extra = {}
+    if not dropped and d.get("won") is False:
+        # 예전 '실주'(won=false)도 드랍으로 보인다(status.derive) — 되살리면 수주 결과를 '미확인'으로(사용자 2026-10-28)
+        extra["won"] = None
+    await _save(db, deal_id, dropped=dropped, drop_reason=(reason or "").strip()[:200] or None if dropped else None, **extra)
+    await _log(db, deal_id, user_id, "drop" if dropped else "undrop",
+               {"from": d.get("dropped"), "reason": reason, **({"won_from": False} if extra else {})})
     await db.commit()
 
 

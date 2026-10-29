@@ -7,6 +7,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
+import Link from "next/link";
 import type { ChatMessage, DomainKey, DomainMeta } from "@/lib/shared/types";
 import { NEUTRAL_ACCENT } from "@/lib/shared/neutral";
 import { cn } from "@/lib/shared/utils";
@@ -784,6 +785,681 @@ function ImagePreview({ filename, attachmentId }: { filename: string; attachment
 // 개념도·제안서 결과의 확정 마커 — backend confirmed.confirm_link 와 같은 형식.
 const _CONFIRM_RE = /\[이 결과를 확정\]\(\/api\/proposal-records\/(\d+)\/confirm\)/g;
 const _REVISED_ACCEPT = ".drawio,.pptx,.docx";
+// 화면 이동 버튼(사용자 2026-10-28) — backend sales_deals/deal_goto 가 붙이는 `[이름](/proposals/recommend?…)`.
+// 눌러야만 이동한다. 사내 영업 화면 주소만 버튼으로 그린다(다른 링크 글은 그대로 글자).
+// 영업 화면 자체로 가는 버튼(제안서 만들기 /proposals/new)도 같은 버튼으로(사용자 2026-10-28)
+const _GOTO_RE = /\[([^\]\n]{1,40})\]\((\/proposals\/(?:recommend\?[\w=&-]+|new))\)/g;
+
+/** 이동 버튼 — primary(그 건에서 할 일, 그라디언트) · secondary(건 열기 등, 테두리). */
+function GotoButton({ label, href, primary = false }: { label: string; href: string; primary?: boolean }) {
+  return (
+    <Link
+      href={href}
+      className={cn(
+        // 말풍선의 `.prose-chat a`(글자색·밑줄)가 유틸리티보다 강해 색·밑줄은 ! 로 고정
+        "mx-0.5 my-0.5 inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[13px] font-semibold no-underline!",
+        "transition-[transform,box-shadow,background-color] duration-150 hover:-translate-y-px active:translate-y-0",
+        primary
+          ? "und-grad text-white! shadow-[0_6px_14px_-6px_rgba(37,99,235,0.6)] hover:shadow-[0_8px_18px_-6px_rgba(37,99,235,0.7)]"
+          : "border border-border bg-surface text-foreground! hover:border-accent/50 hover:bg-accent/5 hover:text-accent!",
+      )}
+    >
+      {label}
+      <Icon name="back" className="h-3.5 w-3.5 rotate-180" />
+    </Link>
+  );
+}
+
+// ── 영업 건 답 카드(사용자 2026-10-28 UI 개선) — backend deal_goto·deal_query 의 고정 문장을 카드로 다시 그린다.
+//    본문 텍스트(복사·저장)는 그대로, 화면만. 형식이 다르면 호출부가 평문으로 그린다.
+type DealBlock = {
+  customer: string;
+  title: string;
+  no: string;
+  rental: boolean;
+  stage: string;
+  chips: string[];
+  paid: { got: string; total: string } | null;
+  lines: string[];
+  buttons: { label: string; href: string }[];
+};
+
+const _STATUS_PREFIX = /^지금 상태:\s*/;
+
+function _parseHead(raw: string): Pick<DealBlock, "customer" | "title" | "no" | "rental"> {
+  const s = raw.replace(/^검색해 보니\s*/, "").replace(/\s*건이 있습니다\.$/, "").trim();
+  const m = s.match(/^(.*)\s\(([^()]+)\)(\s·\s대여)?$/);
+  const name = m ? m[1] : s;
+  const dot = name.indexOf(" · ");
+  return {
+    customer: dot > 0 ? name.slice(0, dot) : name,
+    title: dot > 0 ? name.slice(dot + 3) : "",
+    no: m?.[2] ?? "",
+    rental: Boolean(m?.[3]),
+  };
+}
+
+function _parseStatus(raw: string): Pick<DealBlock, "stage" | "chips" | "paid"> {
+  const parts = raw.replace(_STATUS_PREFIX, "").split(" · ").map((p) => p.trim()).filter(Boolean);
+  let paid: DealBlock["paid"] = null;
+  const chips: string[] = [];
+  for (const p of parts.slice(1)) {
+    const pm = p.match(/^입금\s+([\d,.\-]+)\s*\/\s*([\d,.\-]+)원$/);
+    if (pm) paid = { got: pm[1], total: pm[2] };
+    else chips.push(p);
+  }
+  return { stage: parts[0] ?? "", chips, paid };
+}
+
+function _buttons(line: string): DealBlock["buttons"] {
+  return [...line.matchAll(new RegExp(_GOTO_RE.source, "g"))].map((m) => ({ label: m[1], href: m[2] }));
+}
+
+function _isButtonLine(line: string): boolean {
+  return _buttons(line).length > 0 && line.replace(new RegExp(_GOTO_RE.source, "g"), "").trim() === "";
+}
+
+/** 한 건 블록 줄들(머리 · 상태 · 그 밖 · 버튼) → DealBlock. 상태 줄이 없으면 null. */
+function _parseBlock(lines: string[]): DealBlock | null {
+  if (lines.length < 2) return null;
+  const head = _parseHead(lines[0]);
+  const st = lines[1];
+  if (!_STATUS_PREFIX.test(st) && !/^(제품 추천 확정|견적|수주|출하|완료|드랍|대여|회수)/.test(st)) return null;
+  const rest = lines.slice(2);
+  return {
+    ...head,
+    ..._parseStatus(st),
+    lines: rest.filter((l) => !_isButtonLine(l)),
+    buttons: rest.filter(_isButtonLine).flatMap(_buttons),
+  };
+}
+
+type DealAnswer = { intro: string; found: boolean; blocks: DealBlock[] };
+
+/** 영업 건 답인지 — 한 건('…건이 있습니다' 또는 머리 다음 줄이 '지금 상태:') 또는 'N건을 찾았습니다' 후보 목록.
+ *  한 줄이라도 형식이 다르면(품목 번호 목록 등) null — 호출부가 평문으로 그린다. */
+function parseDealAnswer(body: string): DealAnswer | null {
+  const nonEmpty = body.split("\n").map((l) => l.trim()).filter(Boolean);
+  if (nonEmpty.length < 2) return null;
+  if (/건이 있습니다\.$/.test(nonEmpty[0]) || _STATUS_PREFIX.test(nonEmpty[1])) {
+    const b = _parseBlock(nonEmpty);
+    return b ? { intro: "", found: nonEmpty[0].startsWith("검색해 보니"), blocks: [b] } : null;
+  }
+  if (!/\d+건을 찾았습니다/.test(nonEmpty[0])) return null;
+  const groups: string[][] = [];
+  const tail: string[] = [];
+  for (const l of nonEmpty.slice(1)) {
+    const m = l.match(/^\d+\.\s+(.*)$/);
+    if (m) groups.push([m[1]]);
+    else if (groups.length > 0 && !l.startsWith("…")) groups[groups.length - 1].push(l);
+    else tail.push(l);
+  }
+  const blocks = groups.map(_parseBlock);
+  if (blocks.length === 0 || blocks.some((b) => b === null)) return null;
+  return { intro: [nonEmpty[0], ...tail].join("\n"), found: true, blocks: blocks as DealBlock[] };
+}
+
+function _stageTone(stage: string): string {
+  if (/드랍/.test(stage)) return "bg-foreground/[0.06] text-foreground-subtle ring-foreground/15";
+  if (/완료/.test(stage)) return "bg-emerald-500/12 text-emerald-700 ring-emerald-500/30 dark:text-emerald-300";
+  if (/수주|출하|대여 중|회수/.test(stage)) return "bg-sky-500/12 text-sky-700 ring-sky-500/30 dark:text-sky-300";
+  return "bg-amber-500/12 text-amber-700 ring-amber-500/30 dark:text-amber-300";
+}
+
+/** 상태 칩 — 끝난 일(발행·발급·출하 N회)은 체크, 아직(…전·작성 중)은 흐리게. */
+function DealChip({ text }: { text: string }) {
+  const pending = /전$|작성 중|미정/.test(text);
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] font-medium ring-1 ring-inset",
+        pending
+          ? "bg-transparent text-foreground-subtle ring-border"
+          : "bg-foreground/[0.04] text-foreground-muted ring-foreground/10",
+      )}
+    >
+      {!pending && <Icon name="check" className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />}
+      {text}
+    </span>
+  );
+}
+
+function _toNumber(s: string): number {
+  return Number(s.replace(/,/g, "")) || 0;
+}
+
+function DealCardBody({ b, compact = false }: { b: DealBlock; compact?: boolean }) {
+  const pct = b.paid ? Math.min(100, Math.round((_toNumber(b.paid.got) / Math.max(1, _toNumber(b.paid.total))) * 100)) : 0;
+  const question = b.lines.filter((l) => /\?$/.test(l));
+  // 안내 = '…입니다 — 할 일' 문장(드랍·수주 전·작성자만 등). 품목 줄의 '× 1 — 금액'은 사실 줄
+  const notes = b.lines.filter((l) => !/\?$/.test(l) && (/니다(\([^)]*\))? — /.test(l) || /^완납까지/.test(l)));
+  const facts = b.lines.filter((l) => !question.includes(l) && !notes.includes(l));
+  return (
+    <div className="flex flex-col gap-2.5">
+      {/* 머리 — 고객사 · 건 이름 · 번호 */}
+      <div className="flex items-start gap-2.5">
+        {!compact && (
+          <span className="mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent/10 text-accent ring-1 ring-inset ring-accent/20">
+            <Icon name="folder" className="h-4 w-4" />
+          </span>
+        )}
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="text-[14.5px] font-semibold text-foreground">{b.customer}</span>
+            <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset", _stageTone(b.stage))}>
+              {b.stage}
+            </span>
+            {b.rental && (
+              <span className="rounded-full bg-violet-500/12 px-2 py-0.5 text-[11px] font-semibold text-violet-700 ring-1 ring-inset ring-violet-500/25 dark:text-violet-300">
+                대여
+              </span>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-x-2 text-[12.5px] text-foreground-muted">
+            {b.title && <span className="min-w-0">{b.title}</span>}
+            {b.no && <span className="font-mono text-[11.5px] tabular-nums text-foreground-subtle">{b.no}</span>}
+          </div>
+        </div>
+      </div>
+
+      {/* 진행 — 문서·출하 칩 + 입금 막대 */}
+      {(b.chips.length > 0 || b.paid) && (
+        <div className="flex flex-col gap-2 rounded-lg bg-foreground/[0.025] px-2.5 py-2 ring-1 ring-inset ring-border/70">
+          {b.chips.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {b.chips.map((c) => (
+                <DealChip key={c} text={c} />
+              ))}
+            </div>
+          )}
+          {b.paid && (
+            <div className="flex items-center gap-2.5">
+              <span className="shrink-0 text-[11.5px] font-medium text-foreground-subtle">입금</span>
+              <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-foreground/[0.08]">
+                <div
+                  className={cn("h-full rounded-full", pct >= 100 ? "bg-emerald-500" : "und-grad")}
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+              <span className="shrink-0 text-[12px] tabular-nums text-foreground-muted">
+                <b className="font-semibold text-foreground">{b.paid.got}</b> / {b.paid.total}원
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 물은 것(금액·품목·출하·입금) 등 사실 줄 */}
+      {facts.length > 0 && (
+        <div className="flex flex-col gap-0.5 text-[13.5px] leading-relaxed text-foreground">
+          {facts.map((l, i) => (
+            <p key={i} className={cn(l.startsWith("-") && "pl-2 text-foreground-muted")}>
+              {emphasizeNumbers(l)}
+            </p>
+          ))}
+        </div>
+      )}
+
+      {/* 안내(드랍·수주 전·작성자만 등) */}
+      {notes.map((n, i) => (
+        <div
+          key={`n-${i}`}
+          className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/[0.07] px-3 py-2 text-[12.5px] leading-relaxed text-amber-800 dark:text-amber-200"
+        >
+          <Icon name="help" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>{n}</span>
+        </div>
+      ))}
+
+      {question.map((q, i) => (
+        <p key={`q-${i}`} className="text-[14px] font-medium text-foreground">
+          {q}
+        </p>
+      ))}
+
+      {b.buttons.length > 0 && (
+        <div className="-mx-0.5 flex flex-wrap items-center gap-1">
+          {b.buttons.map((btn, i) => (
+            // 할 일 버튼이 있으면 그게 primary, '건 열기'만 있으면 그게 primary
+            <GotoButton
+              key={btn.href}
+              label={btn.label}
+              href={btn.href}
+              primary={i === 0 && (b.buttons.length === 1 || btn.label !== "건 열기")}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── 이동 버튼이 붙은 목록 답(미입금·담당자별·건 수·못 찾음의 최근 건 등) — 항목마다 '내용 | 버튼' 한 행으로.
+type LinkPiece =
+  | { kind: "text"; text: string }
+  | { kind: "buttons"; buttons: DealBlock["buttons"] }
+  | { kind: "item"; head: string; sub: string[]; buttons: DealBlock["buttons"] };
+
+const _ITEM_START = /^\s*(\d+\.|·)\s+/;
+
+function _stripButtons(line: string): string {
+  return line.replace(new RegExp(_GOTO_RE.source, "g"), "").trim();
+}
+
+/** 이동 버튼이 있는 본문 → 글 · 버튼 줄 · 항목(번호/· 로 시작, 들여 쓴 줄은 같은 항목). */
+function parseLinkList(body: string): LinkPiece[] | null {
+  if (!new RegExp(_GOTO_RE.source).test(body)) return null;
+  const out: LinkPiece[] = [];
+  let item: Extract<LinkPiece, { kind: "item" }> | null = null;
+  for (const raw of body.split("\n")) {
+    const text = _stripButtons(raw);
+    const buttons = _buttons(raw);
+    if (_ITEM_START.test(raw)) {
+      item = { kind: "item", head: text.replace(_ITEM_START, ""), sub: [], buttons };
+      out.push(item);
+    } else if (item && /^\s+\S/.test(raw)) {
+      if (text) item.sub.push(text);
+      item.buttons.push(...buttons);
+    } else {
+      item = null;
+      if (buttons.length && !text) out.push({ kind: "buttons", buttons });
+      else if (text || out.length) out.push({ kind: "text", text: raw.replace(new RegExp(_GOTO_RE.source, "g"), "").trimEnd() });
+      if (buttons.length && text) out.push({ kind: "buttons", buttons });
+    }
+  }
+  return out.some((p) => p.kind === "item") ? out : null;
+}
+
+function LinkListAnswer({ pieces }: { pieces: LinkPiece[] }) {
+  const nodes: ReactNode[] = [];
+  let para: string[] = [];
+  const flush = (k: number) => {
+    const t = para.join("\n").trim();
+    if (t) nodes.push(<p key={`p-${k}`} className="whitespace-pre-wrap text-[14px] text-foreground">{t}</p>);
+    para = [];
+  };
+  pieces.forEach((p, k) => {
+    if (p.kind === "text") {
+      para.push(p.text);
+      return;
+    }
+    flush(k);
+    if (p.kind === "buttons") {
+      nodes.push(
+        <div key={`b-${k}`} className="-mx-0.5 flex flex-wrap gap-1">
+          {p.buttons.map((b, i) => (
+            <GotoButton key={b.href} label={b.label} href={b.href} primary={i === 0 && b.label !== "건 열기"} />
+          ))}
+        </div>,
+      );
+      return;
+    }
+    const dash = p.head.lastIndexOf(" — ");
+    const name = dash > 0 ? p.head.slice(0, dash) : p.head;
+    const tail = dash > 0 ? p.head.slice(dash + 3) : "";
+    nodes.push(
+      <div key={`i-${k}`} className="flex items-center gap-3 rounded-xl border border-border bg-surface px-3 py-2">
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[13.5px]">
+            <span className="font-medium text-foreground">{name}</span>
+            {tail && <span className="text-[12.5px] text-foreground-muted">{emphasizeNumbers(tail)}</span>}
+          </div>
+          {p.sub.map((s, i) => (
+            <p key={i} className={cn("text-[12.5px]", /^⏰/.test(s) ? "text-rose-600 dark:text-rose-400" : "text-foreground-muted")}>
+              {emphasizeNumbers(s)}
+            </p>
+          ))}
+        </div>
+        {p.buttons.length > 0 && (
+          <div className="flex shrink-0 flex-col items-end gap-1">
+            {p.buttons.map((b) => (
+              <GotoButton key={b.href} label={b.label} href={b.href} />
+            ))}
+          </div>
+        )}
+      </div>,
+    );
+  });
+  flush(pieces.length);
+  return <div className="not-prose my-0.5 flex flex-col gap-2 whitespace-normal">{nodes}</div>;
+}
+
+// ── 제품 사양·단가 답 카드(사용자 2026-10-28) — backend spec_answer·price_answer 의 고정 형식('■ 모델' 블록)을
+//    한 항목이면 큰 값, 전체 사양이면 표, 여러 모델이면 비교표, 단가는 품목 표로. 사진이 있으면 함께.
+type SpecRow = { label: string; value: string; note?: string };
+type SpecBlock = {
+  name: string;
+  family: string;
+  photo: string | null;
+  rows: SpecRow[];
+  condition: string;
+  warnings: string[];
+  source: string;
+};
+type SpecAnswer = { kind: "spec" | "price"; asked: string; blocks: SpecBlock[]; footer: string[] };
+
+function parseSpecAnswer(body: string): SpecAnswer | null {
+  const lines = body.split("\n").map((l) => l.trimEnd());
+  const first = lines.find((l) => l.trim())?.trim() ?? "";
+  const kind = first.startsWith("제품 사양 DB에서 찾은 값입니다") ? "spec" : first.startsWith("단가 DB에서 찾은 값입니다") ? "price" : null;
+  if (!kind) return null;
+  const asked = kind === "spec" ? (first.match(/ — (.+)\.$/)?.[1] ?? "") : "";
+  const blocks: SpecBlock[] = [];
+  const footer: string[] = [];
+  let cur: SpecBlock | null = null;
+  for (const raw of lines.slice(lines.indexOf(first) + 1)) {
+    const l = raw.trim();
+    if (!l) continue;
+    if (l.startsWith("■ ")) {
+      const m = l.slice(2).match(/^(.*)\s\(([^()]+)\)$/);
+      cur = { name: m ? m[1] : l.slice(2), family: m?.[2] ?? "", photo: null, rows: [], condition: "", warnings: [], source: "" };
+      blocks.push(cur);
+    } else if (!cur || /^…/.test(l)) {
+      footer.push(l);
+    } else if (l.startsWith("사진: ")) {
+      const url = l.slice(4).trim();
+      if (/^\/api\/product-images\/file\/\d+$/.test(url)) cur.photo = url;
+    } else if (l.startsWith("근거: ")) {
+      // 단가 답의 근거는 블록 뒤 한 번 — 마지막 블록이 아니라 전체 푸터로
+      if (kind === "price") footer.push(l);
+      else cur.source = l.slice(4);
+    } else if (l.startsWith("- ⚠ ")) {
+      cur.warnings.push(l.slice(4));
+    } else if (l.startsWith("- 적용 조건: ")) {
+      cur.condition = l.slice(9);
+    } else if (l.startsWith("- ")) {
+      const c = l.indexOf(": ");
+      cur.rows.push(c > 0 ? { label: l.slice(2, c), value: l.slice(c + 2) } : { label: "", value: l.slice(2) });
+    } else if (/^\(.*\)$/.test(l) && cur.rows.length) {
+      cur.rows[cur.rows.length - 1].note = l.slice(1, -1);
+    } else {
+      footer.push(l);
+    }
+  }
+  return blocks.length ? { kind, asked, blocks, footer } : null;
+}
+
+function SpecPhoto({ src, alt, size = "md" }: { src: string | null; alt: string; size?: "sm" | "md" | "lg" }) {
+  const [failed, setFailed] = useState(false);
+  if (!src || failed) return null;
+  const box = size === "sm" ? "h-9 w-9 rounded-md p-0.5" : size === "lg" ? "h-28 w-28 rounded-xl p-2" : "h-20 w-20 rounded-lg p-1.5";
+  return (
+    <a href={src} target="_blank" rel="noreferrer" title="사진 크게 보기" className={cn("shrink-0 border border-border bg-white", box)}>
+      {/* eslint-disable-next-line @next/next/no-img-element -- 인증 쿠키로 받는 사내 사진(next/image 최적화 경유 불가) */}
+      <img src={src} alt={alt} loading="lazy" onError={() => setFailed(true)} className="h-full w-full object-contain" />
+    </a>
+  );
+}
+
+/** '10 kgf [98N / 22lbs]' → 큰 값 '10 kgf' + 보조 '[98N / 22lbs]'. */
+function _mainValue(v: string): [string, string] {
+  const m = v.match(/^(.+?)\s*(\[.*\]|\(.*\))\s*$/);
+  return m ? [m[1], m[2]] : [v, ""];
+}
+
+function SpecHead({ b, photo = "md" }: { b: SpecBlock; photo?: "sm" | "md" | "lg" }) {
+  return (
+    <div className="flex items-center gap-3">
+      <SpecPhoto src={b.photo} alt={b.name} size={photo} />
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <span className="text-[15px] font-semibold text-foreground">{b.name}</span>
+        {b.family && <span className="text-[12px] text-foreground-muted">{b.family}</span>}
+      </div>
+    </div>
+  );
+}
+
+function SpecNotes({ b }: { b: SpecBlock }) {
+  return (
+    <>
+      {b.condition && (
+        <p className="flex items-start gap-1.5 rounded-lg bg-sky-500/[0.07] px-2.5 py-1.5 text-[12px] leading-relaxed text-sky-800 ring-1 ring-inset ring-sky-500/20 dark:text-sky-200">
+          <span className="shrink-0 font-semibold">적용 조건</span>
+          <span>{b.condition}</span>
+        </p>
+      )}
+      {b.warnings.map((w, i) => (
+        <p key={i} className="flex items-start gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/[0.07] px-2.5 py-1.5 text-[12px] text-amber-800 dark:text-amber-200">
+          <Icon name="help" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>{w}</span>
+        </p>
+      ))}
+    </>
+  );
+}
+
+function SourceLine({ text }: { text: string }) {
+  if (!text) return null;
+  return (
+    <p className="flex items-center gap-1.5 text-[11.5px] text-foreground-subtle">
+      <Icon name="folder" className="h-3 w-3" />
+      근거: {text.replace(/^근거:\s*/, "")}
+    </p>
+  );
+}
+
+const _TABLE = "w-full border-separate border-spacing-0 overflow-hidden rounded-lg text-[13px] ring-1 ring-border";
+const _TH = "bg-foreground/[0.04] px-3 py-2 text-left text-[12px] font-semibold text-foreground-muted";
+const _TD = "border-t border-border px-3 py-2 align-top";
+
+/** 전체 사양 — 사진 + 항목·값 표. */
+function SpecTable({ b }: { b: SpecBlock }) {
+  return (
+    <div className="flex flex-col gap-2.5">
+      <SpecHead b={b} photo="lg" />
+      <table className={_TABLE}>
+        <tbody>
+          {b.rows.map((r, i) => (
+            <tr key={i} className={i % 2 ? "bg-foreground/[0.015]" : ""}>
+              <th scope="row" className={cn(_TD, "w-[34%] text-left text-[12.5px] font-medium text-foreground-muted", i === 0 && "border-t-0")}>
+                {r.label}
+              </th>
+              <td className={cn(_TD, "font-medium text-foreground", i === 0 && "border-t-0")}>
+                {r.value}
+                {r.note && <span className="mt-0.5 block text-[11.5px] text-foreground-subtle">{r.note}</span>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <SpecNotes b={b} />
+      <SourceLine text={b.source} />
+    </div>
+  );
+}
+
+/** 한두 항목만 물었을 때 — 사진 + 큰 굵은 값. */
+function SpecHighlight({ b }: { b: SpecBlock }) {
+  return (
+    <div className="flex flex-col gap-2.5">
+      <SpecHead b={b} />
+      <div className="flex flex-wrap gap-2">
+        {b.rows.map((r, i) => {
+          const [main, sub] = _mainValue(r.value);
+          // '자료에 없습니다'·'확인 필요'는 값이 아니다 — 크게 굵게 보이지 않게
+          const missing = /자료에 없|확인 필요|비교표에 없/.test(r.value);
+          return (
+            <div
+              key={i}
+              className={cn(
+                "min-w-[180px] flex-1 rounded-xl px-3.5 py-2.5 ring-1 ring-inset",
+                missing ? "bg-amber-500/[0.06] ring-amber-500/25" : "bg-accent/[0.06] ring-accent/20",
+              )}
+            >
+              <div className="text-[12px] font-medium text-foreground-muted">{r.label}</div>
+              <div
+                className={cn(
+                  "leading-tight tracking-tight",
+                  missing ? "text-[14px] font-semibold text-amber-800 dark:text-amber-200" : "text-[20px] font-bold text-foreground",
+                )}
+              >
+                {main}
+              </div>
+              {sub && <div className="text-[12px] text-foreground-muted">{sub}</div>}
+              {r.note && <div className="mt-0.5 text-[11.5px] text-foreground-subtle">{r.note}</div>}
+            </div>
+          );
+        })}
+      </div>
+      <SpecNotes b={b} />
+      <SourceLine text={b.source} />
+    </div>
+  );
+}
+
+/** 여러 모델의 같은 항목 — 모델별 비교표. */
+function SpecCompare({ blocks }: { blocks: SpecBlock[] }) {
+  const labels = blocks[0].rows.map((r) => r.label);
+  const conds = [...new Set(blocks.map((b) => b.condition).filter(Boolean))];
+  const sources = [...new Set(blocks.map((b) => b.source).filter(Boolean))];
+  return (
+    <div className="flex flex-col gap-2.5">
+      <table className={_TABLE}>
+        <thead>
+          <tr>
+            <th className={_TH}>모델</th>
+            {labels.map((l) => (
+              <th key={l} className={_TH}>{l}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {blocks.map((b, i) => (
+            <tr key={i}>
+              <td className={_TD}>
+                <div className="flex items-center gap-2">
+                  <SpecPhoto src={b.photo} alt={b.name} size="sm" />
+                  <div className="flex flex-col">
+                    <span className="font-semibold text-foreground">{b.name}</span>
+                    {b.family && <span className="text-[11px] text-foreground-subtle">{b.family}</span>}
+                  </div>
+                </div>
+              </td>
+              {b.rows.map((r, j) => {
+                const [main, sub] = _mainValue(r.value);
+                return (
+                  <td key={j} className={_TD}>
+                    <span className="font-bold text-foreground">{main}</span>
+                    {sub && <span className="block text-[11.5px] text-foreground-subtle">{sub}</span>}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {conds.length === 1 && <SpecNotes b={{ ...blocks[0], warnings: [] }} />}
+      {conds.length > 1 &&
+        blocks.filter((b) => b.condition).map((b) => (
+          <p key={b.name} className="text-[12px] text-foreground-muted">
+            <b className="font-semibold text-foreground">{b.name}</b> 적용 조건: {b.condition}
+          </p>
+        ))}
+      {blocks.flatMap((b) => b.warnings.map((w) => `${b.name} — ${w}`)).map((w, i) => (
+        <p key={i} className="text-[12px] text-amber-700 dark:text-amber-300">⚠ {w}</p>
+      ))}
+      {sources.map((s) => (
+        <SourceLine key={s} text={s} />
+      ))}
+    </div>
+  );
+}
+
+/** 단가 — 모델별 품목·고객가·대리점가 표. */
+function PriceTable({ b }: { b: SpecBlock }) {
+  return (
+    <div className="flex flex-col gap-2">
+      <SpecHead b={b} />
+      <table className={_TABLE}>
+        <thead>
+          <tr>
+            <th className={_TH}>품목</th>
+            <th className={cn(_TH, "text-right")}>고객가</th>
+            <th className={cn(_TH, "text-right")}>대리점가</th>
+          </tr>
+        </thead>
+        <tbody>
+          {b.rows.map((r, i) => {
+            const cp = r.value.match(/고객가\s+([^·]+?)(\s·|$)/)?.[1]?.trim() ?? r.value;
+            const dp = r.value.match(/대리점가\s+(.+)$/)?.[1]?.trim() ?? "";
+            const unset = (v: string) => /미정/.test(v);
+            return (
+              <tr key={i}>
+                <td className={_TD}>
+                  <span className="font-medium text-foreground">{r.label}</span>
+                  {r.note && <span className="mt-0.5 block text-[11.5px] text-foreground-subtle">{r.note}</span>}
+                </td>
+                <td className={cn(_TD, "text-right tabular-nums", unset(cp) ? "text-amber-700 dark:text-amber-300" : "font-bold text-foreground")}>{cp}</td>
+                <td className={cn(_TD, "text-right tabular-nums text-foreground-muted")}>{dp}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function SpecAnswerCard({ parsed }: { parsed: SpecAnswer }) {
+  const { kind, blocks, footer } = parsed;
+  const sameRows =
+    blocks.length > 1 &&
+    blocks.every((b) => b.rows.length > 0 && b.rows.length <= 3 && b.rows.map((r) => r.label).join("|") === blocks[0].rows.map((r) => r.label).join("|"));
+  return (
+    <div className="not-prose my-0.5 flex flex-col gap-3 whitespace-normal">
+      <div className="flex items-center gap-2">
+        <span className="rounded-full bg-accent/10 px-2 py-0.5 text-[11px] font-semibold text-accent ring-1 ring-inset ring-accent/20">
+          {kind === "price" ? "단가 DB" : "제품 사양 DB"}
+        </span>
+        <span className="text-[12px] text-foreground-subtle">
+          {kind === "price" ? "공급가액 · 부가세 별도" : parsed.asked ? `${parsed.asked} — DB 값 그대로` : "DB 값 그대로"}
+        </span>
+      </div>
+      {kind === "price" ? (
+        blocks.map((b, i) => <PriceTable key={i} b={b} />)
+      ) : sameRows ? (
+        <SpecCompare blocks={blocks} />
+      ) : (
+        blocks.map((b, i) => (
+          <div key={i} className={cn(blocks.length > 1 && "rounded-xl border border-border bg-surface p-3")}>
+            {b.rows.length <= 2 && parsed.asked ? <SpecHighlight b={b} /> : <SpecTable b={b} />}
+          </div>
+        ))
+      )}
+      {footer.map((f, i) =>
+        f.startsWith("근거:") ? (
+          <SourceLine key={i} text={f} />
+        ) : (
+          <p key={i} className="text-[12px] text-foreground-muted">{f}</p>
+        ),
+      )}
+    </div>
+  );
+}
+
+/** 영업 건 답 카드 — 한 건이면 카드 하나, 후보 여러 건이면 머리글 + 후보 카드 목록. */
+function DealAnswerCard({ parsed }: { parsed: DealAnswer }) {
+  if (parsed.blocks.length === 1 && !parsed.intro) {
+    return (
+      <div className="not-prose my-0.5 whitespace-normal">
+        <p className="mb-2.5 text-[12.5px] font-medium text-foreground-subtle">
+          {parsed.found ? "검색해 보니 이 건이 있습니다" : "영업 건 DB에서 찾은 내용입니다"}
+        </p>
+        <DealCardBody b={parsed.blocks[0]} />
+      </div>
+    );
+  }
+  return (
+    <div className="not-prose my-0.5 flex flex-col gap-2.5 whitespace-normal">
+      <p className="whitespace-pre-wrap text-[14px] text-foreground">{parsed.intro}</p>
+      {parsed.blocks.map((b, i) => (
+        <div key={i} className="rounded-xl border border-border bg-surface px-3 py-2.5">
+          <DealCardBody b={b} compact />
+        </div>
+      ))}
+    </div>
+  );
+}
 
 type ConfirmState = "loading" | "draft" | "confirmed" | "busy" | "unavailable";
 
@@ -904,6 +1580,34 @@ function ConfirmCard({ recordId }: { recordId: string }) {
   );
 }
 
+// AI 답의 굵게 표시 `**글자**` → 굵은 글씨, 백틱 `글자` → 코드 글자(사용자 2026-10-28 — 기호가 그대로 보였다).
+// 한 줄 안에서 닫힌 것만 — 스트리밍 중 아직 안 닫힌 기호는 닫힐 때까지 글자 그대로 둔다.
+const _INLINE_MD_RE = /\*\*([^*\n]+?)\*\*|`([^`\n]+?)`/g;
+
+function renderBold(text: string, keyPrefix: string): ReactNode {
+  if (!text.includes("**") && !text.includes("`")) return text;
+  const out: ReactNode[] = [];
+  let last = 0;
+  let i = 0;
+  for (const m of text.matchAll(_INLINE_MD_RE)) {
+    const at = m.index ?? 0;
+    if (at > last) out.push(text.slice(last, at));
+    out.push(
+      m[1] !== undefined ? (
+        <strong key={`${keyPrefix}-b${i++}`} className="font-semibold text-foreground">
+          {m[1]}
+        </strong>
+      ) : (
+        <code key={`${keyPrefix}-c${i++}`}>{m[2]}</code>
+      ),
+    );
+    last = at + m[0].length;
+  }
+  if (out.length === 0) return text;
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+
 function renderBodyWithDownloads(body: string): ReactNode {
   if (!body) return body;
 
@@ -940,26 +1644,39 @@ function renderBodyWithDownloads(body: string): ReactNode {
     confirms.push({ start: mc.index, end: mc.index + mc[0].length, id: mc[1] });
   }
 
-  if (cards.length === 0 && bareLinks.length === 0 && confirms.length === 0) return body;
+  // 4) 화면 이동 버튼.
+  const gotos: { start: number; end: number; label: string; href: string }[] = [];
+  _GOTO_RE.lastIndex = 0;
+  let mg: RegExpExecArray | null;
+  while ((mg = _GOTO_RE.exec(body)) !== null) {
+    gotos.push({ start: mg.index, end: mg.index + mg[0].length, label: mg[1], href: mg[2] });
+  }
+
+  if (cards.length === 0 && bareLinks.length === 0 && confirms.length === 0 && gotos.length === 0) return renderBold(body, "t");
 
   // 모든 점프 포인트 시간순 병합 후 텍스트/카드 노드 구성.
   const points: (
     | ({ kind: "card" } & (typeof cards)[number])
     | ({ kind: "bare" } & (typeof bareLinks)[number])
     | ({ kind: "confirm" } & (typeof confirms)[number])
+    | ({ kind: "goto" } & (typeof gotos)[number])
   )[] = [
     ...cards.map((c) => ({ kind: "card" as const, ...c })),
     ...bareLinks.map((b) => ({ kind: "bare" as const, ...b })),
     ...confirms.map((c) => ({ kind: "confirm" as const, ...c })),
+    ...gotos.map((g) => ({ kind: "goto" as const, ...g })),
   ].sort((a, b) => a.start - b.start);
 
   const out: ReactNode[] = [];
   let cursor = 0;
   let i = 0;
   for (const p of points) {
-    if (p.start > cursor) out.push(body.slice(cursor, p.start));
+    if (p.start > cursor) out.push(renderBold(body.slice(cursor, p.start), `t${i++}`));
     if (p.kind === "confirm") {
       out.push(<ConfirmCard key={`cf-${i++}-${p.id}`} recordId={p.id} />);
+    } else if (p.kind === "goto") {
+      // 버튼이 하나뿐인 답(화면 이동 등)은 그 버튼을 강조
+      out.push(<GotoButton key={`go-${i++}`} label={p.label} href={p.href} primary={gotos.length === 1} />);
     } else if (p.kind === "card") {
       if (_PREVIEW_EXTS.has(_fileExtension(p.filename))) {
         out.push(
@@ -989,7 +1706,7 @@ function renderBodyWithDownloads(body: string): ReactNode {
     }
     cursor = p.end;
   }
-  if (cursor < body.length) out.push(body.slice(cursor));
+  if (cursor < body.length) out.push(renderBold(body.slice(cursor), `t${i++}`));
   return out;
 }
 
@@ -1093,6 +1810,12 @@ export function Message({
   // 액션 표시 조건: assistant + 본문 있음. (스트리밍 중인 빈 메시지는 액션 미노출)
   // progress 카드만 있는 처리 중 상태도 액션 미노출.
   const showActions = !isUser && Boolean(body.trim()) && stepsTerminal;
+  // 영업 건 답(건 찾아 이동·영업 데이터)은 카드로 — 스트리밍이 끝난 뒤에만(부분 텍스트 파싱 방지)
+  // 카드는 끝맺음 '…'을 붙이기 전 본문으로(근거 줄 끝에 '…'이 붙던 문제)
+  const cardSrc = !isUser && !isStreaming ? bodyNoProgress : "";
+  const specAnswer = cardSrc ? parseSpecAnswer(cardSrc) : null;
+  const dealAnswer = cardSrc && !specAnswer ? parseDealAnswer(cardSrc) : null;
+  const linkList = cardSrc && !dealAnswer && !specAnswer ? parseLinkList(cardSrc) : null;
 
   return (
     <div className={cn("flex gap-3", isUser ? "flex-row-reverse" : "flex-row")}>
@@ -1109,7 +1832,15 @@ export function Message({
       >
         <Icon name={isUser ? "user" : avatarIcon} className="h-4 w-4" />
       </div>
-      <div className="flex max-w-[680px] flex-col gap-1.5">
+      {/* 사용자 말풍선은 680px, AI 답은 대화 폭을 다 쓴다(아바타 자리 빼고, 사용자 2026-10-28 — 카드가 좁아 보임) */}
+      <div
+        className={cn(
+          "flex min-w-0 flex-col gap-1.5",
+          isUser ? "max-w-[680px]" : "max-w-[calc(100%-2.75rem)]",
+          // 카드 답은 내용 폭에 맞춰 줄지 않고 대화 폭을 채운다
+          (dealAnswer || linkList || specAnswer) && "w-full",
+        )}
+      >
         {/* 본문 박스 — content 가 비어있고 첨부만 있는 케이스는 본문 박스 자체를 숨긴다.
             progress 카드만 있는 처리 중 상태도 박스는 표시(카드를 담아야 함). */}
         {(body || progressSteps || !isUser || (message.attachments?.length ?? 0) === 0) && (
@@ -1148,6 +1879,12 @@ export function Message({
                     {/* 자금 비교·검증 결과는 전용 카드로(스트리밍 완료 후 — 부분 텍스트 파싱 방지). */}
                     {!isStreaming && isReconcileSummary(body) ? (
                       <ReconcileResultCard body={body} />
+                    ) : specAnswer ? (
+                      <SpecAnswerCard parsed={specAnswer} />
+                    ) : dealAnswer ? (
+                      <DealAnswerCard parsed={dealAnswer} />
+                    ) : linkList ? (
+                      <LinkListAnswer pieces={linkList} />
                     ) : (
                       <>
                         {renderBodyWithDownloads(body)}

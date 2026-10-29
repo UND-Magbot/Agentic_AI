@@ -5,7 +5,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # DB 측 user_domain ENUM 의 값과 일치해야 한다.
 DomainKey = Literal["all", "finance", "sales", "design", "develop"]
@@ -73,6 +73,13 @@ class MessageCreate(BaseModel):
     content: str = Field(min_length=1)
     domain: DomainKey | None = None
     model: str | None = None
+
+    @field_validator("domain", mode="before")
+    @classmethod
+    def _ui_domain(cls, v: object) -> object:
+        """채팅 화면은 UI 키('normal'·'dev')를 보낸다 — DB 키로 바꾼다. 안 바꾸면 422 로 대화가 저장되지 않았다
+        ('일반'·'선행개발' 답, 사용자 2026-10-28)."""
+        return {"normal": "all", "dev": "develop"}.get(v, v) if isinstance(v, str) else v
 
 
 # forward ref 해결.

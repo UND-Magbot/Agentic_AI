@@ -454,7 +454,7 @@ export function Sidebar({ domains, recentByDomain, allowedDomains, user }: Props
         )}
       </div>
 
-      {/* 사용자 영역 — 행 전체가 트리거. 클릭 시 위로 펼쳐지는 메뉴(내 정보 / 비밀번호 재설정 / 버그 등록 / 로그아웃). */}
+      {/* 사용자 영역 — 행 전체가 트리거. 클릭 시 위로 펼쳐지는 메뉴(내 정보 / 비밀번호 재설정 / 버그 등록 / 바탕화면 바로가기 만들기 / 로그아웃). */}
       <div
         ref={userMenuRef}
         className={cn(
@@ -538,6 +538,15 @@ export function Sidebar({ domains, recentByDomain, allowedDomains, user }: Props
               onClick={() => {
                 setMenuOpen(false);
                 setBugOpen(true);
+              }}
+            />
+            {/* 바탕화면 바로가기 — 설치 파일을 받아 한 번 실행하면 로고 아이콘 바로가기가 생긴다(사용자 2026-10-29) */}
+            <MenuButton
+              icon="download"
+              label="바탕화면 바로가기 만들기"
+              onClick={() => {
+                setMenuOpen(false);
+                window.location.href = "/api/desktop-shortcut";
               }}
             />
             <MenuButton
@@ -659,7 +668,7 @@ function MenuButton({
   disabled,
   variant = "default",
 }: {
-  icon: "user" | "refresh" | "logout" | "bug";
+  icon: "user" | "refresh" | "logout" | "bug" | "download";
   label: string;
   onClick: () => void;
   disabled?: boolean;

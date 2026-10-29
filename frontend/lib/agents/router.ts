@@ -13,10 +13,14 @@ type ClassifiedKey = Exclude<DomainKey, "normal">;
 
 const KEYWORDS: Record<ClassifiedKey, RegExp> = {
   finance: /(재무|예산|회계|결산|손익|매출|세무|법인카드|미수금|전표)/,
-  sales: /(고객|리드|딜|파이프라인|견적|제안서|영업)/,
+  // 영업 화면 기능 말(명세서·출하·대여·A/S 등)도 영업으로 — 다른 팀은 아래 권한 필터로 걸러진다.
+  sales: /(고객|리드|딜|파이프라인|견적|제안서|영업|명세서|출하|수주|발주|납품|대여|렌탈|입금|결제\s*조건|단가|NEGO|네고|드랍|A\/S|S\/N|시리얼|무상\s*기간|옵션\s*(비용|금액|줄|항목)|Total|공급가액|부가세|VAT|담당\S*\s*건|미입금|미수\s*건|툴체인저|ATC|그리퍼|맥봇|Magbot)/i,
   dev: /(코드|리포|PR|커밋|이슈|버그|CI|배포|릴리스|API|함수|선행개발)/,
   design: /(도면|사양|BOM|ECO|치수|공차|어셈블리|부품|기구설계|설계)/,
 };
+
+/** 키워드가 안 맞아도 그 부서 사용자의 기본 도메인으로 보낼 부서 — 지금은 영업부만(사용자 2026-10-28 요청). */
+const HOME_FALLBACK: ReadonlySet<DomainKey> = new Set<DomainKey>(["sales"]);
 
 /**
  * 매칭되는 모든 도메인을 반환. 두 개 이상이면 orchestrator 로 라우팅한다.
@@ -36,6 +40,10 @@ export function classifyMultiDomain(
   const allowedSet = allowedDomains ? new Set(allowedDomains) : null;
   const filtered = allowedSet ? hits.filter((k) => allowedSet.has(k)) : hits;
   if (filtered.length > 0) return filtered;
+  // 매칭이 없을 때 — 영업부처럼 한 부서 사용자면 그 부서로(메인 화면 '자동'으로 물어도 부서 맥락으로 답하게, 사용자 2026-10-28).
+  // 사칙 질문도 RAG 발췌는 그대로 붙는다. 전체 권한(관리자 등)은 부서가 하나가 아니라 normal.
+  const home = allowedDomains?.filter((k) => k !== "normal") ?? [];
+  if (home.length === 1 && HOME_FALLBACK.has(home[0])) return [home[0]];
   // 매칭이 없거나 권한으로 모두 걸러진 경우 → 'normal' fallback.
   // 'normal' 은 모든 사용자에게 허용되는 보편 도메인이라 안전.
   return ["normal"];
