@@ -127,16 +127,37 @@ def _quarter(t: str, today: dt.date) -> int | None:
     return None
 
 
+def _month(t: str, today: dt.date) -> int | None:
+    """올해 몇 월을 물었는지 — '이번 달'에 올해 합계로 답하던 문제(검증 2026-10-29)."""
+    m = re.search(r"(1[0-2]|[1-9])\s*월", t)
+    if m:
+        return int(m[1])
+    if re.search(r"이번\s*달|이\s*달|이달|금월|당월", t):
+        return today.month
+    if re.search(r"지난\s*달|저번\s*달|전\s*달|전월", t):
+        return today.month - 1 or None
+    return None
+
+
 def _kpi(data: dict, t: str, today: dt.date) -> str:
     k = data["kpi"]
     q = _quarter(t, today)
+    mon = None if q else _month(t, today)
     basis = "(공급가액 · 수주일 기준 · 드랍 제외 · 부가세 별도)"
     out = []
     if "매출" in t and not re.search(r"수주", t):
         return (f"{k['year']}년 매출(출하일 기준)은 {_money(k['sales'])}입니다. (공급가액 · 드랍 제외 · 부가세 별도)\n"
                 f"참고로 올해 수주 금액은 {_money(k['won_total'])}입니다 — 분기별: "
                 + " · ".join(f"{i}분기 {_money(v)}" for i, v in enumerate(k["won_by_quarter"], 1)))
-    if q:
+    if mon:
+        won = [r for r in data["rows"] if r.get("won") and not r.get("dropped") and _in_month(r, k["year"], mon)]
+        out.append(f"{k['year']}년 {mon}월 수주 금액은 {_money(sum(flow.supply_total(r) or 0 for r in won))}입니다. {basis}")
+        if won:
+            out.append(f"\n{mon}월 수주 건 {len(won)}건:")
+            for i, r in enumerate(won[:MAX_LIST], 1):
+                out.append(f"{i}. {_line(r)}  {_open(r)}")
+        out.append(f"\n올해 수주 금액 합계: {_money(k['won_total'])}")
+    elif q:
         out.append(f"{k['year']}년 {q}분기 수주 금액은 {_money(k['won_by_quarter'][q - 1])}입니다. {basis}")
         won = [r for r in data["rows"] if r.get("won") and not r.get("dropped") and _in_quarter(r, k["year"], q)]
         if won:
@@ -151,6 +172,11 @@ def _kpi(data: dict, t: str, today: dt.date) -> str:
         out.append(f"(수주일이 없는 예전 건 {k['won_estimated']}건은 첫 계산서·출하·견적일로 대신 셌습니다)")
     out.append("\n자세한 내용은 [제품 판매 관리] 탭 위의 '분기별 수주금액' 카드에서도 볼 수 있습니다.")
     return "\n".join(out)
+
+
+def _in_month(r: dict, year: int, mon: int) -> bool:
+    day, _ = svc._won_day(r)
+    return bool(day and day.startswith(f"{year}-{mon:02d}"))
 
 
 def _in_quarter(r: dict, year: int, q: int) -> bool:
