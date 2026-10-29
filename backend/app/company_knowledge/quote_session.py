@@ -55,6 +55,17 @@ def with_vat(v: float) -> float:
     return float((Decimal(str(v)) * (1 + VAT_RATE)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
+def without_vat(v: float) -> float:
+    """부가세 포함 금액 → 공급가액(÷ 1.1, 원 단위 반올림 — 0.5 는 올림)."""
+    return float((Decimal(str(v)) / (1 + VAT_RATE)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def nego_supply(state: dict[str, Any], cut: float) -> float:
+    """NEGO 의 공급가액 — 부가세 포함 견적서에 적은 NEGO 는 부가세 포함 금액으로 보고 ÷ 1.1(사용자 2026-10-29).
+    견적서엔 적은 금액 그대로 찍고, 영업 건·거래명세서는 이 공급가액으로 — 명세서(공급가액 + 10%) 합계가 견적서 Total 과 같아진다."""
+    return without_vat(cut) if vat_included(state) else cut
+
+
 def total_text(state: dict[str, Any]) -> str:
     """대화 답의 합계 글 — '12,000,000원(VAT 별도)' · 부가세 포함이면 견적서에 찍힐 합계와 공급가액 둘 다."""
     sub = subtotal(state)
@@ -587,7 +598,7 @@ def problems(state: dict[str, Any]) -> list[str]:
 def subtotal(state: dict[str, Any], *, nego: bool = True) -> int:
     """원화 합계(VAT 별도) — 옵션 묶음 줄은 빼고, 국내 견적이면 NEGO 를 뺀다."""
     base = sum((ln.get("qty") or 0) * (ln.get("unit_price") or 0) * month_factor(state["form"], ln) for ln in billable(state))
-    cut = nego_amount(state, base) if nego and state["form"].get("lang") != "en" else 0
+    cut = nego_supply(state, nego_amount(state, base)) if nego and state["form"].get("lang") != "en" else 0
     return int(base - cut)
 
 
@@ -1171,13 +1182,13 @@ def render_lines(state: dict[str, Any], lang: str, fx_rate: float | None) -> lis
         if multi:
             out.append({"row": "gap"})
     billed = [r for r in out if not r.get("row") or r.get("in_total")]
-    # NEGO 는 공급가액으로 셈하고(금액·% 모두 담당자가 적은 공급가액 기준), 부가세 포함 견적서면 × 1.1 로 찍는다
+    # NEGO 는 담당자가 적은 금액 그대로 찍는다 — 부가세 포함 견적서여도 × 1.1 하지 않는다(사용자 2026-10-29). % 는 공급가액 합계 기준.
+    # supply_unit(영업 건·명세서용)은 부가세 포함 견적서면 ÷ 1.1(nego_supply)
     base = round(sum(r["qty"] * r.get("supply_unit", r["unit_price"]) * r.get("months", 1) for r in billed), 2)
     cut = nego_amount(state, base)
     if cut > 0:
-        shown = with_vat(cut) if lang != "en" and vat_included(state) else cut
         out.append({"row": "nego", "key": "nego", "commodity": "", "desc": nego_label(state), "qty": 1,
-                    "unit_price": -shown, "amount": -shown, "supply_unit": -cut, "remark": ""})
+                    "unit_price": -cut, "amount": -cut, "supply_unit": -nego_supply(state, cut), "remark": ""})
     if (multi or cut > 0) and out and out[-1].get("row") != "gap":
         out.append({"row": "gap"})                     # Total 바로 위에도 회색 줄(사용자 2026-10-13)
     return out

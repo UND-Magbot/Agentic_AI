@@ -744,9 +744,11 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
   const vatTotal = billed.reduce((s, l) => s + (l.qty ?? 0) * withVat(l.unit_price ?? 0) * monthFactor(l, rentMonths), 0)
     + (dv?.freight ? withVat(d.delivery.freight ?? 0) : 0)
     + (dv?.work ? (d.work.people ?? 0) * (d.work.days ?? 0) * withVat(d.work.rate ?? WORK_RATE) : 0)
-    - withVat(negoCut(d.nego, baseKrw, false));
+    - negoCut(d.nego, baseKrw, false);                    // NEGO 는 적은 금액 그대로(× 1.1 안 함, 사용자 2026-10-29)
   // 견적서 Total(월 납입금 기준) — 포함이면 × 1.1 값, 별도면 공급가액
   const docTotal = vatOn ? vatTotal : dirty ? total : q.subtotal;
+  // 부가세 포함일 때 공급가액 — NEGO 는 적은 금액 ÷ 1.1(backend quote_session.nego_supply 와 같게)
+  const supplyTotal = vatOn ? baseKrw - Math.round((negoCut(d.nego, baseKrw, false) * 10) / 11) : total;
   const hangul = q.hangul ?? [];
   // 번역 전 칸은 [발행] 때 미리보기로 먼저 번역·확인 — 발행을 막는 건 채울 것(problems)뿐
   const blocked = q.problems.length > 0;
@@ -1207,7 +1209,7 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
                 {en ? ((dirty ? totalUsd : q.subtotal_usd) == null ? "달러 단가가 빈 줄이 있습니다" : usd(dirty ? totalUsd : q.subtotal_usd)) : won(docTotal)}
               </span>
               {vatOn && (
-                <span className="text-[12px] text-foreground-muted">공급가액 {won(dirty ? total : q.subtotal)}</span>
+                <span className="text-[12px] text-foreground-muted">공급가액 {won(dirty ? supplyTotal : q.subtotal)}</span>
               )}
             </div>
           </div>

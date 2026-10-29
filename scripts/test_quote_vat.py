@@ -91,9 +91,11 @@ check([r["unit_price"] for r in items] == [2_530_000, 440_000, 13_580], "견적�
       str([r["unit_price"] for r in items]))
 check([r["supply_unit"] for r in items] == [2_300_000, 400_000, 12_345], "줄마다 공급가액(supply_unit) 보관")
 nego = next(r for r in lines1 if r.get("row") == "nego")
-check(nego["amount"] == -110_000 and nego["supply_unit"] == -100_000, "NEGO 금액도 × 1.1(공급가액 기준 입력)", str(nego))
-check(qx.total(lines1) == 2_530_000 + 880_000 + 3 * 13_580 - 110_000, "견적서 Total = × 1.1 단가의 합", str(qx.total(lines1)))
-check("VAT 포함 · 공급가액" in qs.total_text(SI) and f"{SUPPLY:,}원" in qs.total_text(SI), "대화 합계 글 — 포함 금액·공급가액",
+check(nego["amount"] == -100_000 and nego["supply_unit"] == -90_909,
+      "NEGO 는 견적서엔 적은 금액 그대로, 영업 건용 공급가액은 ÷ 1.1(사용자 2026-10-29)", str(nego))
+check(qx.total(lines1) == 2_530_000 + 880_000 + 3 * 13_580 - 100_000, "견적서 Total = × 1.1 단가의 합 − NEGO", str(qx.total(lines1)))
+SUPPLY_I = SUPPLY + 100_000 - 90_909                  # 부가세 포함 견적서의 공급가액 — NEGO 는 ÷ 1.1
+check("VAT 포함 · 공급가액" in qs.total_text(SI) and f"{SUPPLY_I:,}원" in qs.total_text(SI), "대화 합계 글 — 포함 금액·공급가액",
       qs.total_text(SI))
 
 # 3. 엑셀 — 'VAT 포함', Total (부가세 포함), 단가 칸 × 1.1
@@ -106,12 +108,16 @@ check(head0["labels"]["total"] == "Total (부가세 별도)", "양식 기본 문
 
 # 4. 영업 건 품목은 공급가액 — 명세서가 부가세를 또 붙이지 않게
 deal_items = svc.snapshot_items(lines1)
-check(sum(it["unit_price"] * it["qty"] for it in deal_items) == SUPPLY, "영업 건 품목 합 = 공급가액", str(deal_items))
+deal_sum = sum(it["unit_price"] * it["qty"] for it in deal_items)
+check(deal_sum == SUPPLY_I == qs.subtotal(SI), "영업 건 품목 합 = 공급가액(NEGO ÷ 1.1)", str(deal_items))
+# 거래명세서(공급가액 + 부가세 10%) 합계 = 견적서 Total — 단가 줄마다 원 단위 반올림이라 몇 원 차이까지
+check(abs(round(deal_sum * 1.1) - qx.total(lines1)) <= 3, "명세서 합계(공급가액 × 1.1) ≈ 견적서 Total",
+      f"{round(deal_sum * 1.1)} vs {qx.total(lines1)}")
 
 # 5. 되읽기 — 포함 견적서 파일을 별도 상태에 올리면 포함으로 바뀌고 단가는 공급가액으로
 M, ch, wn = rb.merge(S, rb.parse(build(SI)))
 check(M["form"].get("vat") == "included" and [ln["unit_price"] for ln in M["lines"]] == [2_300_000, 400_000, 12_345]
-      and (M.get("nego") or {}).get("value") == 100_000, "포함 파일 되읽기 → VAT 포함 · 단가·NEGO 는 공급가액", f"{ch} {wn} {M.get('nego')}")
+      and (M.get("nego") or {}).get("value") == 100_000, "포함 파일 되읽기 → VAT 포함 · 단가는 공급가액 · NEGO 는 적힌 금액 그대로", f"{ch} {wn} {M.get('nego')}")
 check(any("부가세" in c for c in ch), "되읽기 바뀐 점에 부가세", str(ch))
 M2, ch2, wn2 = rb.merge(SI, rb.parse(build(SI)))
 check(ch2 == [] and wn2 == [], "고치지 않은 포함 파일 되읽기 → 바뀐 점 없음", f"{ch2} {wn2}")

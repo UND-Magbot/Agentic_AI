@@ -258,13 +258,13 @@ def items_of(parsed: dict[str, Any]) -> list[dict[str, Any]]:
 # ── 맞추기 ───────────────────────────────────────────────────────────────────
 
 def _to_supply(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """부가세 포함 견적서에서 읽은 단가·NEGO 금액 → 공급가액(÷ 1.1, 원 단위). 작성 상태는 늘 공급가액이다."""
+    """부가세 포함 견적서에서 읽은 단가 → 공급가액(÷ 1.1, 원 단위). 작성 상태의 단가는 늘 공급가액이다.
+    NEGO 는 그대로 — 부가세 포함 견적서에도 적은 금액 그대로 찍힌다(사용자 2026-10-29)."""
     out = []
     for r in rows:
         r = dict(r)
-        for k in ("unit_price", "amount") if r.get("row") == "nego" else ("unit_price",):
-            if isinstance(r.get(k), (int, float)):
-                r[k] = round(r[k] / 1.1)
+        if r.get("row") != "nego" and isinstance(r.get("unit_price"), (int, float)):
+            r["unit_price"] = round(r["unit_price"] / 1.1)
         out.append(r)
     return out
 
