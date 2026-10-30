@@ -72,10 +72,12 @@ def derive(d: dict, today: dt.date) -> dict:
                        "text": f"수주한 판에 대여 조건 기록이 없어 지금 값({rent.get('months')}개월)을 유지했습니다 — 개월 수·월 납입금을 확인해 주세요"})
     if stage == "대여 중" and not rent.get("start"):   # 출하했는데 대여 시작일을 안 정함(사용자 2026-10-22)
         alerts.append({"code": "RENTAL_START", "level": "review", "text": "대여 시작일을 정해 주세요 — 끝나는 날·회수 알림의 기준입니다"})
-    if stage == "대여 중" and rent.get("end"):         # 대여 기간이 끝났는데 회수를 시작하지 않음(사용자 2026-10-22)
+    if stage in ("대여 중", "회수 중") and rent.get("end"):
+        # 반납일(대여 끝나는 날)이 지났는데 회수 완료(반납 확인)가 안 됨(사용자 2026-10-22 → 10-30: 회수 중이어도 반납 확인 전이면 알림·팝업)
         n = _days(rent["end"], today)
         if n is not None and n > 0:
-            alerts.append({"code": "RENTAL_END", "level": "alert", "text": f"대여 기간 끝남({rent['end']}, {n}일 지남) — 회수 필요"})
+            alerts.append({"code": "RENTAL_END", "level": "alert",
+                           "text": f"반납일 지남({rent['end']}, {n}일 지남) — " + ("회수 중, 반납 확인 필요" if stage == "회수 중" else "회수 필요")})
     from .flow import overdue                         # 예정 입금일이 지난 회차(사용자 2026-10-08: 팝업·리스트 강조)
     # 출하는 입금 확인과 상관없이 할 수 있다(사용자 2026-10-08) — '입금 확인 전 출하' 알림은 없앴다
 

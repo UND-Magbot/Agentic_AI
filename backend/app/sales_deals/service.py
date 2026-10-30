@@ -66,7 +66,9 @@ def view(d: dict, today: dt.date) -> dict:
     fl = {"steps": flow.steps(d), "pay_case": d.get("pay_case"), "terms": ts,
           "pay_case_label": " · ".join(f"{t['label']} {t['pct']:g}%" + (f"({t['when']})" if t.get("when") else "") for t in ts) or None,
           "total": flow.expected_total(d), "paid": flow.paid(d), "due": flow.next_due(d),
-          "overdue": flow.overdue(d, today)}
+          "overdue": flow.overdue(d, today),
+          # 무상 대여(합계 0원, 사용자 2026-10-30) — 목록 금액 '무상', 수주 진행은 거래명세서·입금 없이 출하로
+          "free": flow.free(d)}
     # 표시 번호(사용자 2026-10-12) = 최근 견적서 발행번호(QT-LU20261012-01), 거래명세서를 발행했으면 최근 명세서 번호도(statement_no).
     # 새 체계 전 건은 그때 견적서에 찍힌 번호 = 건 번호(AL20261008·S26-…). cur_no(AL20261012-02 …)는 예전 히스토리 번호라
     # 보이지 않는다(사용자 2026-10-13). 견적서 발행 전(제품 추천 확정)은 None.
@@ -139,7 +141,7 @@ async def _as_counts(db: AsyncSession, deal_id: int | None = None) -> dict[int, 
 
 
 async def list_deals(db: AsyncSession, today: dt.date, biz: str | None = None) -> dict:
-    """리스트·단계별 건수·KPI. biz = 'sale'(제품 판매 관리) · 'rental'(제품 대여 관리, 사용자 2026-10-22) · None(전체)."""
+    """리스트·단계별 건수·KPI. biz = 'sale'(제품 영업 건 관리) · 'rental'(제품 대여 관리, 사용자 2026-10-22) · None(전체)."""
     rs = (await db.execute(text(
         # 새로 만든 건이 위 — 단계·내용이 바뀌어도 줄이 움직이지 않는다(사용자 2026-10-22, 10-08 '최근 변경이 위' 대체)
         f"SELECT {COLS} FROM sales_deals ORDER BY created_at DESC, id DESC"))).mappings().all()
@@ -831,7 +833,8 @@ async def order_note(db: AsyncSession, deal_id: int, done_text: str) -> dict:
 
 
 # 견적서 발행까지의 기록(제품 추천 확정·견적) — 견적 상태로 되돌릴 때 남기는 이력
-_KEEP_EVENTS = ("import", "create", "recommend", "quote", "quote_revision", "units", "as_case")   # 시리얼·A/S 기록은 남김
+_KEEP_EVENTS = ("import", "create", "recommend", "quote", "quote_revision", "units", "as_case",
+                "as_case_status")   # 시리얼·A/S 기록(진행 이력 포함)은 남김
 
 
 async def reset_to_quote(db: AsyncSession, deal_id: int, user_id: int | None) -> list[str]:

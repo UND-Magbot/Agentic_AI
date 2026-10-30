@@ -355,7 +355,7 @@ function OrderList({ onOpen }: { onOpen: (id: number) => void }) {
       <ErrorBox error={err} />
       {rows === null ? <Muted>불러오는 중…</Muted> : rows.length === 0 ? (
         <p className="rounded-lg border border-dashed border-border px-3 py-6 text-center text-[12.5px] text-foreground-subtle">
-          진행 중인 수주 건이 없습니다. [제품 판매·대여 관리]에서 건을 열고 [수주 확정]을 누르면 여기에 나옵니다.
+          진행 중인 수주 건이 없습니다. [제품 영업 건 관리]에서 건을 열고 [수주 확정]을 누르면 여기에 나옵니다.
         </p>
       ) : (
         <table className="w-full border-collapse text-[13px]">
@@ -534,7 +534,9 @@ export function OrderWorkspace({ id, onBack, openShip = false }: { id: number; o
   const payReady = terms.some((t) => ready(`pay:${t.index}`));
   const payDone = terms.length > 0 && terms.every((t) => t.confirmed);
   // 출하 강조('지금 할 차례')는 결제 조건을 정한 뒤에만 — 정하는 동안엔 결제 조건 칸만 강조(사용자 2026-10-08). 버튼은 그대로 누를 수 있다
-  const shipNow = ready("ship") && stepDone("case");
+  // 무상 대여(합계 0원, 사용자 2026-10-30) — 거래명세서·결제 조건·입금 확인 없이 수주 → 바로 출하
+  const free = !!fl?.free;
+  const shipNow = ready("ship") && (stepDone("case") || free);
 
   // 왼쪽 절차 ↔ 오른쪽 AI 대화 폭 조절(사용자 2026-10-23) — 견적서 작성과 같은 막대, 기본 반반
   return (
@@ -546,20 +548,21 @@ export function OrderWorkspace({ id, onBack, openShip = false }: { id: number; o
             <button type="button" className={secondaryBtn} onClick={onBack}><Icon name="back" className="h-4 w-4" /> 목록</button>
             <h2 className="text-[16px] font-extrabold tracking-tight">{deal.display_no ?? deal.deal_no ?? "번호 미부여"} · {deal.customer ?? "-"}</h2>
             <span className={cn("rounded-full px-2 py-0.5 text-[12px] font-semibold", STAGE_TONE[deal.stage])}>{deal.stage}</span>
-            {fl?.total != null && <span className="ml-auto text-[12.5px] text-foreground-muted">공급가액 {won(fl.total)}원 · 입금 확인 {won(fl.paid)}원</span>}
+            {free ? <span className="ml-auto text-[12.5px] font-semibold text-emerald-700 dark:text-emerald-300">무상 대여 — 거래명세서·입금 확인 없이 바로 출하</span>
+              : fl?.total != null && <span className="ml-auto text-[12.5px] text-foreground-muted">공급가액 {won(fl.total)}원 · 입금 확인 {won(fl.paid)}원</span>}
           </div>
           <ol className="flex flex-wrap gap-1.5 text-[12px]">
             {fl?.steps.map((s, i) => (
               <li key={s.key} className={cn("rounded-md px-2 py-1 font-medium",
-                s.done ? "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300" : s.ready && (s.key !== "ship" || stepDone("case")) ? "bg-accent text-white" : "bg-foreground/5 text-foreground-subtle")}>
+                s.done ? "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300" : s.ready && (s.key !== "ship" || stepDone("case") || free) ? "bg-accent text-white" : "bg-foreground/5 text-foreground-subtle")}>
                 {s.done ? "✓ " : `${i + 1}. `}{s.label}
               </li>
             ))}
           </ol>
         </section>
 
-        {/* 거래명세서 */}
-        <section className={cn("flex flex-col gap-2 rounded-2xl border bg-surface-raised p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04),0_16px_36px_-24px_rgba(15,30,70,0.30)] text-[12.5px]", !st ? "border-accent/50" : "border-border")}>
+        {/* 거래명세서 — 무상 대여는 없음 */}
+        {!free && <section className={cn("flex flex-col gap-2 rounded-2xl border bg-surface-raised p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04),0_16px_36px_-24px_rgba(15,30,70,0.30)] text-[12.5px]", !st ? "border-accent/50" : "border-border")}>
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-[16px] font-extrabold tracking-tight">거래명세서</h3>
             {st ? <span className="text-emerald-700 dark:text-emerald-300">✓ 발급 <b className="font-mono">{st.no}</b> · {st.date} · 합계 {won(st.totals?.total)}원</span>
@@ -613,10 +616,10 @@ export function OrderWorkspace({ id, onBack, openShip = false }: { id: number; o
               <Icon name="file-spreadsheet" className="h-4 w-4" /> {st ? "고쳐서 다시 발급 (새 번호)" : "거래명세서 발급"}
             </button>
           </div>
-        </section>
+        </section>}
 
-        {/* 결제 조건 — 정할 차례면 눈에 띄게. 선금·중도금·잔금 % 수기(사용자 2026-10-08) */}
-        <section className={cn("flex flex-col gap-2 rounded-2xl border bg-surface-raised p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04),0_16px_36px_-24px_rgba(15,30,70,0.30)] text-[12.5px]", ready("case") ? HL : "border-border")}>
+        {/* 결제 조건 — 정할 차례면 눈에 띄게. 선금·중도금·잔금 % 수기(사용자 2026-10-08). 무상 대여는 없음 */}
+        {!free && <section className={cn("flex flex-col gap-2 rounded-2xl border bg-surface-raised p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04),0_16px_36px_-24px_rgba(15,30,70,0.30)] text-[12.5px]", ready("case") ? HL : "border-border")}>
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-[16px] font-extrabold tracking-tight">결제 조건 {fl?.pay_case_label && <span className="font-normal text-foreground-muted">· {fl.pay_case_label}</span>}</h3>
             {ready("case") && <NowBadge>지금 정할 차례</NowBadge>}
@@ -625,10 +628,10 @@ export function OrderWorkspace({ id, onBack, openShip = false }: { id: number; o
           {!st && <p className="text-[11.5px] text-foreground-subtle">보통은 거래명세서를 발급한 뒤에 정합니다.</p>}
           <TermsEditor key={JSON.stringify(deal.pay_terms) + deal.payments.length} deal={deal} busy={!!busy}
                        onSave={(t) => void confirm("terms", { terms: t }, "case")} />
-        </section>
+        </section>}
 
         {/* 입금 확인 → 출하 — 정상 순서대로 보이되 막지는 않는다(출하는 입금 확인 없이도 기록, 사용자 2026-10-08·10-23) */}
-        {(["pay", "ship"] as const).map((k) => k === "pay" ? (
+        {(free ? ["ship"] as const : ["pay", "ship"] as const).map((k) => k === "pay" ? (
           <section key="pay" className={cn("flex flex-col gap-2 rounded-2xl border bg-surface-raised p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04),0_16px_36px_-24px_rgba(15,30,70,0.30)] text-[12.5px]",
             payReady ? HL : late.size ? "border-red-400" : "border-border")}>
             <div className="flex flex-wrap items-center gap-2">

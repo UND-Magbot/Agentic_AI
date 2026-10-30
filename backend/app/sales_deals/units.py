@@ -8,7 +8,8 @@
 - 품목 줄은 수량만큼 등록하면 다 한 것(한 줄을 부품 여러 개로 나눠 더 적어도 된다). 설치비·물류비·서술형 줄은 대상이 아니다.
 - 출하 기록 전에 수주 판의 시리얼을 다 적어야 한다(사용자 2026-10-19). 출하에 묶이면 출하일 = 무상 기간 시작일,
   종료일을 그때 확정 저장한다(무상 기간 기본값이 나중에 바뀌어도 이미 나간 제품은 그대로).
-- 무상 기간은 제품마다 정하기 나름 — warranty_policies(keyword → 개월)로 기본값, 건마다 고칠 수 있고 비우면 미정.
+- 무상 기간은 모든 제품 출하일부터 1년 고정(사용자 2026-10-30, WARRANTY_MONTHS) — 예전의 제품별 기본값(warranty_policies)·
+  건별 개월 수는 쓰지 않는다(표는 남겨 둠).
 - 범위: 자사 제품 + 타사 재판매(제조사 칸).
 - 상태 = 영문 이니셜 한 글자(사용자 2026-10-19, 영업팀 요청) — product_units.purpose 에 코드로 저장한다. UNIT_STATES 참고.
 - A/S 는 기록만(유상 A/S 견적은 영업팀이 프로그램 밖에서 수기). 무상·유상은 접수일이 무상 기간 안인지로 제안한다.
@@ -26,7 +27,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .service import COLS, DealError, _iso, _issue_no, _lock, _log, _row, deal_quotes, kst_today, term_end
+from .service import COLS, KST, DealError, _iso, _issue_no, _lock, _log, _row, deal_quotes, kst_today, term_end
 
 # 제품 상태 이니셜 — 영문 단어 첫 글자. 시리얼 옆에 'S · 판매'처럼 보인다. 바꾸면 프런트 lib/shared/unit-states.ts 도 같이.
 UNIT_STATES = (
@@ -51,6 +52,8 @@ AS_STATUS = ("접수", "진행 중", "완료")
 # 영업 건을 지운 S/N 의 상태(사용자 2026-10-26) — 기록은 남기고, 같은 번호 다시 등록은 막는다
 DELETED = "건 삭제"
 SERIAL_MAX, PART_MAX, MAKER_MAX, NOTE_MAX = 80, 120, 40, 300
+AS_AMOUNT_MAX = 100_000_000_000   # A/S 금액 상한(원) — 잘못 친 자릿수 막기
+WARRANTY_MONTHS = 12          # 무상 기간 = 출하일부터 1년, 모든 제품 고정(사용자 2026-10-30 — 365일 FIX)
 MONTHS_MAX = 120
 _NOT_TARGET = ("work", "freight", "note")
 # 같은 견적서 판의 부품
@@ -209,10 +212,9 @@ async def issue_units(db: AsyncSession, deal_id: int, quote_id: int, revision: i
                                 "ORDER BY line_no, id"),
                            {"d": deal_id, "q": quote_id, "r": revision})).mappings().all()
     pol = await policies(db)
-    lines = []
+    lines: list[dict] = []
     for ln in iss["lines"]:
-        hit = match_policy(pol, default_part(ln["name"]), ln["name"])
-        lines.append({**ln, "part": default_part(ln["name"]), "suggest_months": hit["months"] if hit else None,
+        lines.append({**ln, "part": default_part(ln["name"]), "suggest_months": WARRANTY_MONTHS,
                       "units": [_unit_view(r) for r in rs if r["line_no"] == ln["line_no"]]})
     won = await won_issue(db, d)
     others = (await db.execute(text("SELECT DISTINCT issue_no FROM product_units WHERE deal_id = :d AND NOT "
@@ -260,9 +262,7 @@ async def save_units(db: AsyncSession, deal_id: int, user_id: int | None, quote_
             part = re.sub(r"\s+", " ", str(u.get("part_name") or "")).strip()[:PART_MAX] or default_part(ln["name"])
             maker = re.sub(r"\s+", " ", str(u.get("maker") or "")).strip()[:MAKER_MAX] or "UND"
             purpose = state_code(u.get("purpose"))
-            months = u.get("warranty_months")
-            if months is not None and not (0 <= int(months) <= MONTHS_MAX):
-                raise DealError(f"무상 기간은 0~{MONTHS_MAX}개월로 적어 주세요({part}).")
+            months = WARRANTY_MONTHS                       # 1년 고정(사용자 2026-10-30) — 보낸 개월 수는 무시
             no_serial = is_no_serial(serial)
             if not no_serial:
                 key = (maker.lower(), serial.lower())
@@ -272,7 +272,7 @@ async def save_units(db: AsyncSession, deal_id: int, user_id: int | None, quote_
             uid = u.get("id") if u.get("id") in old else None
             keep.append((uid, {"line_no": ln["line_no"], "line_name": ln["name"], "part_name": part, "serial": serial,
                                "no_serial": no_serial, "maker": maker, "purpose": purpose,
-                               "warranty_months": None if months is None else int(months),
+                               "warranty_months": months,
                                "note": str(u.get("note") or "")[:NOTE_MAX]}))
     gone = [i for i in old if i not in {uid for uid, _ in keep}]
     if gone:
@@ -547,7 +547,7 @@ def suggest_charge(unit: dict | None, received: dt.date, cause: str) -> tuple[bo
     return inside, "무상" if inside else "미정"
 
 
-_CASE_COLS = ("id, unit_id, deal_id, serial, part_name, customer, contact, photos, received_on, symptom, cause, in_warranty, charge, "
+_CASE_COLS = ("id, unit_id, deal_id, serial, part_name, customer, contact, photos, received_on, symptom, cause, in_warranty, charge, amount, "
               "status, action, closed_on, note, history, created_at, updated_at, "
               "(SELECT COALESCE(x.alias, x.username) FROM users x WHERE x.id = as_cases.created_by) AS received_by")
 
@@ -562,12 +562,60 @@ def _case_view(r: Any) -> dict:
     return c
 
 
+# A/S 이력 한 줄씩(사용자 2026-10-30 — 접수·진행 중·완료가 하나로 덮이지 않고 모두 보이게). 고친 칸 이름
+_FIELD_KO = {"customer": "고객사", "contact": "고객 담당자", "cause": "원인 구분", "charge": "무상/유상", "amount": "A/S 금액",
+             "symptom": "증상", "photos": "사진", "action": "조치 내용", "note": "메모", "received_on": "접수일", "closed_on": "완료일"}
+_STATUS_EVENT = {"진행 중": "A/S 진행 중", "완료": "A/S 완료", "접수": "접수 상태로 되돌림"}
+
+
+def case_events(c: dict, names: dict[int, str]) -> list[dict]:
+    """A/S 기록의 이력(history) → 화면 이력 [{at(한국 시각 'YYYY-MM-DD HH:MM'), kind, label, by, detail}] — 최신이 위.
+    kind = 접수·진행 중·완료(상태가 바뀐 일) · 수정(내용만 고친 일)."""
+    out = []
+    for h in c.get("history") or []:
+        if not isinstance(h, dict):
+            continue
+        try:
+            at = dt.datetime.fromisoformat(str(h.get("at"))).astimezone(KST).strftime("%Y-%m-%d %H:%M")
+        except ValueError:
+            at = str(h.get("at") or "")[:16]
+        by = names.get(h.get("by")) if h.get("by") is not None else None
+        changed = h.get("changed") or {}
+        if h.get("what") == "접수":
+            # 접수 때 상태 — 나중에 상태가 바뀌었으면 그 첫 변경의 '전' 값, 아니면 지금 상태(완료로 바로 남긴 기록 등)
+            st = next((x["changed"]["status"][0] for x in c.get("history") or []
+                       if isinstance(x, dict) and "status" in (x.get("changed") or {})), c["status"])
+            out.append({"at": at, "kind": "접수", "label": "A/S 접수" + ("" if st == "접수" else f" ({st}로 기록)"), "by": by,
+                        "detail": f"{h.get('suggested') or ''} 제안".strip() if h.get("suggested") else ""})
+            continue
+        if "status" in changed:
+            new = changed["status"][1]
+            rest = [_FIELD_KO.get(k, k) for k in changed if k not in ("status", "closed_on")]
+            out.append({"at": at, "kind": new if new in ("진행 중", "완료") else "접수", "label": _STATUS_EVENT.get(new, new), "by": by,
+                        "detail": "함께 고침: " + "·".join(rest) if rest else ""})
+        elif changed:
+            out.append({"at": at, "kind": "수정", "label": "내용 수정", "by": by,
+                        "detail": "·".join(_FIELD_KO.get(k, k) for k in changed)})
+    return out[::-1]
+
+
+async def _with_events(db: AsyncSession, cases: list[dict]) -> list[dict]:
+    ids = {h.get("by") for c in cases for h in c.get("history") or [] if isinstance(h, dict) and h.get("by") is not None}
+    names: dict[int, str] = {}
+    if ids:
+        rs = (await db.execute(text("SELECT id, COALESCE(alias, username) AS n FROM users WHERE id = ANY(:i)"),
+                               {"i": list(ids)})).all()
+        names = {r[0]: r[1] for r in rs}
+    return [{**c, "events": case_events(c, names)} for c in cases]
+
+
 async def list_cases(db: AsyncSession, *, unit_id: int | None = None, status: str | None = None, limit: int = 200) -> list[dict]:
+    """A/S 기록 — 마지막으로 바뀐 기록이 위(사용자 2026-10-30: 가장 최신 이력이 위), 기록마다 이력(events)."""
     rs = (await db.execute(text(
         f"SELECT {_CASE_COLS} FROM as_cases WHERE (CAST(:u AS BIGINT) IS NULL OR unit_id = :u) "
-        "AND (CAST(:s AS TEXT) IS NULL OR status = :s) ORDER BY received_on DESC, id DESC LIMIT :n"),
+        "AND (CAST(:s AS TEXT) IS NULL OR status = :s) ORDER BY updated_at DESC, id DESC LIMIT :n"),
         {"u": unit_id, "s": status, "n": limit})).mappings().all()
-    return [_case_view(r) for r in rs]
+    return await _with_events(db, [_case_view(r) for r in rs])
 
 
 def _clean_case(p: dict) -> dict:
@@ -589,6 +637,16 @@ def _clean_case(p: dict) -> dict:
             out[k] = p[k]
     if "closed_on" in p:
         out["closed_on"] = p["closed_on"]
+    if "amount" in p:                     # A/S 금액(원, 사용자 2026-10-30) — 영업이 수기로. 비우면 None
+        v = p["amount"]
+        if v not in (None, ""):
+            try:
+                v = int(str(v).replace(",", "").strip())
+            except ValueError:
+                raise DealError("A/S 금액은 숫자(원)로 적어 주세요.") from None
+            if not 0 <= v <= AS_AMOUNT_MAX:
+                raise DealError("A/S 금액을 확인해 주세요.")
+        out["amount"] = None if v in (None, "") else v
     return out
 
 
@@ -622,11 +680,11 @@ async def create_case(db: AsyncSession, user_id: int | None, unit_id: int, p: di
     follow = await _follow_unit_state(db, {"unit_id": unit_id, "id": 0, "history": []}, status) if status == "진행 중" else {}
     new_id = (await db.execute(text(
         "INSERT INTO as_cases (unit_id, deal_id, serial, part_name, customer, contact, photos, received_on, symptom, cause, in_warranty, "
-        "charge, status, action, closed_on, note, history, created_by) VALUES (:u, :d, :sn, :pn, :c, :ct, CAST(:ph AS jsonb), :r, :sy, "
-        ":ca, :iw, :ch, :st, :ac, :cl, :no, CAST(:h AS jsonb), :by) RETURNING id"),
+        "charge, amount, status, action, closed_on, note, history, created_by) VALUES (:u, :d, :sn, :pn, :c, :ct, CAST(:ph AS jsonb), :r, "
+        ":sy, :ca, :iw, :ch, :am, :st, :ac, :cl, :no, CAST(:h AS jsonb), :by) RETURNING id"),
         {"u": unit_id, "d": u["deal_id"], "sn": u["serial"], "pn": u["part_name"], "c": c.get("customer") or u["customer"],
          "ct": c.get("contact", ""), "ph": json.dumps(c.get("photos", [])), "r": received,
-         "sy": c.get("symptom", ""), "ca": cause, "iw": inside, "ch": c.get("charge", suggested), "st": status,
+         "sy": c.get("symptom", ""), "ca": cause, "iw": inside, "ch": c.get("charge", suggested), "am": c.get("amount"), "st": status,
          "ac": c.get("action", ""), "cl": closed, "no": c.get("note", ""),
          "h": json.dumps([{"at": dt.datetime.now(dt.timezone.utc).isoformat(), "by": user_id, "what": "접수",
                            "suggested": suggested, **follow}], ensure_ascii=False), "by": user_id})).scalar_one()
@@ -651,7 +709,7 @@ async def get_case(db: AsyncSession, case_id: int) -> dict:
     r = (await db.execute(text(f"SELECT {_CASE_COLS} FROM as_cases WHERE id = :i"), {"i": case_id})).mappings().first()
     if not r:
         raise DealError("A/S 기록을 찾을 수 없습니다.", 404)
-    return _case_view(r)
+    return (await _with_events(db, [_case_view(r)]))[0]
 
 
 async def _follow_unit_state(db: AsyncSession, case: dict, status: str) -> dict:
@@ -737,5 +795,8 @@ async def update_case(db: AsyncSession, user_id: int | None, case_id: int, p: di
     if "photos" in c:
         params["photos"] = json.dumps(c["photos"])
     await db.execute(text(f"UPDATE as_cases SET {sets}, history = CAST(:h AS jsonb), updated_at = NOW() WHERE id = :i"), params)
+    if "status" in changed and old["deal_id"]:      # A/S 진행 중·완료도 영업 건 변경 이력에(사용자 2026-10-30)
+        await _log(db, old["deal_id"], user_id, "as_case_status",
+                   {"serial": old["serial"], "from": old["status"], "to": c["status"]})
     await db.commit()
     return await get_case(db, case_id)

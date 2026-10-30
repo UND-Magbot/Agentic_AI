@@ -206,7 +206,13 @@ def parse(data: bytes) -> dict[str, Any] | None:
     form["total_note"] = t[1].strip() if len(t) > 1 else ""
     if lang == "ko":                                          # 'Total (부가세 포함)' — 부가세 포함 견적서(사용자 2026-10-28)
         form["vat"] = "included" if "포함" in t[0] else "excluded"
-    if rent:                                                  # 대여 견적서 — 월 납입금 식의 개월 수
+    # 무상 대여(사용자 2026-10-30) — Total 칸 서식이 '무상 대여 (N개월)'
+    # 물류비·설치비를 받는 무상 대여는 Total 이 금액 — 품목 단가 칸 서식 '무상'으로 안다(개월 수는 모름)
+    free = re.search(r"무상 대여(?: \((\d+)개월\))?|Free rental(?: \((\d+) months\))?", ws.cell(total, 7).number_format or "")
+    if free or any(ws.cell(r, 5).number_format in ('"무상"', '"Free"') for r in nums):
+        months = free and (free[1] or free[2])
+        form.update(purpose="rental", rental_fee="free", **({"rental_months": int(months)} if months else {}))
+    elif rent:                                                # 대여 견적서 — 월 납입금 식의 개월 수
         form.update(purpose="rental", rental_months=int(rent[1]))
     elif re.search(r"월 납입금|Monthly", _s(ws.cell(head, 5).value)):   # 식은 지웠어도 단가 칸 머리가 월 납입금이면 대여(개월 수 모름)
         form["purpose"] = "rental"
@@ -453,7 +459,7 @@ def merge(state: dict[str, Any], parsed: dict[str, Any]) -> tuple[dict[str, Any]
             st["nego"] = {"mode": "amount", "value": cut, "label": ""}
         if (old_nego or {}) != st["nego"]:
             changes.append(f"NEGO: {qs.nego_label(state) if old_nego else '없음'} → {qs.nego_label(st)} {cut:,.2f}".rstrip("0").rstrip("."))
-    elif old_nego:
+    elif old_nego and parsed["form"].get("rental_fee") != "free":   # 무상 대여 견적서엔 NEGO 줄이 없다 — 유상으로 되돌릴 때 쓰게 둔다
         st["nego"] = None
         changes.append("NEGO 삭제")
 
@@ -462,8 +468,9 @@ def merge(state: dict[str, Any], parsed: dict[str, Any]) -> tuple[dict[str, Any]
     d = qs.term_defaults(state, lang)
     shown_form = {k: _s(f.get(k)) or d.get(k, "") for k in ("comments", "delivery", "place", "payment")}
     labels = {k: v[0] for k, v in qs.FORM_FIELDS.items()}
+    free = pf.get("rental_fee") == "free"
     for k in ("customer", "to", "cc", "comments", "delivery", "place", "payment", "total_note", "bank", "account_no", "account_holder"):
-        if k not in pf:
+        if k not in pf or (k == "payment" and free and pf[k] in ("무상 대여", "Free of charge (rental)")):   # 무상 대여 자동 문구
             continue
         now = shown_form.get(k, _s(f.get(k)))
         if _norm(pf[k]) != _norm(now):
@@ -475,6 +482,11 @@ def merge(state: dict[str, Any], parsed: dict[str, Any]) -> tuple[dict[str, Any]
     if pf.get("rental_months") and (f.get("purpose") != "rental" or f.get("rental_months") != pf["rental_months"]):
         changes.append(f"대여 개월 수: {f.get('rental_months') or '(없음)'} → {pf['rental_months']}")
         f.update(purpose="rental", rental_months=pf["rental_months"])
+    if pf.get("purpose") == "rental" and (free or f.get("purpose") == "rental"):   # 유상 ↔ 무상 대여(사용자 2026-10-30)
+        fee = "free" if free else "paid"
+        if f.get("purpose") != "rental" or (f.get("rental_fee") or "paid") != fee:
+            changes.append(f"대여: {qs.RENTAL_FEES[fee]}")
+            f.update(purpose="rental", rental_fee=fee)
     if "notes" in pf:
         scope = qx._SCOPE[lang]
         pogo = any(ln.get("key") in ("PPM", "PPF") for ln in st["lines"])

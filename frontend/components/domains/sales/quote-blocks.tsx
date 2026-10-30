@@ -95,9 +95,11 @@ const smallBtn = "inline-flex h-8 min-w-8 items-center justify-center rounded-[9
 type PricePick = { model: string; item: string; unit_price: number };
 
 export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, totalNote, footNotes, autoBlock, onChange, children, pricePicker,
-                             photoCell, months = 0 }: {
+                             photoCell, months = 0, free = false }: {
   /** 대여 견적서의 대여 개월 수(판매 = 0) — 줄 금액·소계에 곱한다(단가 = 월 납입금) */
   months?: number;
+  /** 무상 대여(사용자 2026-10-30) — 품목 단가·금액·Total 반영·OPTION·NEGO 를 숨긴다(물류비·인건비 줄은 그대로) */
+  free?: boolean;
   blocks: QuoteBlock[]; lines: QuoteLine[]; nego: QuoteNego | null; en: boolean; fx: number | null; busy: boolean; draftVer: number;
   totalNote: string; footNotes: string[]; autoBlock: string; children?: React.ReactNode;
   /** [단가표에서 추가] 버튼 — 고르면 그 묶음에 품목 한 줄(사용자 2026-10-13: 옵션 묶음에서도) */
@@ -242,7 +244,7 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
                                      title="수량 단위 — 예: MD·식·개월·대 (비우면 ea)" onChange={(e) => setLine(idx, { unit: e.target.value })} />
                             </span>
                           </div>
-                          <div className={ROW_LABEL}>
+                          {!free && <div className={ROW_LABEL}>
                             <span>{en ? (months ? "Price ($ / month)" : "Price ($)") : months ? (oneTime ? "금액 (1회)" : "월 단가") : "단가"}</span>
                             {en ? (
                               <input key={`usd-${l.id}-${draftVer}`} className={cn(ROW_FIELD, "w-[140px] text-right", unit == null && "border-amber-500")}
@@ -254,8 +256,8 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
                                      value={l.unit_price ?? ""} aria-label="단가" placeholder={months ? "월 납입금 또는 1회 지불" : "단가"} disabled={busy}
                                      onChange={(e) => setLine(idx, { unit_price: Number(e.target.value.replace(/,/g, "")) || null })} />
                             )}
-                          </div>
-                          {b.type === "option" && (
+                          </div>}
+                          {b.type === "option" && !free && (
                             // 옵션 줄은 Total 반영/미반영(사용자 2026-10-19, 미반영이어도 공급가액은 견적서에 보인다)
                             <div className={ROW_LABEL}>
                               <span>Total</span>
@@ -269,13 +271,13 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
                               </select>
                             </div>
                           )}
-                          <div className={cn(ROW_LABEL, "ml-auto flex-1 items-end")}>
+                          {!free && <div className={cn(ROW_LABEL, "ml-auto flex-1 items-end")}>
                             <span>{en ? "Amount" : "금액"}{months ? <span className="font-normal text-foreground-subtle"> · {oneTime ? "1회 지불" : `× ${months}개월`}</span> : null}
                               {b.type === "option" && !l.in_total && <span className="font-normal text-foreground-subtle"> · 미반영, 합계 제외</span>}</span>
                             <span className={cn(AMOUNT_BOX, b.type === "option" && !l.in_total && "text-foreground-subtle")}>
                               {!en && l.unit_price == null ? <span className="text-[12.5px] font-medium text-foreground-subtle">단가를 넣으면 계산</span> : amount}
                             </span>
-                          </div>
+                          </div>}
                         </div>
                         <div className="mt-2.5 flex flex-wrap items-start gap-2">
                           <LineArea className={cn(HEAD_AREA, "min-w-0 flex-1 basis-64 text-[12.5px]")} value={l.remark ?? ""} aria-label="비고" disabled={busy}
@@ -359,15 +361,15 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
                     naming ? "border-accent bg-accent/10 text-accent" : "border-border bg-surface-raised text-foreground-muted hover:text-foreground")}>
             + 묶음
           </button>
-          <button type="button" disabled={busy || hasOption || blocks.length >= 12} onClick={() => addBlock("option")}
+          {!free && <button type="button" disabled={busy || hasOption || blocks.length >= 12} onClick={() => addBlock("option")}
                   title={hasOption ? "< OPTION > 묶음은 하나만 둡니다" : "줄마다 Total 반영/미반영을 고르는 묶음 — 반영한 줄만 옵션 Sub total·Total 에 포함"}
                   className="inline-flex h-8 items-center gap-1.5 rounded-full border border-border bg-surface-raised px-3 text-[12.5px] font-semibold text-foreground-muted hover:text-foreground disabled:opacity-40">
             <span className="h-1.5 w-1.5 rounded-full bg-cyan-600" aria-hidden /> OPTION 묶음
-          </button>
-          <button type="button" disabled={busy || !!nego} onClick={() => onChange({ nego: { mode: "amount", value: null, label: "" } })}
+          </button>}
+          {!free && <button type="button" disabled={busy || !!nego} onClick={() => onChange({ nego: { mode: "amount", value: null, label: "" } })}
                   className="inline-flex h-8 items-center gap-1.5 rounded-full border border-border bg-surface-raised px-3 text-[12.5px] font-bold text-red-700 hover:bg-red-500/5 disabled:opacity-40 dark:text-red-300">
             <span className="h-1.5 w-1.5 rounded-full bg-red-600" aria-hidden /> NEGO (할인)
-          </button>
+          </button>}
         </div>
         {naming && (
           <div className="flex flex-wrap items-center gap-2 rounded-xl border border-accent/30 bg-accent/[0.03] p-2.5">
@@ -386,7 +388,7 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
 
       {children}
 
-      {nego && (
+      {nego && !free && (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/[0.04] p-2.5 text-[12.5px]">
           <span className="rounded bg-red-500/12 px-1.5 py-0.5 text-[11px] font-semibold text-red-700 dark:text-red-300">NEGO(할인)</span>
           <div className="flex overflow-hidden rounded-md border border-border text-[12px]">

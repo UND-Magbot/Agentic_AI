@@ -170,7 +170,7 @@ def _kpi(data: dict, t: str, today: dt.date) -> str:
     out.append(f"올해 매출(출하일 기준): {_money(k['sales'])}")
     if k.get("won_estimated"):
         out.append(f"(수주일이 없는 예전 건 {k['won_estimated']}건은 첫 계산서·출하·견적일로 대신 셌습니다)")
-    out.append("\n자세한 내용은 [제품 판매 관리] 탭 위의 '분기별 수주금액' 카드에서도 볼 수 있습니다.")
+    out.append("\n자세한 내용은 [제품 영업 건 관리] 탭 위의 '분기별 수주금액' 카드에서도 볼 수 있습니다.")
     return "\n".join(out)
 
 
@@ -234,7 +234,7 @@ def _count(data: dict, biz: str | None) -> str:
     for i, r in enumerate(active[:MAX_LIST], 1):
         out.append(f"{i}. {_line(r)}  {_open(r)}")
     if len(active) > MAX_LIST:
-        out.append(f"… 외 {len(active) - MAX_LIST}건 — [제품 판매 관리] 탭 목록에서 모두 볼 수 있습니다.")
+        out.append(f"… 외 {len(active) - MAX_LIST}건 — [제품 영업 건 관리] 탭 목록에서 모두 볼 수 있습니다.")
     return "\n".join(out)
 
 
@@ -257,7 +257,7 @@ async def _owner(db: AsyncSession, rows: list[dict], name: str) -> str:
     mine = [r for r in rows if str(r.get("owner") or "").strip().lower() in names]
     if not mine:
         return (f"'{name}' 담당으로 기록된 영업 건이 없습니다. 담당자 이름(예: 실명·영문 이름)을 다시 말씀해 주세요. "
-                "[제품 판매 관리] 탭의 담당자 거르기로도 볼 수 있습니다.")
+                "[제품 영업 건 관리] 탭의 담당자 거르기로도 볼 수 있습니다.")
     active = [r for r in mine if r["stage"] not in _DONE_STAGES]
     done = len(mine) - len(active)
     who = name + (f"({'·'.join(sorted(inis))})" if inis else "")

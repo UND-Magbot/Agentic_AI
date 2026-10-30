@@ -67,15 +67,15 @@ export function SnButton({ count, need, open, disabled, onClick, tall }: {
   );
 }
 
-type Draft = { key: string; id?: number; part_name: string; serial: string; maker: string; purpose: string; months: string; note: string;
+type Draft = { key: string; id?: number; part_name: string; serial: string; maker: string; purpose: string; note: string;
                locked: boolean };
 
 let seq = 0;
 const blank = (ln: SnLine, purpose: string): Draft => ({ key: `n${++seq}`, part_name: ln.part, serial: "", maker: "UND", purpose,
-                                                        months: ln.suggest_months == null ? "" : String(ln.suggest_months), note: "",
+                                                        note: "",
                                                         locked: false });
 const fromUnit = (u: ProductUnit): Draft => ({ key: `u${u.id}`, id: u.id, part_name: u.part_name, serial: u.serial, maker: u.maker,
-                                               purpose: u.purpose, months: u.warranty_months == null ? "" : String(u.warranty_months),
+                                               purpose: u.purpose,
                                                note: u.note, locked: u.shipment_index != null });
 
 /** 품목 줄 하나의 S/N 칸 — 출하 수량만큼. 저장하면 이 줄만 바뀐다(다른 줄 S/N은 그대로). */
@@ -125,7 +125,7 @@ export function SnPanel({ dealId, view, line, need, editIndex, bindIndex, bindEx
     setError(null);
     try {
       const toUnit = (d: Draft) => ({ id: d.id ?? null, part_name: d.part_name, serial: d.serial, maker: d.maker, purpose: d.purpose,
-                                       warranty_months: d.months.trim() === "" ? null : Number(d.months), note: d.note });
+                                       note: d.note });
       const units = [
         ...[...earlier, ...waiting].map((u) => toUnit(fromUnit(u))),
         ...rows.filter((d) => d.serial.trim()).map(toUnit),
@@ -136,7 +136,7 @@ export function SnPanel({ dealId, view, line, need, editIndex, bindIndex, bindEx
                                shipment_index: bindIndex ?? null, shipment_expect: bindIndex != null ? bindExpect ?? null : null }),
       });
       const d = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(typeof d?.detail === "string" ? d.detail : Array.isArray(d?.detail) ? "입력값을 확인해 주세요(무상 기간은 0~120개월)." : "저장하지 못했습니다.");
+      if (!r.ok) throw new Error(typeof d?.detail === "string" ? d.detail : Array.isArray(d?.detail) ? "입력값을 확인해 주세요." : "저장하지 못했습니다.");
       onSaved(d as IssueUnits);
       onClose();
     } catch (e) {
@@ -152,7 +152,8 @@ export function SnPanel({ dealId, view, line, need, editIndex, bindIndex, bindEx
       <div className="mb-3 flex flex-wrap items-baseline gap-x-2 gap-y-1">
         <b className="text-[13.5px] font-extrabold">S/N 등록</b>
         <span className="text-[12px] text-foreground-muted">이 출하 {need}개 중 <b className={filled >= need ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>{Math.min(filled, need)}개</b> 적음</span>
-        {line.suggest_months != null && <span className="text-[11.5px] text-foreground-subtle">무상 기간 기본 {line.suggest_months}개월</span>}
+        {/* 무상 기간은 모든 제품 출하일부터 1년 고정(사용자 2026-10-30) */}
+        <span className="text-[11.5px] text-foreground-subtle">무상 기간 출하일부터 1년</span>
         <span className="ml-auto text-[11.5px] text-foreground-subtle">S/N이 없는 품목은 &lsquo;특주&rsquo;처럼 적습니다</span>
       </div>
       {earlier.length > 0 && (
@@ -188,7 +189,7 @@ export function SnPanel({ dealId, view, line, need, editIndex, bindIndex, bindEx
                 <Icon name="trash" className="h-4 w-4" />
               </button>
             </div>
-            <div className="ml-[34px] mt-2.5 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_76px] gap-2.5 @md:mr-[50px] @md:grid-cols-[100px_104px_76px_minmax(0,1fr)]">
+            <div className="ml-[34px] mt-2.5 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-2.5 @md:mr-[50px] @md:grid-cols-[100px_104px_minmax(0,1fr)]">
               <label className={ROW_LABEL}><span>제조사</span>
                 <input className={HEAD_FIELD} value={d.maker} maxLength={40} list="sn-makers" aria-label={`${i + 1}번 제조사`} disabled={busy}
                        onChange={(e) => setRow(d.key, { maker: e.target.value })} />
@@ -199,11 +200,7 @@ export function SnPanel({ dealId, view, line, need, editIndex, bindIndex, bindEx
                   {UNIT_STATES.map((s) => <option key={s.code} value={s.code} title={s.en}>{s.code} · {s.label}</option>)}
                 </select>
               </label>
-              <label className={ROW_LABEL}><span>무상(개월)</span>
-                <input className={cn(HEAD_FIELD, "text-right")} value={d.months} inputMode="numeric" placeholder="미정" aria-label={`${i + 1}번 무상 기간(개월)`} disabled={busy}
-                       onChange={(e) => setRow(d.key, { months: e.target.value.replace(/\D/g, "").slice(0, 3) })} />
-              </label>
-              <label className={cn(ROW_LABEL, "col-span-3 @md:col-span-1")}><span>메모</span>
+              <label className={cn(ROW_LABEL, "col-span-2 @md:col-span-1")}><span>메모</span>
                 <input className={HEAD_FIELD} value={d.note} maxLength={300} aria-label={`${i + 1}번 메모`} disabled={busy}
                        onChange={(e) => setRow(d.key, { note: e.target.value })} />
               </label>

@@ -88,15 +88,25 @@ def overdue(d: dict, today: dt.date) -> list[dict[str, Any]]:
     return out
 
 
+def free(d: dict) -> bool:
+    """받을 돈이 없는 무상 대여 건(사용자 2026-10-30) — 대여 견적 합계 0원(물류비·설치비도 우리가 부담).
+    거래명세서·결제 조건·입금 확인 없이 수주 → 바로 출하, 목록 금액은 '무상'."""
+    q = d.get("quote") or {}
+    return q.get("biz") == "rental" and q.get("amount") is not None and float(q["amount"]) == 0
+
+
 def steps(d: dict) -> list[dict[str, Any]]:
     """화면의 진행 단계 — [{key, label, done, ready}]. ready = 지금 할 수 있음.
-    거래명세서 → 결제 조건 → 출하·회차 입금 확인(서로 순서 없음 — 출하는 입금 확인 없이도, 사용자 2026-10-08)."""
+    거래명세서 → 결제 조건 → 출하·회차 입금 확인(서로 순서 없음 — 출하는 입금 확인 없이도, 사용자 2026-10-08).
+    무상 대여 건은 출하 하나뿐."""
     if d.get("kind") not in ("quote", "recommend") or not d.get("won") or d.get("dropped"):
         return []
     # 엑셀에서 옮긴 건은 예전 방식으로 이미 처리 중·처리 끝 — 새 절차는 여기서 명세서·결제 조건을 시작한 경우만
     if d.get("imported") and not (d.get("statement") or d.get("pay_case")):
         return []
     shipped = bool(d.get("shipments")) or bool(d.get("shipped_note"))
+    if free(d):
+        return [{"key": "ship", "label": "납품(출하)", "done": shipped, "ready": not shipped}]
     has_st, has_case = bool(d.get("statement")), bool(d.get("pay_case"))
     out = [{"key": "statement", "label": "거래명세서 발급", "done": has_st, "ready": not has_st},
            {"key": "case", "label": "결제 조건", "done": has_case, "ready": has_st and not has_case},

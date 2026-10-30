@@ -154,7 +154,7 @@ async def db_cases() -> None:
 
             out = await ask(db, f"{CUST2} 영업 건 열어줘")
             check("건을 찾았습니다" in out and out.count("[건 열기]") == 3, "여러 건 → 후보마다 버튼", out)
-            check(f"tab=rentals&deal={c}" in out, "대여 건은 대여 관리 탭으로", out)
+            check(f"tab=deals&deal={c}" in out, "대여 건도 제품 영업 건 관리 탭으로(사용자 2026-10-30)", out)
             check("드랍한 건" in out, "드랍 건 안내", out)
 
             out = await ask(db, f"{CUST2} 그리퍼 견적서 수정")
@@ -191,7 +191,7 @@ async def db_cases() -> None:
             # 이동 버튼 주소는 모두 화면이 아는 주소만
             for t in (f"{CUST} 견적서 수정", f"{CUST2} 영업 건 열어줘", "QT-ZZ20261002-01 출하 기록 작성"):
                 for _, href in BTN.findall(await ask(db, t)):
-                    check(bool(re.fullmatch(r"/proposals/recommend\?tab=(quote|deals|rentals|order)&(quote|deal|new)=\w+(&focus=ship)?", href)),
+                    check(bool(re.fullmatch(r"/proposals/recommend\?tab=(quote|deals|order)&(quote|deal|new)=\w+(&focus=ship)?", href)),
                           f"버튼 주소 형식 {href}", href)
         finally:
             await cleanup(db)

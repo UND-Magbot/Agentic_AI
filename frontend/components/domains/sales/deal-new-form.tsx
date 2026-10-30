@@ -22,9 +22,10 @@ const num = (s: string) => {
   return s.trim() && Number.isFinite(n) ? n : null;
 };
 
-export function DealNewForm({ owners, biz = "sale", onClose, onCreated }: {
+export function DealNewForm({ owners, biz, onClose, onCreated }: {
   owners: string[];
-  /** rental = [제품 대여 관리]에서 연 창 — 대여 개월 수·시작일을 받아 대여 건으로(사용자 2026-10-22) */
+  /** rental = 대여 건으로 고정(대여 개월 수·시작일, 사용자 2026-10-22) · sale = 판매 고정 · 비우면 창에서 판매/대여 고른다
+   *  (사용자 2026-10-30: 대여 건도 제품 영업 건 관리에서 등록) */
   biz?: DealBiz;
   onClose: () => void;
   onCreated: (row: DealRow) => void;
@@ -42,7 +43,8 @@ export function DealNewForm({ owners, biz = "sale", onClose, onCreated }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [needIni, setNeedIni] = useState(false);
-  const rental = biz === "rental";
+  const [kind, setKind] = useState<DealBiz>(biz ?? "sale");
+  const rental = kind === "rental";
   const [months, setMonths] = useState("");
   const [rentStart, setRentStart] = useState("");
 
@@ -84,6 +86,16 @@ export function DealNewForm({ owners, biz = "sale", onClose, onCreated }: {
                   className="grid h-8 w-8 place-items-center rounded-lg text-foreground-muted hover:bg-foreground/8">✕</button>
         </div>
 
+        {!biz && (
+          <div role="group" aria-label="판매·대여" className="mb-3 inline-flex overflow-hidden rounded-lg border border-border text-[13px]">
+            {(["sale", "rental"] as const).map((k) => (
+              <button key={k} type="button" aria-pressed={kind === k} onClick={() => setKind(k)}
+                      className={cn("px-4 py-1.5 font-semibold", kind === k ? (k === "rental" ? "bg-emerald-600 text-white" : "bg-accent text-white") : "text-foreground-muted hover:bg-foreground/5")}>
+                {k === "sale" ? "제품 판매" : "제품 대여"}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="grid gap-3 text-[13px] md:grid-cols-2">
           <Field label="고객사 *"><input value={customer} onChange={(e) => setCustomer(e.target.value)} className={INPUT} /></Field>
           <Field label="고객 담당자"><input value={contact} onChange={(e) => setContact(e.target.value)} className={INPUT} placeholder="예: 박기영 이사" /></Field>

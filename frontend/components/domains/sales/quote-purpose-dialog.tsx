@@ -7,7 +7,7 @@ import { useEffect } from "react";
 import type { QuotePurpose } from "@/lib/shared/product-recommend";
 
 const CHOICES: { key: QuotePurpose; title: string; desc: string; tone: string }[] = [
-  { key: "sale", title: "제품 판매", desc: "지금까지의 견적서 — 발행하면 [제품 판매 관리]로 이어집니다.",
+  { key: "sale", title: "제품 판매", desc: "지금까지의 견적서 — 발행하면 [제품 영업 건 관리]로 이어집니다.",
     tone: "hover:border-violet-500/60 hover:bg-violet-500/5" },
   { key: "rental", title: "제품 대여",
     desc: "계약 개월 수를 적으면 Total 옆에 월 납입금이 들어가고, 중도 해지 문구가 붙습니다. 발행하면 [제품 대여 관리]로 이어집니다.",

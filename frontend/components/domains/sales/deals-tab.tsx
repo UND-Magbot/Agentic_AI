@@ -6,10 +6,10 @@ import { useCallback, useEffect, useState } from "react";
 import { DealList } from "@/components/domains/sales/deal-list";
 import type { DealBiz, DealListData } from "@/lib/shared/sales-deals";
 
-export function DealsTab({ biz = "sale", openDealId = null, onMeeting, onOrder, onQuote }: {
+export function DealsTab({ biz, openDealId = null, onMeeting, onOrder, onQuote }: {
   /** 열자마자 상세를 띄울 건(제품·A/S 탭에서 넘어올 때) */
   openDealId?: number | null;
-  /** sale = 제품 판매 관리, rental = 제품 대여 관리(대여 견적서로 낸 건, 사용자 2026-10-22) */
+  /** 비우면 판매·대여 모두(제품 영업 건 관리 — 사용자 2026-10-30: 대여도 여기서) · sale·rental = 그것만 */
   biz?: DealBiz;
   onMeeting?: (proposalId: number) => void; onOrder?: (dealId: number) => void; onQuote?: (quoteId: number) => void;
 }) {
@@ -18,7 +18,7 @@ export function DealsTab({ biz = "sale", openDealId = null, onMeeting, onOrder, 
 
   const load = useCallback(async () => {
     try {
-      const r = await fetch(`/api/sales-deals?biz=${biz}`, { cache: "no-store" });
+      const r = await fetch(`/api/sales-deals${biz ? `?biz=${biz}` : ""}`, { cache: "no-store" });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(typeof d?.detail === "string" ? d.detail : "제품 영업 건을 불러오지 못했습니다.");
       setData(d as DealListData);
@@ -30,7 +30,7 @@ export function DealsTab({ biz = "sale", openDealId = null, onMeeting, onOrder, 
 
   useEffect(() => {
     let alive = true;
-    fetch(`/api/sales-deals?biz=${biz}`, { cache: "no-store" })
+    fetch(`/api/sales-deals${biz ? `?biz=${biz}` : ""}`, { cache: "no-store" })
       .then(async (r) => {
         const d = await r.json().catch(() => ({}));
         if (!alive) return;

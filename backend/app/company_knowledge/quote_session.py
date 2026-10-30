@@ -38,10 +38,19 @@ FORM_FIELDS = {   # 대화·직접 수정으로 바꿀 수 있는 머리 칸 →
     "purpose": ("목적", "purpose"), "rental_months": ("대여 개월 수", "number"), "rental_start": ("대여 시작일", "date"),
     # 부가세 별도 / 포함(사용자 2026-10-28 — 공공기관 견적은 부가세 포함) — 국내 견적만. 포함이면 견적서 단가부터 × 1.1
     "vat": ("부가세", "vat"),
+    # 유상 / 무상 대여(사용자 2026-10-30 — 대여는 대부분 무상) — 무상이면 단가·금액·부가세·NEGO·납품 비용·결제조건 없이
+    "rental_fee": ("대여 요금", "rental_fee"),
 }
 PURPOSES = {"sale": "제품 판매", "rental": "제품 대여"}
+RENTAL_FEES = {"paid": "유상 대여", "free": "무상 대여"}
 VAT_MODES = {"excluded": "VAT 별도", "included": "VAT 포함"}
 VAT_RATE = Decimal("0.1")
+
+
+def free_rental(state: dict[str, Any]) -> bool:
+    """무상 대여 견적서인지(사용자 2026-10-30) — 받는 금액이 없어 단가·합계는 0, 견적서엔 '무상'으로 찍는다."""
+    f = state.get("form") or {}
+    return f.get("purpose") == "rental" and f.get("rental_fee") == "free"
 
 
 def vat_included(state: dict[str, Any]) -> bool:
@@ -69,6 +78,8 @@ def nego_supply(state: dict[str, Any], cut: float) -> float:
 def total_text(state: dict[str, Any]) -> str:
     """대화 답의 합계 글 — '12,000,000원(VAT 별도)' · 부가세 포함이면 견적서에 찍힐 합계와 공급가액 둘 다."""
     sub = subtotal(state)
+    if free_rental(state) and not sub:
+        return "**무상 대여**"
     if not vat_included(state):
         return f"**{sub:,}원**(VAT 별도)"
     try:
@@ -204,8 +215,10 @@ def billable(state: dict[str, Any]) -> list[dict[str, Any]]:
     """합계에 들어가는 줄 — 옵션 묶음 줄은 [반영](in_total)한 것만(사용자 2026-10-19)."""
     ty = _types(state)
     auto = auto_block(state)
+    free = free_rental(state)                      # 무상 대여 — 품목은 0원, 물류비·설치 인건비만 받는다(사용자 2026-10-30)
     return [ln for ln in state["lines"] if ln.get("kind") != "note"
-            and (ty.get(block_of(ln, ty, auto)) != "option" or ln.get("in_total"))]
+            and (ty.get(block_of(ln, ty, auto)) != "option" or ln.get("in_total"))
+            and (not free or ln.get("kind") in ("work", "freight"))]
 
 
 def nego_amount(state: dict[str, Any], base: float) -> float:
@@ -254,6 +267,8 @@ MANUAL_COMMENTS = "www.magbot.kr\n- 제품 공급 건"
 MANUAL_COMMENTS_EN = "www.magbot.kr\nProduct Supply"           # 해외 기준 견적서처럼 줄머리 기호 없이
 RENTAL_COMMENTS = "www.magbot.kr\n- 제품 대여 건"
 RENTAL_COMMENTS_EN = "www.magbot.kr\nProduct Rental"
+FREE_RENTAL_COMMENTS = "www.magbot.kr\n- 제품 무상 대여 건"
+FREE_RENTAL_COMMENTS_EN = "www.magbot.kr\nFree Product Rental"
 # 대여 견적서 기본 주석 — 방역 로봇 3년 렌탈 견적서(Lu260309)의 중도 해지 문구
 RENTAL_NOTE = ("* 중도 해지 시, 해지일의 익월부터 잔여 계약기간까지 발생할 예정이었던 로봇 렌탈 비용은\n"
                "잔여 개월 수 × 월 납입료를 기준으로 위약금을 산정하며, 계약자는 해당 위약금을 일시불로 납부하여야 합니다.")
@@ -320,7 +335,9 @@ def clean_date(v: Any) -> str:
 def term_defaults(state: dict[str, Any], lang: str) -> dict[str, str]:
     """언어별 견적 조건 기본 문구(Comments·납기·납품장소·결제조건) — 수기 견적의 Comments 는 제품 공급 문구."""
     d = {k: qx.DEFAULT_TERMS[lang][k] for k in ("comments", "delivery", "place", "payment")}
-    if is_rental(state):
+    if free_rental(state):
+        d["comments"] = FREE_RENTAL_COMMENTS_EN if lang == "en" else FREE_RENTAL_COMMENTS
+    elif is_rental(state):
         d["comments"] = RENTAL_COMMENTS_EN if lang == "en" else RENTAL_COMMENTS
     elif state.get("manual"):
         d["comments"] = MANUAL_COMMENTS_EN if lang == "en" else MANUAL_COMMENTS
@@ -358,7 +375,11 @@ def draft_state(accessories: dict[str, Any], *, model: str, payload_kg: float | 
             f[k] = v
     if f.get("purpose") not in PURPOSES:
         f["purpose"] = "sale"
-    if f["purpose"] == "rental":            # 대여 견적서(사용자 2026-10-22) — 대여 문구·중도 해지 주석
+    if f.get("rental_fee") not in RENTAL_FEES:
+        f.pop("rental_fee", None)
+    if f["purpose"] == "rental" and f.get("rental_fee") == "free":   # 무상 대여 — 월 납입료 위약금 주석 없음
+        f.update(comments=FREE_RENTAL_COMMENTS, foot_notes=[])
+    elif f["purpose"] == "rental":            # 대여 견적서(사용자 2026-10-22) — 대여 문구·중도 해지 주석
         f.update(comments=RENTAL_COMMENTS, foot_notes=[RENTAL_NOTE])
     return {"model": model, "payload_kg": payload_kg, "applicable": bool(accessories.get("applicable")) or manual, "form": f,
             "lines": lines, "options": options, "work": {"needed": None, "people": None, "days": None, "rate": None},
@@ -482,6 +503,8 @@ def next_question(state: dict[str, Any]) -> dict[str, Any] | None:
     if state.get("manual") and not any(ln["kind"] in ("product", "extra", "option") for ln in state["lines"]):
         return {"id": "items", "text": "견적에 넣을 품목을 알려 주세요 — 품명·수량·단가. 예: MG10 그리퍼 2개 150만원. "
                                        "왼쪽 [+ 항목]이나 [단가표에서 추가]로 직접 넣어도 됩니다."}
+    if free_rental(state):        # 무상 대여 — 품목 단가·추가 항목 금액은 묻지 않는다(물류비·설치비는 받을 수 있어 납품 방식은 묻는다)
+        asked = asked | {"extra"}
     if not spec:
         return {"id": "delivery", "text": DELIVERY_QUESTION,
                 "choices": [f"{k}. {v['label']}" for k, v in DELIVERY.items()]}
@@ -526,17 +549,20 @@ def _usd_missing(state: dict[str, Any]) -> list[dict[str, Any]]:
 
 def subtotal_usd(state: dict[str, Any], *, nego: bool = True) -> float | None:
     """해외 견적 달러 합계(VAT 별도, 옵션 묶음 제외, NEGO 차감) — 달러 단가가 없는 줄이 있으면 None."""
-    if state["form"].get("lang") != "en" or _usd_missing(state):
+    if state["form"].get("lang") != "en":
         return None
     fx = state["form"].get("fx_rate")
+    if (any(usd_price(ln, fx) is None for ln in billable(state)) if free_rental(state) else _usd_missing(state)):
+        return None
     f = state["form"]
     base = round(sum((ln.get("qty") or 0) * usd_price(ln, fx) * month_factor(f, ln) for ln in billable(state)), 2)
-    return round(base - (nego_amount(state, base) if nego else 0), 2)
+    return round(base - (nego_amount(state, base) if nego and not free_rental(state) else 0), 2)
 
 
 def problems(state: dict[str, Any]) -> list[str]:
     """발행을 막는 이유(C13 — 미정·0원 금지, 필수 머리 값)."""
     out = []
+    free = free_rental(state)                               # 무상 대여 — 품목 단가·NEGO·0원 합계는 보지 않는다(사용자 2026-10-30)
     if not state.get("applicable") and not state.get("manual"):
         out.append("유선 자동 툴체인저(TCC1~TCV4) 구성이 아니라 제품 단가가 없습니다 — 별도 견적 필요")
     for ln in state["lines"]:
@@ -546,6 +572,8 @@ def problems(state: dict[str, Any]) -> list[str]:
             out.append(f"{ln['name']} — 수량 미정")
         elif ln.get("conditional") and not ln.get("confirmed"):
             out.append(f"{ln['name']} — 조건부 수량 {ln['qty']}(근거 확인 후 [수량 확인] 또는 수량 수정)")
+        elif free:
+            continue
         elif state["form"].get("lang") == "en":
             if usd_price(ln, state["form"].get("fx_rate")) is None:
                 out.append(f"{ln['name']} — 달러 단가 없음(직접 적거나 환율 입력)")
@@ -576,16 +604,16 @@ def problems(state: dict[str, Any]) -> list[str]:
         w = state["work"]
         if spec["work"] and not (w.get("people") and w.get("days") and w.get("rate")):
             out.append("설치 인건비 — 인원·일수·1인 1일 단가 필요")
-    n = state.get("nego") or {}
+    n = {} if free else state.get("nego") or {}          # 무상 대여 — NEGO 없음, 합계 0원(물류비 없음)이어도 발행
     if n.get("mode") == "percent" and isinstance(n.get("value"), (int, float)) and n["value"] >= 100:
         out.append("NEGO 할인율은 100% 미만")
-    elif nego_amount(state, 1) > 0 and n.get("mode") != "percent":
+    elif n and nego_amount(state, 1) > 0 and n.get("mode") != "percent":
         base = (subtotal_usd(state, nego=False) if f.get("lang") == "en" else subtotal(state, nego=False)) or 0
         if base and n["value"] >= base:
             out.append("NEGO 할인 금액이 합계보다 큽니다")
     # 0원 이하 견적은 발행하지 않는다(검증 QT-005, 2026-10-15)
     tot = subtotal_usd(state) if f.get("lang") == "en" else subtotal(state)
-    if state["lines"] and tot is not None and tot <= 0 and not any("NEGO" in p for p in out):
+    if state["lines"] and tot is not None and tot <= 0 and not free and not any("NEGO" in p for p in out):
         out.append("합계가 0원 이하입니다 — 단가·NEGO 를 확인해 주세요")
     if f.get("lang") == "en":
         if not f.get("fx_rate") and any(ln["kind"] in ("work", "freight") for ln in state["lines"]):
@@ -596,9 +624,9 @@ def problems(state: dict[str, Any]) -> list[str]:
 
 
 def subtotal(state: dict[str, Any], *, nego: bool = True) -> int:
-    """원화 합계(VAT 별도) — 옵션 묶음 줄은 빼고, 국내 견적이면 NEGO 를 뺀다."""
+    """원화 합계(VAT 별도) — 옵션 묶음 줄은 빼고, 국내 견적이면 NEGO 를 뺀다. 무상 대여는 물류비·설치 인건비만."""
     base = sum((ln.get("qty") or 0) * (ln.get("unit_price") or 0) * month_factor(state["form"], ln) for ln in billable(state))
-    cut = nego_supply(state, nego_amount(state, base)) if nego and state["form"].get("lang") != "en" else 0
+    cut = nego_supply(state, nego_amount(state, base)) if nego and state["form"].get("lang") != "en" and not free_rental(state) else 0
     return int(base - cut)
 
 
@@ -687,6 +715,9 @@ def apply_ops(state: dict[str, Any], ops: Any, message: str | None) -> tuple[dic
             elif typ == "vat":
                 if v not in VAT_MODES:
                     continue
+            elif typ == "rental_fee":
+                if v not in RENTAL_FEES:
+                    continue
             elif typ == "date":
                 v = clean_date(v)
                 if not v:
@@ -706,8 +737,17 @@ def apply_ops(state: dict[str, Any], ops: Any, message: str | None) -> tuple[dic
                         and re.sub(r"\D", "", v) not in re.sub(r"\D", "", message)):
                     continue                                # 말에 없는 계좌번호는 넣지 않는다
             prev = st["form"].get(field)
+            was = copy.deepcopy(st)
             st["form"][field] = v
-            if field == "purpose" and prev != v:
+            if field in ("purpose", "rental_fee") and free_rental(was) != free_rental(st):
+                # 유상 ↔ 무상 대여(사용자 2026-10-30) — 기본 Comments 를 바꾸고, 무상이면 월 납입료 위약금 주석을 뺀다(유상이면 다시)
+                lang = st["form"].get("lang") or "ko"
+                if (st["form"].get("comments") or "") == term_defaults(was, lang)["comments"]:
+                    st["form"]["comments"] = term_defaults(st, lang)["comments"]
+                notes = [x for x in (st["form"].get("foot_notes") or []) if x not in (RENTAL_NOTE, RENTAL_NOTE_EN)]
+                paid = is_rental(st) and not free_rental(st)
+                st["form"]["foot_notes"] = [*notes, RENTAL_NOTE_EN if lang == "en" else RENTAL_NOTE][:FOOT_NOTES_MAX] if paid else notes
+            elif field == "purpose" and prev != v:
                 # 판매 ↔ 대여 — 기본 문구였던 Comments·주석만 바꾼다(담당자가 고친 글은 그대로)
                 lang = st["form"].get("lang") or "ko"
                 was = {**st, "form": {**st["form"], "purpose": prev}}
@@ -725,7 +765,7 @@ def apply_ops(state: dict[str, Any], ops: Any, message: str | None) -> tuple[dic
                 swap = RENTAL_NOTE_EN if v == "en" else RENTAL_NOTE     # 대여 중도 해지 주석도 그 언어로
                 st["form"]["foot_notes"] = [swap if x in (RENTAL_NOTE, RENTAL_NOTE_EN) else x
                                             for x in (st["form"].get("foot_notes") or [])]
-            done.append(f"{FORM_FIELDS[field][0]}: {VAT_MODES[v] if typ == 'vat' else v}")
+            done.append(f"{FORM_FIELDS[field][0]}: {VAT_MODES[v] if typ == 'vat' else RENTAL_FEES[v] if typ == 'rental_fee' else v}")
         elif kind == "delivery":
             try:
                 case = int(op.get("case"))
@@ -779,7 +819,8 @@ def apply_ops(state: dict[str, Any], ops: Any, message: str | None) -> tuple[dic
             usd = usd if usd is not None and usd > 0 else None
             if price is not None and price <= 0:
                 price = None
-            if not name or (price is None and usd is None) or not qty or qty < 1:
+            # 무상 대여는 단가 없이도 줄을 넣는다(사용자 2026-10-30)
+            if not name or (price is None and usd is None and not free_rental(st)) or not qty or qty < 1:
                 continue
             blk = target_block(op)
             if blk is None and made and message is not None:
@@ -805,7 +846,7 @@ def apply_ops(state: dict[str, Any], ops: Any, message: str | None) -> tuple[dic
             by_id[ln["id"]] = ln
             st["asked"] = list({*st.get("asked", []), "extra"})
             is_opt = _types(st).get(blk or MAIN_BLOCK) == "option"
-            done.append(("옵션 추가" if is_opt else "추가") + f": {name} {int(qty)} × " + (f"{price:,.0f}원" if price else f"${usd:,.2f}")
+            done.append(("옵션 추가" if is_opt else "추가") + f": {name} {int(qty)} × " + (f"{price:,.0f}원" if price else f"${usd:,.2f}" if usd else "무상")
                         + ((" (Total 반영)" if ln.get("in_total") else " (Total 미반영)") if is_opt else ""))
         elif kind == "update" and op.get("line") in by_id:
             ln = by_id[op["line"]]
@@ -1072,6 +1113,8 @@ ops 종류:
    answer 로 새 은행·계좌번호·예금주를 물어본다. 계좌 변경을 거절하거나 내부 정책·담당 부서 확인 같은 말을 지어내지 않는다.)
 - {"op":"set","field":<purpose|rental_months|rental_start>,"value":...}  — 판매/대여 견적서: purpose 는 "sale"(판매) 또는 "rental"(대여·렌탈),
   rental_months 는 대여 계약 개월 수(정수, '3년'이면 36), rental_start 는 대여 시작일(YYYY-MM-DD) — [말]에 있을 때만.
+- {"op":"set","field":"rental_fee","value":"free"|"paid"}  — 대여 견적서의 무상/유상: '무상 대여'·'무료로 빌려줌'이면 "free",
+  '유상 대여'·'렌탈료 받음'이면 "paid". 무상이면 단가를 묻지 않는다.
 - {"op":"set","field":"vat","value":"included"|"excluded"}  — 부가세 포함/별도 견적서(국내만): '부가세 포함으로'·'VAT 포함 견적'·'공공기관용'
   이면 "included", '부가세 별도로' 면 "excluded". 단가는 공급가액 그대로 두고(바꾸지 않는다) 견적서에 찍을 때만 부가세 10%를 더한다.
 - {"op":"delivery","case":1|2|3|4|5,"freight":물류비}  — 납품 방식: 1 택배 발송(품목 그대로), 2 화물 직납(물류비 추가),
@@ -1185,7 +1228,7 @@ def render_lines(state: dict[str, Any], lang: str, fx_rate: float | None) -> lis
     # NEGO 는 담당자가 적은 금액 그대로 찍는다 — 부가세 포함 견적서여도 × 1.1 하지 않는다(사용자 2026-10-29). % 는 공급가액 합계 기준.
     # supply_unit(영업 건·명세서용)은 부가세 포함 견적서면 ÷ 1.1(nego_supply)
     base = round(sum(r["qty"] * r.get("supply_unit", r["unit_price"]) * r.get("months", 1) for r in billed), 2)
-    cut = nego_amount(state, base)
+    cut = 0 if free_rental(state) else nego_amount(state, base)
     if cut > 0:
         out.append({"row": "nego", "key": "nego", "commodity": "", "desc": nego_label(state), "qty": 1,
                     "unit_price": -cut, "amount": -cut, "supply_unit": -nego_supply(state, cut), "remark": ""})
@@ -1204,6 +1247,7 @@ def _item_rows(state: dict[str, Any], lines: list[dict[str, Any]], lang: str, fx
     if auto_last:
         order.update(freight=5, work=6)
     out = []
+    free = free_rental(state)
     for ln in sorted(lines, key=lambda x: order.get(x["kind"], 4)):     # 서술형 줄(note)은 추가 항목과 적은 순서대로
         if ln["kind"] == "note":
             out.append({"row": "spec", "label": ln.get("commodity") or "", "value": ln.get("name") or "", "note_id": ln.get("id")})
@@ -1236,11 +1280,13 @@ def _item_rows(state: dict[str, Any], lines: list[dict[str, Any]], lang: str, fx
         supply = unit
         if lang != "en" and unit is not None and vat_included(state):
             unit = with_vat(unit)
+        if free and ln["kind"] not in ("work", "freight"):  # 무상 대여 품목 — 단가·금액 0(견적서엔 '무상'), 개월도 곱하지 않는다
+            unit = supply = 0.0
         if unit is None:
             raise ValueError(f"{ln['name']} — " + ("달러 단가가 없습니다(직접 적거나 환율 입력)" if lang == "en" else "단가가 없습니다"))
         # id — 올린 견적서 파일을 작성 상태로 되읽을 때 줄 짝짓기에 쓴다(quote_readback, 사용자 2026-10-15)
         # months — 대여 견적서에서 단가(월 납입금)에 곱한 개월 수(엑셀 금액 식 =D×E×개월, 사용자 2026-10-22)
-        mf = month_factor(state["form"], ln)
+        mf = 1 if free else month_factor(state["form"], ln)
         out.append({"id": ln.get("id"), "key": k, "commodity": qx.commodity_of(ln), "desc": desc, "qty": int(ln["qty"]),
                     **({"photo": ln["photo"]} if ln.get("photo") else {}), "unit_price": unit, "unit_price_krw": krw,
                     "supply_unit": supply,

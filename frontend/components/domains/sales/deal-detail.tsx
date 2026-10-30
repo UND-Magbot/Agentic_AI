@@ -11,13 +11,15 @@ import { QuoteUploadDialog } from "@/components/domains/sales/quote-upload-dialo
 import { DealAsIntake } from "@/components/domains/sales/product-units-tab";
 import { ShipForm, shipmentDraft } from "@/components/domains/sales/deal-flow";
 import { SnButton, SnPanel, flatName, loadSnView, shipmentSnLines } from "@/components/domains/sales/unit-register";
-import { ACTION_LABEL, Field, INPUT, Muted, StageChip, UnitStateBadge, dealRequest, eventDetail, quoteVer, shortDate, stamp, termExpect, todayIso, won } from "@/components/domains/sales/deal-format";
+import { Field, INPUT, Muted, StageChip, UnitStateBadge, dealRequest, eventDetail, eventLabel, quoteVer, shortDate, stamp, termExpect, todayIso, won } from "@/components/domains/sales/deal-format";
 import type { ApprovalAdmin, ApprovalRequest, DealEvent, DealRow, IssueUnits, DealShipment, PoCompare, ProductUnit } from "@/lib/shared/sales-deals";
 import { cn } from "@/lib/shared/utils";
 
 const STEPS = ["제품 추천 확정", "견적", "수주", "거래명세서", "출하", "입금 완료"] as const;
 // 대여 건 진행(사용자 2026-10-22) — 출하 = 대여 시작, 회수까지
 const RENTAL_STEPS = ["견적", "수주", "거래명세서", "대여 중(출하)", "회수 완료", "입금 완료"] as const;
+// 무상 대여(합계 0원, 사용자 2026-10-30) — 수주 → 바로 출하(거래명세서·입금 없음)
+const FREE_RENTAL_STEPS = ["견적", "수주", "대여 중(출하)", "회수 완료"] as const;
 
 
 type Act = (path: string, body: unknown) => Promise<boolean>;
@@ -119,11 +121,14 @@ export function DealDetail({ row, admin = false, onClose, onChanged, onMeeting, 
   const reviews = deal.alerts.filter((a) => a.level === "review");
   const alerts = deal.alerts.filter((a) => a.level === "alert");
   const isRental = deal.biz === "rental";
-  const steps: readonly string[] = isRental ? RENTAL_STEPS : STEPS;
-  const done = isRental
+  const freeRental = isRental && !!deal.flow?.free;
+  const steps: readonly string[] = freeRental ? FREE_RENTAL_STEPS : isRental ? RENTAL_STEPS : STEPS;
+  const done = freeRental ? [!!deal.quote, !!deal.won, deal.shipped, !!deal.rental?.return?.done]
+    : isRental
     ? [!!deal.quote, !!deal.won, !!deal.statement, deal.shipped, !!deal.rental?.return?.done, deal.paid_full]
     : [!!deal.proposal_id, !!deal.quote, !!deal.won, !!deal.statement, deal.shipped, deal.paid_full];
   const isShipOnly = deal.kind === "shipment_only";
+  const free = freeRental;                  // 무상 대여(합계 0원) — 결제·입금 칸 없이 출하만
 
   // 패널 폭 — 리스트의 [담당] 칸 오른쪽 끝까지 넓힌다(사용자 2026-10-23). 화면이 좁아 그보다 작으면 원래 680px
   const [panelW, setPanelW] = useState<number | null>(null);
@@ -244,7 +249,8 @@ export function DealDetail({ row, admin = false, onClose, onChanged, onMeeting, 
           )}
           {deal.statement && <StatementDoc deal={deal} />}
 
-          {!isShipOnly && deal.flow?.terms.length ? <TermsView deal={deal} busy={busy} act={act} /> : !isShipOnly && (
+          {/* 무상 대여(합계 0원, 사용자 2026-10-30) — 받을 돈이 없어 결제 회차·입금 칸 없음 */}
+          {free ? null : !isShipOnly && deal.flow?.terms.length ? <TermsView deal={deal} busy={busy} act={act} /> : !isShipOnly && (
             <Section title="결제 회차">
               {deal.pay_terms.length ? (
                 <ul className="flex flex-wrap gap-2">
@@ -259,7 +265,7 @@ export function DealDetail({ row, admin = false, onClose, onChanged, onMeeting, 
           )}
 
           {!isShipOnly && <InvoiceHistory deal={deal} />}
-          {!isShipOnly && <PaymentBlock deal={deal} busy={busy} act={act} />}
+          {!isShipOnly && !free && <PaymentBlock deal={deal} busy={busy} act={act} />}
           <ShipmentBlock deal={deal} busy={busy} act={act} onPhoto={setPhoto} onReload={reload} />
 
           {deal.note && (
@@ -581,6 +587,16 @@ function RentalReturn({ deal, busy, act }: { deal: DealRow; busy: boolean; act: 
           ["회수", ret.done ? `완료 ${ret.done}${ret.started && ret.started !== ret.done ? ` (시작 ${ret.started})` : ""}`
             : ret.started ? `회수 중 · ${ret.started} 시작` : "—"],
         ]} />
+        {/* 대여·회수 이력(사용자 2026-10-30) — 출하(대여 시작)·대여 시작일·회수 시작·회수 완료·취소를 최신순으로. 변경 이력에도 같이 남는다 */}
+        {(() => {
+          const evs = (deal.events ?? []).filter((e) => ["shipment", "shipment_edit", "rental_start", "rental_return"].includes(e.action));
+          return evs.length > 0 && (
+            <div className="rounded-lg bg-foreground/[0.03] px-3 py-2">
+              <p className="mb-1 text-[12px] font-semibold text-foreground-muted">대여·회수 이력</p>
+              <EventList events={evs} />
+            </div>
+          );
+        })()}
         {!ret.started && deal.shipped && left != null && left <= 30 && (
           <p className={cn("rounded-lg px-3 py-1.5 text-[12.5px]", left < 0 ? "bg-red-500/10 text-red-700 dark:text-red-300" : "bg-amber-500/10 text-amber-800 dark:text-amber-200")}>
             {left < 0 ? `대여 기간이 ${-left}일 지났습니다 — 회수를 시작하세요.` : `대여 끝나는 날까지 ${left}일 남았습니다.`}
@@ -1133,6 +1149,11 @@ function ShipmentInfo({ s, dealId, onPhoto, units = [] }: {
 
 // ── 견적서 발행본(사용자 2026-10-07: 발행한 견적은 영업 건에서 관리, 견적서 탭은 작성 중인 것만) ──
 
+/** 견적서 칸 제목 — 대여 견적서로 낸 건은 '견적서(대여)'·'견적서(무상 대여)'(사용자 2026-10-30: 판매와 구분) */
+export function quoteTitle(deal: DealRow): string {
+  return deal.biz !== "rental" ? "견적서" : deal.flow?.free ? "견적서(무상 대여)" : "견적서(대여)";
+}
+
 function QuoteDocs({ deal, onQuote, onUploaded }: {
   deal: DealRow; onQuote?: (quoteId: number) => void; onUploaded: (d: DealRow) => void;
 }) {
@@ -1141,7 +1162,7 @@ function QuoteDocs({ deal, onQuote, onUploaded }: {
   const [viewing, setViewing] = useState<{ quote: number; revision: number; title: string; sub: string } | null>(null);
   const [uploading, setUploading] = useState(false);
   return (
-    <Section title="견적서">
+    <Section title={quoteTitle(deal)}>
       {/* 밖에서 고친 견적서 첨부(사용자 2026-10-12) — 고객에게 보낸 파일 그대로, 발행하면 새 번호 */}
       <div className="mb-2 flex flex-wrap items-center gap-2 text-[12px] text-foreground-subtle">
         <span>엑셀에서 고쳐 보냈거나 따로 만든 견적서가 있나요?</span>
@@ -1183,7 +1204,7 @@ function QuoteDocs({ deal, onQuote, onUploaded }: {
                   )}
                   {h.replaced_at && <span className="text-[11.5px] text-amber-700 dark:text-amber-300">파일 교체 {h.replaced_at.slice(0, 16).replace("T", " ")}</span>}
                   <span className="text-foreground-subtle">{h.issued_at.slice(0, 16).replace("T", " ")}</span>
-                  <span>{h.currency === "USD" ? `$${h.total.toLocaleString("en-US")}` : `${won(h.total)}원`}</span>
+                  <span>{h.currency === "USD" ? `$${h.total.toLocaleString("en-US")}` : deal.flow?.free && !h.total ? "무상" : `${won(h.total)}원`}</span>
                   <button type="button" className="ml-auto inline-flex items-center gap-1 font-semibold text-accent hover:underline"
                           onClick={() => setViewing({ quote: q.id, revision: h.revision, title: "견적서",
                                                       sub: `${h.issue_no ?? h.quote_no ?? q.quote_no ?? "견적서"} · v${h.revision + 1} · 발행 ${h.issued_at.slice(0, 10)}` })}>
@@ -1392,7 +1413,7 @@ function EventList({ events }: { events: DealEvent[] }) {
       {events.map((e, i) => (
         <li key={i} className="flex gap-2">
           <span className="w-[120px] shrink-0 tabular-nums text-foreground-subtle">{stamp(e.created_at)}</span>
-          <span className="font-medium">{ACTION_LABEL[e.action] ?? e.action}</span>
+          <span className="font-medium">{eventLabel(e)}</span>
           <span className="text-foreground-muted">{eventDetail(e)}</span>
           <span className="ml-auto shrink-0 text-foreground-subtle">{e.user_name ?? "시스템"}</span>
         </li>

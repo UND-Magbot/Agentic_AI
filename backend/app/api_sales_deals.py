@@ -308,7 +308,7 @@ async def approval_decide(request_id: int, body: DecideIn, user: User = Depends(
 async def list_deals(biz: Literal["sale", "rental"] | None = None, user: User = Depends(require_sales),
                      db: AsyncSession = Depends(get_db)) -> dict:
     # me.admin — 화면이 관리자 전용 버튼(삭제·되돌리기·취소)을 숨기는 데 쓴다(실제 막는 것은 각 API)
-    # biz — 제품 판매 관리 / 제품 대여 관리 탭(사용자 2026-10-22)
+    # biz — 제품 영업 건 관리 / 제품 대여 관리 탭(사용자 2026-10-22)
     return {**await svc.list_deals(db, svc.kst_today(), biz), "me": {"admin": is_admin(user), "name": user.alias or user.username}}
 
 
@@ -409,6 +409,8 @@ class CaseIn(BaseModel):
     customer: str | None = Field(default=None, max_length=100)
     contact: str | None = Field(default=None, max_length=200)
     photos: list[str] | None = Field(default=None, max_length=10)
+    # A/S 금액(원, 사용자 2026-10-30) — 영업이 수기로 적는다. null = 비움
+    amount: int | None = Field(default=None, ge=0, le=100_000_000_000)
 
 
 class CaseNewIn(CaseIn):
@@ -450,6 +452,13 @@ async def _checked(db: AsyncSession, deal_id: int, kind: str, index: int | None,
 
 
 UNIT_LIST_MAX, CASE_LIST_MAX = 50, 200
+
+
+@router.get("/rental-units")
+async def rental_units(_: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    """[대여 제품 목록] 탭(사용자 2026-10-30) — 대여 건의 제품 한 줄씩: 제품·S/N·상태 코드·고객사·담당자·대여 기간·반납일. 금액 없음."""
+    from .sales_deals import rental_query
+    return await rental_query.rental_units(db, svc.kst_today())
 
 
 @router.get("/units/search")

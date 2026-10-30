@@ -1093,6 +1093,12 @@ _SALES_DEALS_STMTS = [
     # A/S 접수서 칸(사용자 2026-10-19) — 고객사 담당자(이름·연락처)·사진(저장소 as-cases/{id}). 접수자 = created_by.
     text("ALTER TABLE as_cases ADD COLUMN IF NOT EXISTS contact TEXT NOT NULL DEFAULT ''"),
     text("ALTER TABLE as_cases ADD COLUMN IF NOT EXISTS photos JSONB NOT NULL DEFAULT '[]'::jsonb"),
+    # A/S 금액(사용자 2026-10-30) — 영업이 수기로 적는 유상 A/S 금액(원). 비우면 NULL
+    text("ALTER TABLE as_cases ADD COLUMN IF NOT EXISTS amount BIGINT"),
+    # 무상 기간 = 모든 제품 출하일부터 1년 고정(사용자 2026-10-30 — 365일 FIX). 이미 등록한 S/N 의 미정·다른 기간도 1년으로,
+    # 출하한 것은 종료일을 다시 계산(units.warranty_until 과 같게 시작일 + 1년 − 하루)
+    text("UPDATE product_units SET warranty_months = 12, warranty_until = CASE WHEN warranty_start IS NULL THEN NULL "
+         "ELSE (warranty_start + INTERVAL '1 year' - INTERVAL '1 day')::date END WHERE warranty_months IS DISTINCT FROM 12"),
 ]
 
 async def run_migrations(db: AsyncSession) -> None:

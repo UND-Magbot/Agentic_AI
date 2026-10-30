@@ -317,9 +317,12 @@ export type QuoteForm = {
   purpose?: QuotePurpose; rental_months?: number | null; rental_start?: string;
   /** 부가세 별도 / 포함(사용자 2026-10-28, 공공기관) — 국내만. 포함이면 견적서 단가부터 × 1.1(작성 단가는 공급가액 그대로) */
   vat?: QuoteVat | "";
+  /** 유상 / 무상 대여(사용자 2026-10-30) — 무상이면 단가·금액·부가세·NEGO·납품 비용·결제조건 없이, 견적서엔 '무상' */
+  rental_fee?: QuoteRentalFee;
 };
 export type QuotePurpose = "sale" | "rental";
 export type QuoteVat = "excluded" | "included";
+export type QuoteRentalFee = "paid" | "free";
 /** 해외 견적서의 한글 칸(원문은 칸에 그대로) — en: AI·담당자 영어(null = 아직 번역 전, 미리보기·발행 때 번역),
  *  by: ai|user, name: 이름·회사명(확인 필요), keep: [한글 그대로](번역 안 함, 발행 막지 않음) — 사용자 2026-10-14 */
 export type QuoteHangulCell = { path: string; label: string; text: string; name: boolean; en: string | null; by: "ai" | "user" | null; keep: boolean };

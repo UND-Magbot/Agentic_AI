@@ -26,6 +26,7 @@ import { ErrorBox, inputCls, primaryBtn, secondaryBtn } from "./proposal-actions
 import { OPEN_APPROVALS_EVENT } from "./approval-alert";
 import { ApprovalRequests } from "./approval-requests";
 import { DealsTab } from "./deals-tab";
+import { RentalUnitsTab } from "./rental-units-tab";
 import { ProductUnitsTab } from "./product-units-tab";
 import { InitialsPrompt } from "./initials-prompt";
 import { QuoteTab, savedContact } from "./quote-workspace";
@@ -926,13 +927,13 @@ const TAB_HEAD: Record<RecommendTab, { title: string; desc: string }> = {
   recommend: { title: "회사 제품 추천",
     desc: "Q&A 를 순서대로 답하고 [AI와 같이 제품 검색 진행]을 누르면, AI 가 빠진 정보를 묻고 조건을 함께 확인한 뒤 근거와 함께 제품을 추천합니다. 결과나 데이터가 틀렸으면 대화창에서 말해 주세요 — 확인을 거쳐 AI 에 학습시킬 수 있습니다." },
   quote: { title: "견적서",
-    desc: "작성 중인 견적서를 AI 와 대화하며 이어서 쓰고 발행합니다. AI 추천이 없는 제품은 [견적서 수기 작성]에서 제품 판매·제품 대여를 골라 시작하고, 발행하면 건 번호가 붙어 판매·대여 관리로 이어집니다." },
+    desc: "작성 중인 견적서를 AI 와 대화하며 이어서 쓰고 발행합니다. AI 추천이 없는 제품은 [견적서 수기 작성]에서 제품 판매·제품 대여를 골라 시작하고, 발행하면 건 번호가 붙어 제품 영업 건 관리로 이어집니다." },
   order: { title: "수주 진행",
     desc: "수주한 건을 AI 와 대화하며 거래명세서 발급 → 결제 조건 → 입금 확인 → 출하 순서로 진행합니다. 순서는 안내만 하므로 필요하면 앞 단계 전에도 기록할 수 있고, 출하할 때 품목마다 S/N 을 등록합니다." },
-  deals: { title: "제품 판매 관리",
-    desc: "제품 판매 건을 견적부터 수주·거래명세서·입금·출하까지 한 건씩 리스트로 관리합니다. 줄을 누르면 오른쪽에 상세가 열리고, 기록을 남기면 단계가 바뀝니다." },
-  rentals: { title: "제품 대여 관리",
-    desc: "대여 견적서로 낸 건을 견적부터 수주·출하(S/N 등록)·회수까지 관리하고, 대여 기간과 월 납입금을 함께 봅니다. 끝나는 날이 가까우면 붉게 표시됩니다." },
+  deals: { title: "제품 영업 건 관리",
+    desc: "제품 판매·대여 건을 견적부터 수주·거래명세서·입금·출하(대여는 회수까지) 한 건씩 리스트로 관리합니다. 줄을 누르면 오른쪽에 상세가 열리고, 기록을 남기면 단계가 바뀝니다." },
+  rentals: { title: "대여 제품 목록",
+    desc: "대여 나간 제품을 한 줄씩 — S/N·상태 코드·고객사·담당자와 함께 언제 반납되는지·지금 어떤 상태인지를 봅니다. 반납일이 지나면 빨갛게, 가까우면 주황으로 표시됩니다." },
   units: { title: "제품 A/S건 관리",
     desc: "S/N 으로 고객사·출하일·무상 기간·A/S 이력을 찾고, 접수한 A/S 를 원인·무상/유상·진행 상태와 함께 기록합니다." },
   memory: { title: "검토·승인",
@@ -1003,7 +1004,7 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
   const manualStarted = useRef(false);
   const [askManual, setAskManual] = useState(false);
   // [제품·A/S] 탭 → [프로젝트 건 열기] — 판매·대여 관리 탭을 열며 그 건 상세를 띄운다(사용자 2026-10-22)
-  const [dealOpen, setDealOpen] = useState<number | null>(initialTab === "deals" || initialTab === "rentals" ? initialDeal ?? null : null);
+  const [dealOpen, setDealOpen] = useState<number | null>(initialTab === "deals" ? initialDeal ?? null : null);
   useEffect(() => {
     if (!startManual || manualStarted.current) return;
     manualStarted.current = true;
@@ -1651,7 +1652,7 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
       // 건 번호는 견적서 첫 발행 때 부여(사용자 2026-10-08) — 확정만 한 건은 번호 없이 '제품 추천 확정'
       say(`최종 제안으로 확정했습니다 — 제품 영업 건${p.deal_no ? ` ${p.deal_no}` : ""}(제품 추천 확정)로 등록했습니다`
         + (p.deal_no ? ". " : "(건 번호는 견적서를 처음 발행할 때 붙습니다). ") + "미팅 내용·최종 추천·근거·대화는 "
-        + "[제품 판매·대여 관리]에서 그 건의 [미팅 정보]로 볼 수 있습니다. 이어서 [견적서 작성 →]으로 견적서를 만들면 같은 번호로 견적 단계가 됩니다.");
+        + "[제품 영업 건 관리]에서 그 건의 [미팅 정보]로 볼 수 있습니다. 이어서 [견적서 작성 →]으로 견적서를 만들면 같은 번호로 견적 단계가 됩니다.");
     } catch (e) {
       // 영업 건 번호 = 담당 이니셜 + 날짜 — 내 이니셜을 아직 안 정했으면 한 번 묻고 다시 확정
       if (e instanceof Error && e.message.includes("이니셜")) setNeedIni(true);
@@ -1810,7 +1811,7 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
 
       {/* 탭: 제품 추천 / AI 학습 내용 관리 */}
       <div role="tablist" aria-label="회사 제품 추천 화면" className="und-tabs">
-        {([["recommend", "제품 추천"], ["quote", "견적서"], ["order", "수주 진행"], ["deals", "제품 판매 관리"], ["rentals", "제품 대여 관리"], ["units", "제품·A/S"], ["memory", "검토·승인"]] as const).map(([key, label]) => {
+        {([["recommend", "제품 추천"], ["quote", "견적서"], ["order", "수주 진행"], ["deals", "제품 영업 건 관리"], ["rentals", "대여 제품 목록"], ["units", "제품·A/S"], ["memory", "검토·승인"]] as const).map(([key, label]) => {
           const pending = list.items.filter((c) => c.review_status === "pending").length;
           return (
             <button key={key} type="button" role="tab" aria-selected={tab === key} onClick={() => { setDealOpen(null); setTab(key); }}
@@ -2214,10 +2215,9 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
       {tab === "order" && <OrderTab openId={orderId} focus={orderFocus} onOpen={(id) => { setOrderFocus(undefined); setOrderId(id); }} />}
       {tab === "deals" && <DealsTab openDealId={dealOpen} onMeeting={setMeetingId} onOrder={(id) => { setOrderId(id); setTab("order"); }}
                                      onQuote={(id) => { setQuoteId(id); setTab("quote"); }} />}
-      {/* 제품 대여 관리(사용자 2026-10-22) — 대여 견적서로 낸 건만, 흐름은 판매와 같다 */}
-      {tab === "rentals" && <DealsTab biz="rental" openDealId={dealOpen} onMeeting={setMeetingId} onOrder={(id) => { setOrderId(id); setTab("order"); }}
-                                      onQuote={(id) => { setQuoteId(id); setTab("quote"); }} />}
-      {tab === "units" && <ProductUnitsTab onOpenDeal={(id, biz) => { setDealOpen(id); setTab(biz === "rental" ? "rentals" : "deals"); }} />}
+      {/* 대여 제품 목록(사용자 2026-10-30) — 제품 한 줄씩, 반납일·상태 중심. 줄을 누르면 제품 영업 건 관리에서 그 건 */}
+      {tab === "rentals" && <RentalUnitsTab onOpenDeal={(id) => { setDealOpen(id); setTab("deals"); }} />}
+      {tab === "units" && <ProductUnitsTab onOpenDeal={(id) => { setDealOpen(id); setTab("deals"); }} />}
       {meetingId && <MeetingInfo id={meetingId} onClose={() => setMeetingId(null)} />}
       {/* 공개 사양 검색이 끝나면 어느 질문을 작성 중이든 요약 팝업(사용자 2026-10-12) */}
       {specAsk ? <SpecAskPopup items={specAsk.items} onAnswer={answerSpecAsk} />

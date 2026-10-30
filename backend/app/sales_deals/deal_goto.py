@@ -162,7 +162,7 @@ def _btn(label: str, query: str) -> str:
 
 
 def _deal_tab(r: dict) -> str:
-    return "rentals" if r.get("biz") == "rental" else "deals"
+    return "deals"          # 대여 건도 제품 영업 건 관리 탭(사용자 2026-10-30, 예전엔 대여 관리 탭)
 
 
 def actions(kind: str, r: dict, quotes: list[dict]) -> tuple[str | None, list[str]]:

@@ -431,8 +431,8 @@ const SPLIT_DEFAULT = 60;               // 예전 3:2 와 같은 폭
 
 /** 품목 줄 크게 보기 — 넓은 칸에서 품목·규격·수량·단가·비고를 고치고, 오른쪽에 견적서 표에 찍히는 모양을 같이 보여 준다.
  *  고친 내용은 표와 같은 작성 중 값이라 [변경 저장]을 눌러야 저장된다. */
-function LineDialog({ line, en, fx, busy, months, onChange, onClose }: {
-  line: QuoteLine; en: boolean; fx: number | null; busy: boolean; months: number; onChange: (patch: Partial<QuoteLine>) => void; onClose: () => void;
+function LineDialog({ line, en, fx, busy, months, free = false, onChange, onClose }: {
+  line: QuoteLine; en: boolean; fx: number | null; busy: boolean; months: number; free?: boolean; onChange: (patch: Partial<QuoteLine>) => void; onClose: () => void;
 }) {
   const mf = monthFactor(line, months);
   useEffect(() => {
@@ -441,7 +441,7 @@ function LineDialog({ line, en, fx, busy, months, onChange, onClose }: {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
   const price = en ? usdOf(line, fx) : line.unit_price;
-  const money = (n: number | null | undefined) => (n == null ? "-" : en ? usd(n) : `₩${Math.round(n).toLocaleString("ko-KR")}`);
+  const money = (n: number | null | undefined) => (free ? (en ? "Free" : "무상") : n == null ? "-" : en ? usd(n) : `₩${Math.round(n).toLocaleString("ko-KR")}`);
   const qtyText = line.qty == null ? "-" : `${line.qty}${line.unit ? ` ${line.unit}` : ""}`;
   const cell = "border border-foreground/40 px-1.5 py-1 align-middle";
   return (
@@ -475,7 +475,7 @@ function LineDialog({ line, en, fx, busy, months, onChange, onClose }: {
                 <input className={cn(inputCls, "text-[13px]")} value={line.unit ?? ""} maxLength={8} placeholder="ea" disabled={busy}
                        onChange={(e) => onChange({ unit: e.target.value })} />
               </label>
-              {!en && (
+              {!en && !free && (
                 <label className="flex flex-col gap-1 text-foreground-muted">{months ? "단가 (월 납입금 또는 1회 지불, 원)" : "단가(원)"}
                   <input inputMode="numeric" className={cn(inputCls, "text-[13px]")} value={line.unit_price ?? ""} disabled={busy}
                          onChange={(e) => onChange({ unit_price: Number(e.target.value.replace(/,/g, "")) || null })} />
@@ -504,7 +504,7 @@ function LineDialog({ line, en, fx, busy, months, onChange, onClose }: {
                     <td className={cn(cell, "whitespace-pre-line")}>{line.name || " "}</td>
                     <td className={cell}>{qtyText}</td>
                     <td className={cell}>{money(price)}</td>
-                    <td className={cell}>{money(price == null || line.qty == null ? null : price * line.qty * mf)}{mf > 1 && <span className="block text-[10px] font-normal">× {mf}개월</span>}</td>
+                    <td className={cell}>{money(price == null || line.qty == null ? null : price * line.qty * mf)}{mf > 1 && !free && <span className="block text-[10px] font-normal">× {mf}개월</span>}</td>
                     <td className={cn(cell, "whitespace-pre-line")}>{line.remark || " "}</td>
                   </tr>
                 </tbody>
@@ -722,33 +722,38 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
     edit({ blocks: hit ? d.blocks : [...d.blocks, { id, type: "items", title, subtotal: true }], delivery: { ...d.delivery, block: id } });
     setNewGroup(null);
   }
-  const billed = d.lines.filter((l) => !isAuto(l) && l.kind !== "note" && (!optionIds.has(blockOf(l, d.blocks)) || l.in_total));
+  // 무상 대여(사용자 2026-10-30) — 품목 단가·금액·월 납입금·NEGO·OPTION 을 숨긴다(견적서엔 '무상'). 물류비·설치비는 받을 수 있어
+  // 납품 방식·결제조건·입금 정보는 그대로, 받을 금액(charges)이 있을 때만 VAT 선택
+  const free = d.form.purpose === "rental" && d.form.rental_fee === "free";
+  const charges = !!(dv?.freight || dv?.work);
+  const billed = free ? [] : d.lines.filter((l) => !isAuto(l) && l.kind !== "note" && (!optionIds.has(blockOf(l, d.blocks)) || l.in_total));
+  const nego = (base: number, usdMode: boolean) => (free ? 0 : negoCut(d.nego, base, usdMode));
   // 대여 견적서 — 단가 = 1대당 월 납입금, 금액 = 수량 × 단가 × 대여 개월(사용자 2026-10-22)
-  const rentMonths = d.form.purpose === "rental" ? Number(d.form.rental_months) || 0 : 0;
+  const rentMonths = d.form.purpose === "rental" && !free ? Number(d.form.rental_months) || 0 : 0;
   const baseKrw = billed.reduce((s, l) => s + (l.qty ?? 0) * (l.unit_price ?? 0) * monthFactor(l, rentMonths), 0)
     + (dv?.freight ? d.delivery.freight ?? 0 : 0) + (dv?.work ? (d.work.people ?? 0) * (d.work.days ?? 0) * (d.work.rate ?? WORK_RATE) : 0);
-  const total = baseKrw - negoCut(d.nego, baseKrw, false);
+  const total = baseKrw - nego(baseKrw, false);
   // 해외 견적 달러 합계(고치는 중) — 물류비·인건비는 원화라 환율이 있어야 더한다. 달러 단가 없는 줄이 있으면 null
   const fx = d.form.fx_rate;
   const autoKrw = (dv?.freight ? d.delivery.freight ?? 0 : 0) + (dv?.work ? (d.work.people ?? 0) * (d.work.days ?? 0) * (d.work.rate ?? WORK_RATE) : 0);
   const manualUsd = billed.map((l) => ({ q: (l.qty ?? 0) * monthFactor(l, rentMonths), u: usdOf(l, fx) }));
-  const missingUsd = d.lines.some((l) => !isAuto(l) && l.kind !== "note" && usdOf(l, fx) == null);
+  const missingUsd = !free && d.lines.some((l) => !isAuto(l) && l.kind !== "note" && usdOf(l, fx) == null);
   const baseUsd = missingUsd || (autoKrw > 0 && !(fx && fx > 0)) ? null
     : Math.round((manualUsd.reduce((s, x) => s + x.q * (x.u ?? 0), 0) + (autoKrw && fx ? autoKrw / fx : 0)) * 100) / 100;
-  const totalUsd = baseUsd == null ? null : Math.round((baseUsd - negoCut(d.nego, baseUsd, true)) * 100) / 100;
+  const totalUsd = baseUsd == null ? null : Math.round((baseUsd - nego(baseUsd, true)) * 100) / 100;
   const en = d.form.lang === "en";
   // 부가세 포함 견적서(사용자 2026-10-28) — 견적서엔 단가부터 × 1.1(원 단위 반올림, backend quote_session.with_vat 와 같게).
   // 작성 칸·저장 값은 공급가액 그대로, 합계 칸에는 견적서에 찍힐 Total 과 공급가액을 함께
-  const vatOn = !en && d.form.vat === "included";
+  const vatOn = !en && (!free || charges) && d.form.vat === "included";
   const withVat = (v: number) => Math.round((v * 11) / 10);
   const vatTotal = billed.reduce((s, l) => s + (l.qty ?? 0) * withVat(l.unit_price ?? 0) * monthFactor(l, rentMonths), 0)
     + (dv?.freight ? withVat(d.delivery.freight ?? 0) : 0)
     + (dv?.work ? (d.work.people ?? 0) * (d.work.days ?? 0) * withVat(d.work.rate ?? WORK_RATE) : 0)
-    - negoCut(d.nego, baseKrw, false);                    // NEGO 는 적은 금액 그대로(× 1.1 안 함, 사용자 2026-10-29)
+    - nego(baseKrw, false);                               // NEGO 는 적은 금액 그대로(× 1.1 안 함, 사용자 2026-10-29)
   // 견적서 Total(월 납입금 기준) — 포함이면 × 1.1 값, 별도면 공급가액
   const docTotal = vatOn ? vatTotal : dirty ? total : q.subtotal;
   // 부가세 포함일 때 공급가액 — NEGO 는 적은 금액 ÷ 1.1(backend quote_session.nego_supply 와 같게)
-  const supplyTotal = vatOn ? baseKrw - Math.round((negoCut(d.nego, baseKrw, false) * 10) / 11) : total;
+  const supplyTotal = vatOn ? baseKrw - Math.round((nego(baseKrw, false) * 10) / 11) : total;
   const hangul = q.hangul ?? [];
   // 번역 전 칸은 [발행] 때 미리보기로 먼저 번역·확인 — 발행을 막는 건 채울 것(problems)뿐
   const blocked = q.problems.length > 0;
@@ -851,7 +856,7 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
                 })}
               </div>
               {/* 부가세 별도 / 포함(사용자 2026-10-28 — 공공기관 견적은 포함). 국내만 — 포함이면 견적서 단가부터 × 1.1 */}
-              {!en && (
+              {!en && (!free || charges) && (
                 <div role="group" aria-label="부가세" className={SEG}>
                   {(["excluded", "included"] as const).map((v) => {
                     const on = (d.form.vat || "excluded") === v;
@@ -873,9 +878,25 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
               <div className="flex flex-wrap items-center gap-2">
                 <span className="rounded-full bg-emerald-600 px-2.5 py-0.5 text-[11.5px] font-bold text-white">대여</span>
                 <h4 className="text-[14px] font-extrabold text-emerald-900 dark:text-emerald-200">대여 조건</h4>
-                <span className="text-[12px] text-emerald-800/80 dark:text-emerald-300/80">월 납입금 = 수량 × 월 단가 × 대여 개월 (설치·물류 등 1회 비용은 한 번만)</span>
+                {/* 유상 / 무상 대여(사용자 2026-10-30) — 무상이면 금액 관련 칸을 숨기고 견적서엔 '무상' */}
+                <div role="group" aria-label="유상·무상 대여" className={SEG}>
+                  {(["paid", "free"] as const).map((v) => {
+                    const on = (d.form.rental_fee ?? "paid") === v;
+                    return (
+                      <button key={v} type="button" disabled={!!busy} aria-pressed={on} onClick={() => { if (!on) void save({ rental_fee: v }); }}
+                              title={v === "paid" ? "대여료를 받는 대여(바로 저장)" : "대여료 없는 대여 — 단가·금액 없이 품목·수량·기간만(바로 저장)"}
+                              className={cn(SEG_BTN, on && cn(SEG_ON, "text-emerald-700 dark:text-emerald-300"))}>
+                        {v === "paid" ? "유상 대여" : "무상 대여"}
+                      </button>
+                    );
+                  })}
+                </div>
+                <span className="text-[12px] text-emerald-800/80 dark:text-emerald-300/80">
+                  {free ? "대여료 없음 — 품목은 수량·대여 기간만 적으면 견적서 단가·금액 칸에 '무상'으로 나갑니다. 물류비·설치비는 아래 납품 방식에서 넣으세요."
+                    : "월 납입금 = 수량 × 월 단가 × 대여 개월 (설치·물류 등 1회 비용은 한 번만)"}
+                </span>
               </div>
-              <div className="grid gap-3 sm:grid-cols-3">
+              <div className={cn("grid gap-3", free ? "sm:grid-cols-2" : "sm:grid-cols-3")}>
                 <label className={cn(HEAD_LABEL, "text-emerald-900/80 dark:text-emerald-200/80")}>
                   <span>대여 개월 수<span className="text-red-600"> *</span></span>
                   <input className={cn(HEAD_FIELD, "border-emerald-500/40")} inputMode="numeric" value={d.form.rental_months ?? ""} placeholder="예: 36 (3년)"
@@ -886,7 +907,7 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
                   <input type="date" className={cn(HEAD_FIELD, "border-emerald-500/40")} value={d.form.rental_start ?? ""} disabled={!!busy}
                          onChange={(e) => setForm("rental_start", e.target.value)} />
                 </label>
-                <div className={cn(HEAD_LABEL, "text-emerald-900/80 dark:text-emerald-200/80")}>
+                {!free && <div className={cn(HEAD_LABEL, "text-emerald-900/80 dark:text-emerald-200/80")}>
                   <span>월 납입금 <span className="font-normal text-foreground-subtle">· 천 원 올림</span></span>
                   {!en && d.form.rental_months && docTotal ? (
                     <span className="flex h-10 items-center whitespace-nowrap rounded-[10px] bg-emerald-600 px-3.5 text-[16px] font-extrabold tracking-tight text-white"
@@ -898,14 +919,14 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
                       {d.form.rental_months ? "품목 단가를 넣으면 계산" : "개월 수를 넣으면 계산"}
                     </span>
                   )}
-                </div>
+                </div>}
               </div>
-              <details className="text-[11.5px] text-foreground-subtle">
+              {!free && <details className="text-[11.5px] text-foreground-subtle">
                 <summary className="cursor-pointer select-none font-semibold text-emerald-800 dark:text-emerald-300">단가 넣는 법</summary>
                 <p className="mt-1">
                   단가 칸에는 <b>1대당 월 납입금</b> 또는 <b>1회 지불 금액</b>을 넣으세요. 월 납입금 줄은 <b>수량 × 월 납입금 × 대여 개월</b>로 계산되고, 품목을 <b>Service</b> 로 적거나 단위가 <b>식</b>인 줄, 배송비·운반비 줄은 1회 지불로 한 번만 더합니다. 표 아래 중도 해지 문구는 아래 [표 아래 주석]에서 고칠 수 있습니다.
                 </p>
-              </details>
+              </details>}
             </div>
           )}
           {en && (
@@ -983,7 +1004,8 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
           <div className="flex flex-wrap items-baseline gap-2">
             <h3 className="text-[17px] font-extrabold tracking-tight text-foreground">{en ? "Goods Description & Details" : "품목"}</h3>
             <span className="text-[12.5px] text-foreground-muted">
-              {en ? "단가는 달러(VAT 별도) — 비운 칸은 원화 단가표 가격 ÷ 환율 · 견적서엔 $ 로만 표기" : vatOn ? "단가는 VAT 별도 금액으로 적습니다 · 견적서엔 VAT 포함 금액으로 나갑니다 · 제품 단가는 회사 단가표" : "금액은 원화(VAT 별도) · 제품 단가는 회사 단가표"}
+              {free ? "무상 대여 — 단가 없이 품목·수량만 적습니다 · 견적서 단가·금액 칸엔 '무상'"
+                : en ? "단가는 달러(VAT 별도) — 비운 칸은 원화 단가표 가격 ÷ 환율 · 견적서엔 $ 로만 표기" : vatOn ? "단가는 VAT 별도 금액으로 적습니다 · 견적서엔 VAT 포함 금액으로 나갑니다 · 제품 단가는 회사 단가표" : "금액은 원화(VAT 별도) · 제품 단가는 회사 단가표"}
             </span>
           </div>
           {d.blocks.length > 1 && (() => {   // 다른 묶음이 있을 때 — 기본 품목 표에도 소제목·소계(사용자 2026-10-13)
@@ -1039,7 +1061,7 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
                       </span>
                     )}
                   </div>
-                  <div className={ROW_LABEL}>
+                  {(!free || isAuto(l)) && <div className={ROW_LABEL}>
                     <span>{en ? (rentMonths ? "Price (Monthly)" : "Price") : rentMonths ? (monthFactor(l, rentMonths) > 1 ? "월 단가" : "금액 (1회)") : "단가"}</span>
                     {isAuto(l) ? <span className="flex h-10 items-center text-[13.5px] font-semibold">{en ? (usdOf(l, fx) == null ? "환율 필요" : usd(usdOf(l, fx))) : won(l.unit_price)}</span> : en ? (
                       <span className="flex flex-col gap-0.5">
@@ -1054,7 +1076,7 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
                              value={l.unit_price ?? ""} aria-label="단가" placeholder={l.price_status === "unset" ? "가격 미정" : rentMonths ? "월 납입금 또는 1회 지불" : "단가"} disabled={!!busy}
                              onChange={(e) => setLine(i, { unit_price: Number(e.target.value.replace(/,/g, "")) || null })} />
                     )}
-                  </div>
+                  </div>}
                   {l.conditional && (l.confirmed
                     ? <span className="flex h-10 items-center text-[12px] font-semibold text-emerald-700 dark:text-emerald-300">✓ 수량 확인함</span>
                     : <button type="button" disabled={!!busy || l.qty == null} title={l.basis || "조건부 수량 — 근거를 확인한 뒤 누르세요"}
@@ -1062,14 +1084,14 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
                               className={cn(ROW_BTN, "border-amber-500/60 text-amber-700 hover:bg-amber-500/10 dark:text-amber-300")}>
                         조건부 · 수량 확인
                       </button>)}
-                  <div className={cn(ROW_LABEL, "ml-auto flex-1 items-end")}>
+                  {(!free || isAuto(l)) && <div className={cn(ROW_LABEL, "ml-auto flex-1 items-end")}>
                     <span>{en ? "Amount" : "금액"}{rentMonths ? <span className="font-normal text-foreground-subtle"> · {monthFactor(l, rentMonths) > 1 ? `× ${rentMonths}개월` : "1회 지불"}</span> : null}</span>
                     <span className={AMOUNT_BOX}>
                       {en ? (usdOf(l, fx) == null ? "-" : usd((l.qty ?? 0) * (usdOf(l, fx) ?? 0) * monthFactor(l, rentMonths)))
                         : (l.unit_price == null ? <span className="text-[12.5px] font-medium text-foreground-subtle">단가를 넣으면 계산</span>
                           : won((l.qty ?? 0) * (l.unit_price ?? 0) * monthFactor(l, rentMonths)))}
                     </span>
-                  </div>
+                  </div>}
                 </div>
                 <div className="mt-2.5 flex flex-wrap items-start gap-2">
                   {isAuto(l) ? (l.remark ? <span className="text-[12px] text-foreground-muted">비고 · {l.remark}</span> : null) : (
@@ -1112,7 +1134,7 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
             ))}
           </div>
           {/* 묶음(옵션·소제목·사양·문구)·NEGO — 영업팀 요청 14·9번(사용자 2026-10-13) */}
-          <QuoteBlocks blocks={d.blocks} lines={d.lines} nego={d.nego} en={en} fx={fx} busy={!!busy} draftVer={draftVer} autoBlock={autoBlock} months={rentMonths}
+          <QuoteBlocks blocks={d.blocks} lines={d.lines} nego={d.nego} en={en} fx={fx} busy={!!busy} draftVer={draftVer} autoBlock={autoBlock} months={rentMonths} free={free}
                        totalNote={d.form.total_note ?? ""}
                        footNotes={Array.isArray(d.form.foot_notes) ? d.form.foot_notes : (d.form.foot_notes ?? "").split("\n").filter((x) => x.trim())}
                        pricePicker={(onPick) => <PricePicker disabled={!!busy} onPick={onPick} />}
@@ -1124,7 +1146,8 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
                          ...(total_note !== undefined || foot_notes !== undefined ? { form: {
                            ...d.form, ...(total_note !== undefined ? { total_note } : {}), ...(foot_notes !== undefined ? { foot_notes } : {}) } } : {}),
                        })}>
-            {/* 납품 방식 — 1 택배(그대로) · 2 화물 직납(물류비) · 3 설치 납품(인건비 = 인원 × 일수 × 1인 1일 단가) · 4 화물 + 설치 · 5 별도 협의(그대로) */}
+            {/* 납품 방식 — 1 택배(그대로) · 2 화물 직납(물류비) · 3 설치 납품(인건비 = 인원 × 일수 × 1인 1일 단가) · 4 화물 + 설치 · 5 별도 협의(그대로).
+                무상 대여도 물류비·설치비는 받을 수 있다(사용자 2026-10-30) */}
             <div className="flex flex-col gap-2 rounded-md bg-foreground/[0.03] px-2.5 py-2 text-[12.5px]">
               <div className="flex flex-wrap items-center gap-1.5">
                 <span className="mr-1 font-semibold text-foreground">납품 방식</span>
@@ -1194,7 +1217,7 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
           </QuoteBlocks>
           {/* 합계 막대 — 이 화면의 결론이라 가장 크게(판매 파랑 · 대여 에메랄드, 사용자 2026-10-23) */}
           <div className={cn("-mx-5 flex flex-wrap items-center gap-x-6 gap-y-2 border-y px-5 py-4",
-            rentMonths ? "border-emerald-500/25 bg-gradient-to-b from-emerald-500/[0.07] to-emerald-500/[0.03]" : "border-blue-500/20 bg-gradient-to-b from-blue-500/[0.06] to-blue-500/[0.02]")}>
+            rentMonths || free ? "border-emerald-500/25 bg-gradient-to-b from-emerald-500/[0.07] to-emerald-500/[0.03]" : "border-blue-500/20 bg-gradient-to-b from-blue-500/[0.06] to-blue-500/[0.02]")}>
             {!en && rentMonths && docTotal ? (
               <div className="flex flex-col gap-0.5">
                 <span className="text-[12px] font-semibold text-emerald-800/80 dark:text-emerald-300/80">월 납입금 · 천 원 올림</span>
@@ -1203,15 +1226,22 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
                 </span>
               </div>
             ) : null}
-            <div className="ml-auto flex flex-col items-end gap-0.5">
-              <span className="text-[12px] font-semibold text-foreground-muted">합계({vatOn ? "VAT 포함" : "VAT 별도"}){d.lines.some((l) => optionIds.has(blockOf(l, d.blocks)) && l.kind !== "note") ? (d.lines.some((l) => optionIds.has(blockOf(l, d.blocks)) && l.kind !== "note" && !l.in_total) ? " · 미반영 옵션 제외" : " · 옵션 포함") : ""}{d.nego?.value ? " · NEGO 차감" : ""}</span>
+            {free && !charges ? (
+              <div className="ml-auto flex flex-col items-end gap-0.5">
+                <span className="text-[12px] font-semibold text-foreground-muted">합계</span>
+                <span className="text-[24px] font-extrabold tracking-tight text-emerald-700 dark:text-emerald-300">
+                  {en ? "Free rental" : "무상 대여"}{d.form.rental_months ? ` · ${d.form.rental_months}${en ? " months" : "개월"}` : ""}
+                </span>
+              </div>
+            ) : <div className="ml-auto flex flex-col items-end gap-0.5">
+              <span className="text-[12px] font-semibold text-foreground-muted">합계({vatOn ? "VAT 포함" : "VAT 별도"}){d.lines.some((l) => optionIds.has(blockOf(l, d.blocks)) && l.kind !== "note") ? (d.lines.some((l) => optionIds.has(blockOf(l, d.blocks)) && l.kind !== "note" && !l.in_total) ? " · 미반영 옵션 제외" : " · 옵션 포함") : ""}{d.nego?.value && !free ? " · NEGO 차감" : ""}{free ? " · 품목 무상, 물류비·설치비만" : ""}</span>
               <span className="text-[24px] font-extrabold tracking-tight text-foreground">
                 {en ? ((dirty ? totalUsd : q.subtotal_usd) == null ? "달러 단가가 빈 줄이 있습니다" : usd(dirty ? totalUsd : q.subtotal_usd)) : won(docTotal)}
               </span>
               {vatOn && (
                 <span className="text-[12px] text-foreground-muted">공급가액 {won(dirty ? supplyTotal : q.subtotal)}</span>
               )}
-            </div>
+            </div>}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" className={dirty ? primaryBtn : secondaryBtn} disabled={!dirty || !!busy} onClick={(e) => void keepInPlace(e.currentTarget, () => save())}>
@@ -1279,7 +1309,7 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
                                  fileName={saving.fileName} title={saving.title} onClose={() => setSaving(null)} />}
 
       {bigLine != null && d.lines[bigLine] && (
-        <LineDialog line={d.lines[bigLine]} en={en} fx={fx} busy={!!busy} months={rentMonths} onChange={(patch) => setLine(bigLine, patch)}
+        <LineDialog line={d.lines[bigLine]} en={en} fx={fx} busy={!!busy} months={rentMonths} free={free} onChange={(patch) => setLine(bigLine, patch)}
                     onClose={() => setBigLine(null)} />
       )}
 

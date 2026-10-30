@@ -61,7 +61,7 @@ export async function GET(req: NextRequest, { params }: Params) {
   if (!tok) return NextResponse.json({ detail: "인증이 필요합니다." }, { status: 401 });
   // 리스트 — 회사 제품 추천 화면의 [영업 건 관리] 탭(클라이언트)이 받는다
   if (path.length === 0) {
-    // ?biz=sale|rental — 제품 판매 관리 / 제품 대여 관리 탭(사용자 2026-10-22)
+    // ?biz=sale|rental — 제품 영업 건 관리 / 제품 대여 관리 탭(사용자 2026-10-22)
     const biz = req.nextUrl.searchParams.get("biz");
     const r = await fetch(`${BACKEND_URL}${BASE}${biz === "sale" || biz === "rental" ? `?biz=${biz}` : ""}`, { headers: { Authorization: `Bearer ${tok}` }, cache: "no-store" });
     return NextResponse.json(await r.json().catch(() => ({})), { status: r.status });
@@ -83,7 +83,7 @@ export async function GET(req: NextRequest, { params }: Params) {
   }
   // 제품 시리얼·A/S(사용자 2026-10-19) — 검색어·견적서 판 등 쿼리는 그대로
   const unitsGet = (path.length === 2 && path[0] === "units" && (path[1] === "search" || /^\d+$/.test(path[1])))
-    || (path.length === 1 && (path[0] === "as-cases" || path[0] === "warranty-policies"))
+    || (path.length === 1 && (path[0] === "as-cases" || path[0] === "warranty-policies" || path[0] === "rental-units"))
     || (path.length === 2 && /^\d+$/.test(path[0]) && path[1] === "units");
   if (path.length === 2 && path[0] === "as-photos" && /^[0-9a-f]{32}\.(jpg|jpeg|png|webp)$/.test(path[1])) {
     return passFile(`${BACKEND_URL}${BASE}/as-photos/${path[1]}`, tok);

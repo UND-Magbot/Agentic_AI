@@ -129,6 +129,8 @@ def quote_header(form: dict[str, Any], *, lang: str, quote_no: str, day: date, p
         raise QuoteError("영문 견적서에 필요한 회사 정보가 아직 등록되지 않았습니다: "
                          + ", ".join(names.get(m, m) for m in f["missing"]))
     en = lang == "en"
+    # 무상 대여(사용자 2026-10-30) — 품목 단가·금액은 build_xlsx 가 '무상'으로. 물류비·설치비를 받으면 그 금액이 Total
+    free = form.get("purpose") == "rental" and form.get("rental_fee") == "free"
     if not en and form.get("vat") == "included":
         # 부가세 포함 견적서(사용자 2026-10-28) — 표 위 'VAT 포함', Total 옆 '(부가세 포함)'. 단가는 render_lines 에서 × 1.1
         f = {**f, "terms": {**f["terms"], "vat": "VAT 포함"}, "labels": {**f["labels"], "total": "Total (부가세 포함)"}}
@@ -158,7 +160,9 @@ def quote_header(form: dict[str, Any], *, lang: str, quote_no: str, day: date, p
             "total_note": str(form.get("total_note") or "").strip(),
             "foot_notes": _notes(form.get("foot_notes")),
             # 대여 견적서(사용자 2026-10-22) — 계약 개월 수가 있으면 Total 옆에 월 납입금
-            "rental_months": _months(form) if form.get("purpose") == "rental" else None}
+            "rental_months": _months(form) if form.get("purpose") == "rental" and not free else None,
+            # 무상 대여 — True 면 단가·금액 칸 '무상', Total 칸 '무상 대여 (N개월)'
+            **({"rental_free": True, "free_months": _months(form)} if free else {})}
 
 
 def _months(form: dict[str, Any]) -> int | None:
@@ -290,6 +294,15 @@ def build_xlsx(header: dict[str, Any], lines: list[dict[str, Any]], photos: dict
         money = USD_CENTS if cents else USD_WHOLE
     else:
         money = WON
+    # 무상 대여(사용자 2026-10-30) — 단가·금액 칸은 값 0 그대로 두고 서식으로 '무상'(되읽기·식이 숫자로 남게)
+    # 물류비·설치 인건비를 받으면(charged) 그 줄과 Total 은 금액, 아니면 Total 도 '무상 대여 (N개월)'·결제조건 '무상 대여'
+    free = header.get("rental_free")
+    item_money = ('"Free"' if en else '"무상"') if free else money
+    charged = not free or any(ln.get("amount") for ln in lines if not ln.get("row"))
+    if not charged:
+        lab = {**lab, "total": "Total"}
+        terms = {**terms, "vat": ""}
+        header = {**header, "payment": "Free of charge (rental)" if en else "무상 대여"}
     wb = Workbook()
     ws = wb.active
     ws.title = "Quotation" if en else "견적서"
@@ -365,7 +378,8 @@ def build_xlsx(header: dict[str, Any], lines: list[dict[str, Any]], photos: dict
         if kind == "subtotal":
             ws.row_dimensions[r].height = 22
             _cell(ws, f"A{r}", ln.get("text") or "Sub total", size=9, fill=ORANGE, merge=f"E{r}")
-            _cell(ws, f"F{r}", f"=SUM({','.join(block_cells)})" if block_cells else 0, size=9, fmt=money, fill=ORANGE)
+            _cell(ws, f"F{r}", f"=SUM({','.join(block_cells)})" if block_cells else 0, size=9,
+                  fmt=money if ln.get("amount") else item_money, fill=ORANGE)
             _cell(ws, f"G{r}", None, fill=ORANGE)
             block_cells = []
             r += 1
@@ -401,13 +415,14 @@ def build_xlsx(header: dict[str, Any], lines: list[dict[str, Any]], photos: dict
         # 해외 수량 서식 = 해외 기준 견적서('#,##0_ "sets"' — 천 단위 쉼표, 숫자와 단위 사이 한 칸)
         _cell(ws, f"D{r}", ln["qty"], size=9, fmt=f'#,##0_ "{ln.get("unit") or "ea"}"' if en
               else f'0" {ln["unit"]}"' if ln.get("unit") else EA)
-        _cell(ws, f"E{r}", ln["unit_price"], size=9, fmt=money)
+        line_money = money if ln.get("kind") in ("work", "freight") else item_money      # 무상 대여여도 물류비·인건비는 금액
+        _cell(ws, f"E{r}", ln["unit_price"], size=9, fmt=line_money)
         if kind == "option" and "in_total" not in ln:      # 예전 옵션 — 공급가액 칸은 비우고 합계에서 뺀다(LG CNS 견적서)
             _cell(ws, f"F{r}", None, size=9)
         elif kind == "option" and not ln["in_total"]:      # 미반영 옵션 — 공급가액은 보이고 Sub total·Total 에는 안 넣음(사용자 2026-10-19)
-            _cell(ws, f"F{r}", f"=D{r}*E{r}{_times(ln)}", size=9, fmt=money)
+            _cell(ws, f"F{r}", f"=D{r}*E{r}{_times(ln)}", size=9, fmt=line_money)
         else:
-            _cell(ws, f"F{r}", f"=D{r}*E{r}{_times(ln)}", size=9, fmt=money)
+            _cell(ws, f"F{r}", f"=D{r}*E{r}{_times(ln)}", size=9, fmt=line_money)
             billed.append(f"F{r}")
             block_cells.append(f"F{r}")
         _cell(ws, f"G{r}", ln["remark"], size=9, h="left" if pic else "center")
@@ -427,6 +442,12 @@ def build_xlsx(header: dict[str, Any], lines: list[dict[str, Any]], photos: dict
         _cell(ws, f"F{r}", total, size=9 if en else 10, fmt=money, h="right", fill=YELLOW)
         _cell(ws, f"G{r}", f"=ROUNDUP(F{r}/{months},{0 if en else -3})", size=9 if en else 10, fill=YELLOW,
               fmt='"Monthly "$#,##0' if en else '"월 "#,##0"원"')
+        ws[f"G{r}"].font = Font(name=FONT, size=9 if en else 10, bold=True, color="FF0000")
+    elif not charged:   # 무상 대여(받을 금액 없음) — Total 칸 값은 0, 보이는 글은 '무상 대여 (N개월)'
+        fm = header.get("free_months")
+        shown = (f"Free rental ({fm} months)" if fm else "Free rental") if en else (f"무상 대여 ({fm}개월)" if fm else "무상 대여")
+        _cell(ws, f"A{r}", tot_lab, fill=YELLOW, merge=f"F{r}")
+        _cell(ws, f"G{r}", total, size=9 if en else 10, fmt=f'"{shown}"', h="right", fill=YELLOW)
         ws[f"G{r}"].font = Font(name=FONT, size=9 if en else 10, bold=True, color="FF0000")
     else:
         _cell(ws, f"A{r}", tot_lab, fill=YELLOW, merge=f"F{r}")

@@ -133,6 +133,8 @@ export interface DealFlow {
   total: number | null;
   paid: number;
   due: number | null;
+  /** 무상 대여(합계 0원, 사용자 2026-10-30) — 목록 금액 '무상', 거래명세서·입금 없이 출하 */
+  free?: boolean;
 }
 
 export interface DealMeeting {
@@ -397,6 +399,10 @@ export interface AsCase {
   cause: "확인 중" | "제품 결함" | "고객 과실" | "기타";
   in_warranty: boolean | null;
   charge: "미정" | "무상" | "유상";
+  /** A/S 금액(원, 수기 — 사용자 2026-10-30). 비우면 null */
+  amount: number | null;
+  /** 이력 — 접수·진행 중·완료·내용 수정을 한 줄씩, 최신이 위(사용자 2026-10-30) */
+  events: AsCaseEvent[];
   status: "접수" | "진행 중" | "완료";
   action: string;
   closed_on: string | null;
@@ -404,6 +410,9 @@ export interface AsCase {
   created_at: string;
   updated_at: string;
 }
+
+/** A/S 이력 한 줄 — at = 한국 시각 'YYYY-MM-DD HH:MM', kind = 접수·진행 중·완료(상태) · 수정(내용만) */
+export interface AsCaseEvent { at: string; kind: "접수" | "진행 중" | "완료" | "수정"; label: string; by: string | null; detail: string }
 
 export interface UnitDetail extends ProductUnit {
   shipment: { date: string | null; carrier: string | null; tracking: string[] | null; receiver: string | null } | null;

@@ -221,6 +221,8 @@ def patch(base: bytes, base_lines: list[dict[str, Any]], base_header: dict[str, 
         raise PatchError("올린 파일과 지금 견적서의 언어(국내·해외)가 다릅니다.")
     if bool(parsed["form"].get("rental_months")) != bool(new_header.get("rental_months")):
         raise PatchError("올린 파일과 지금 견적서의 판매·대여 양식(Total 옆 월 납입금)이 다릅니다.")
+    if new_header.get("rental_free") or base_header.get("rental_free"):
+        raise PatchError("무상 대여 견적서는 회사 양식으로 새로 그립니다(단가·금액 칸이 '무상').")
     if [_kind(r) for r in parsed["rows"]] != [_kind(r) for r in base_lines]:
         raise PatchError("올린 파일의 표 줄이 작성 상태와 맞지 않습니다(엑셀에서 표 구조를 바꾼 것 같습니다).")
     en = new_header["lang"] == "en"

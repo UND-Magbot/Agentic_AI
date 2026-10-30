@@ -1,5 +1,5 @@
 // [제품·A/S] 탭(사용자 2026-10-19, 영업팀 요청 20번) — 시리얼로 고객사·출하·무상 기간·A/S 이력을 찾고, A/S 를 기록한다.
-// 유상 A/S 견적은 영업팀이 프로그램 밖에서 수기로 — 여기는 진행 상태만 쌓는다. 무상 기간 기본값(제품마다)은 관리자가 고친다.
+// 유상 A/S 견적은 영업팀이 프로그램 밖에서 수기로 — 여기는 진행 상태와 A/S 금액(수기)을 쌓는다. 무상 기간은 출하일부터 1년 고정.
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
@@ -8,7 +8,7 @@ import { GroupHead } from "@/components/domains/sales/deal-flow";
 import { INPUT, Muted, todayIso, UnitStateBadge } from "@/components/domains/sales/deal-format";
 import { primaryBtn, secondaryBtn } from "@/components/domains/sales/proposal-actions";
 import { HEAD_AREA, HEAD_FIELD, ROW_BTN, ROW_LABEL } from "@/components/domains/sales/quote-styles";
-import type { AsCase, DealBiz, ProductUnit, UnitDetail, WarrantyPolicy } from "@/lib/shared/sales-deals";
+import type { AsCase, AsCaseEvent, DealBiz, ProductUnit, UnitDetail } from "@/lib/shared/sales-deals";
 import { cn } from "@/lib/shared/utils";
 
 const CAUSES: AsCase["cause"][] = ["확인 중", "제품 결함", "고객 과실", "기타"];
@@ -17,6 +17,9 @@ const STATUSES: AsCase["status"][] = ["접수", "진행 중", "완료"];
 /** 영업 건을 지운 S/N 의 상태(서버 units.DELETED) — 기록으로 남기고 건번호·고객사는 메모에 */
 const UNIT_DELETED = "건 삭제";
 const SMALL = "h-8 rounded-md border border-border bg-surface px-2 text-[12.5px] outline-none focus:border-accent";
+/** A/S 금액 칸 — 숫자만 받아 천 단위 쉼표로 보여 주고, 보낼 때는 원 단위 숫자(비우면 null) */
+const moneyInput = (v: string) => { const n = v.replace(/\D/g, "").slice(0, 12); return n ? Number(n).toLocaleString("ko-KR") : ""; };
+const wonOf = (v: string) => (v.replace(/\D/g, "") ? Number(v.replace(/\D/g, "")) : null);
 
 async function call<T>(path: string, body?: unknown): Promise<T> {
   const r = await fetch(`/api/sales-deals${path}`, body === undefined ? { cache: "no-store" }
@@ -52,14 +55,15 @@ export function ProductUnitsTab({ onOpenDeal }: {
   /** [프로젝트 건 열기] — 그 건을 판매·대여 관리 탭의 상세로 연다(사용자 2026-10-22) */
   onOpenDeal?: (dealId: number, biz: DealBiz) => void;
 } = {}) {
-  const [view, setView] = useState<"units" | "cases" | "policies">("units");
+  // 무상 기간 기본값 탭은 뺐다 — 모든 제품 출하일부터 1년 고정(사용자 2026-10-30)
+  const [view, setView] = useState<"units" | "cases">("units");
   const [openId, setOpenId] = useState<number | null>(null);
   // A/S 기록을 지우면 오른쪽 시리얼 상세도 다시 읽는다
   const [panelVer, setPanelVer] = useState(0);
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-1.5">
-        {([["units", "S/N 찾기"], ["cases", "A/S 기록"], ["policies", "무상 기간 기본값"]] as const).map(([k, label]) => (
+        {([["units", "S/N 찾기"], ["cases", "A/S 기록"]] as const).map(([k, label]) => (
           <button key={k} type="button" onClick={() => setView(k)} aria-pressed={view === k}
                   className={cn("rounded-full border px-3 py-1 text-[12.5px] font-semibold",
                     view === k ? "border-accent bg-accent/10 text-accent" : "border-border text-foreground-muted hover:bg-foreground/5")}>
@@ -72,11 +76,10 @@ export function ProductUnitsTab({ onOpenDeal }: {
         <div className="min-w-0">
           {view === "units" && <UnitSearch openId={openId} onOpen={setOpenId} />}
           {view === "cases" && <CaseList onOpen={setOpenId} onChanged={() => setPanelVer((v) => v + 1)} />}
-          {view === "policies" && <Policies />}
         </div>
         <div className="min-w-0">
           {openId ? <UnitPanel key={`${openId}-${panelVer}`} unitId={openId} onOpenDeal={onOpenDeal} /> : (
-            view !== "policies" && <div className="rounded-xl border border-dashed border-border p-6 text-center text-[13px] text-foreground-muted">
+            <div className="rounded-xl border border-dashed border-border p-6 text-center text-[13px] text-foreground-muted">
               왼쪽에서 S/N을 고르면 고객사·출하·무상 기간·A/S 이력이 보입니다.
             </div>
           )}
@@ -145,6 +148,50 @@ function UnitSearch({ openId, onOpen }: { openId: number | null; onOpen: (id: nu
       )}
     </div>
   );
+}
+
+/** A/S 기록을 제품(S/N)마다 묶는다 — 들어온 순서(최근에 바뀐 기록 먼저)를 지켜 최근에 바뀐 제품이 위 */
+function groupByUnit(items: AsCase[]) {
+  const groups: { key: string; unitId: number | null; serial: string; part: string; customer: string | null; cases: AsCase[] }[] = [];
+  const at = new Map<string, number>();
+  for (const c of items) {
+    const key = c.unit_id ? `u${c.unit_id}` : `s${c.serial}`;
+    if (!at.has(key)) {
+      at.set(key, groups.length);
+      groups.push({ key, unitId: c.unit_id, serial: c.serial, part: c.part_name, customer: c.customer, cases: [] });
+    }
+    groups[at.get(key) as number].cases.push(c);
+  }
+  return groups;
+}
+
+const EVENT_TONE: Record<AsCaseEvent["kind"], string> = {
+  접수: "bg-blue-500", "진행 중": "bg-amber-500", 완료: "bg-emerald-600", 수정: "bg-foreground/30",
+};
+
+/** A/S 진행 이력 — 접수·진행 중·완료(·내용 수정)를 한 줄씩, 최신이 위(사용자 2026-10-30). compact = 목록용(수정 줄은 접어 둔다) */
+function CaseTimeline({ events, compact = false }: { events: AsCaseEvent[]; compact?: boolean }) {
+  const shown = compact ? events.filter((e) => e.kind !== "수정") : events;
+  if (!shown.length) return null;
+  return (
+    <ol className={cn("mt-1.5 flex flex-col gap-1 border-l border-border pl-3", compact ? "text-[11.5px]" : "text-[12px]")}>
+      {shown.map((e, i) => (
+        <li key={`${e.at}-${i}`} className="relative flex flex-wrap items-baseline gap-x-2">
+          <span className={cn("absolute -left-[17px] top-[5px] h-2 w-2 rounded-full ring-2 ring-background", EVENT_TONE[e.kind])} aria-hidden />
+          <span className="tabular-nums text-foreground-muted">{e.at}</span>
+          <b className={cn(e.kind === "수정" ? "font-medium text-foreground-muted" : "font-semibold", i === 0 && e.kind !== "수정" && "text-foreground")}>{e.label}</b>
+          {e.by && <span className="text-foreground-subtle">{e.by}</span>}
+          {e.detail && <span className="text-foreground-subtle">· {e.detail}</span>}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function StatusChip({ status }: { status: AsCase["status"] }) {
+  const tone = status === "완료" ? "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300"
+    : status === "진행 중" ? "bg-amber-500/12 text-amber-700 dark:text-amber-300" : "bg-blue-500/10 text-blue-700 dark:text-blue-300";
+  return <span className={cn("rounded px-1.5 py-0.5 text-[11.5px] font-semibold", tone)}>{status}</span>;
 }
 
 function CaseList({ onOpen, onChanged }: { onOpen: (unitId: number) => void; onChanged?: () => void }) {
@@ -236,24 +283,39 @@ function CaseList({ onOpen, onChanged }: { onOpen: (unitId: number) => void; onC
       </div>
       {more && items && <Muted>최근 접수 {items.length}건만 보입니다 — 오래된 기록은 위 S/N 찾기에서 그 제품을 열어 보세요.</Muted>}
       {items === null ? <Muted>불러오는 중…</Muted> : items.length === 0 ? <Muted>A/S 기록이 없습니다.</Muted> : (
-        <ul className="flex flex-col gap-1.5">
-          {items.map((c) => (
-            <li key={c.id} className="flex items-start gap-2">
-              {selecting && (
-                <input type="checkbox" checked={picked.has(c.id)} onChange={() => toggle(c.id)} aria-label={`${c.serial} A/S 기록 선택`}
-                       className="mt-3 h-4 w-4 shrink-0 cursor-pointer accent-red-600" />
-              )}
-              <button type="button" disabled={!selecting && !c.unit_id} onClick={() => (selecting ? toggle(c.id) : c.unit_id && onOpen(c.unit_id))}
-                      className={cn("w-full rounded-lg border px-3 py-2 text-left text-[12.5px] hover:bg-foreground/[0.03]",
-                        selecting && picked.has(c.id) ? "border-red-500/50 bg-red-500/[0.05]" : "border-border")}>
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-foreground-muted">{c.received_on}</span>
-                  <b className="font-mono">{c.serial}</b>
-                  <span className="truncate">{c.part_name}</span>
-                  <span className="ml-auto flex gap-1"><ChargeChip charge={c.charge} /><span className="rounded bg-foreground/8 px-1.5 py-0.5 text-[11.5px]">{c.status}</span></span>
-                </div>
-                <div className="mt-0.5 text-[11.5px] text-foreground-muted">{c.customer ?? "고객사 없음"} · {c.symptom || "증상 미기재"}</div>
+        // 제품(S/N)마다 묶어 그 제품의 A/S 이력을 따로(사용자 2026-10-30) — 최근에 바뀐 제품이 위, 묶음 안도 최신이 위
+        <ul className="flex flex-col gap-2.5">
+          {groupByUnit(items).map((g) => (
+            <li key={g.key} className="rounded-xl border border-border">
+              <button type="button" disabled={selecting || !g.unitId} onClick={() => g.unitId && onOpen(g.unitId)}
+                      title={g.unitId ? "이 제품 열기" : undefined}
+                      className="flex w-full flex-wrap items-center gap-2 rounded-t-xl border-b border-border bg-foreground/[0.03] px-3 py-2 text-left text-[12.5px] hover:bg-foreground/[0.05]">
+                <b className="font-mono">{g.serial}</b>
+                <span className="truncate">{g.part}</span>
+                <span className="text-foreground-muted">{g.customer ?? "고객사 없음"}</span>
+                <span className="ml-auto text-[11.5px] text-foreground-subtle">A/S {g.cases.length}건</span>
               </button>
+              <ul className="flex flex-col divide-y divide-border/70">
+                {g.cases.map((c) => (
+                  <li key={c.id} className="flex items-start gap-2 px-3 py-2 text-[12.5px]">
+                    {selecting && (
+                      <input type="checkbox" checked={picked.has(c.id)} onChange={() => toggle(c.id)} aria-label={`${c.serial} ${c.received_on} A/S 기록 선택`}
+                             className="mt-1 h-4 w-4 shrink-0 cursor-pointer accent-red-600" />
+                    )}
+                    <div className={cn("min-w-0 flex-1", selecting && picked.has(c.id) && "opacity-70")}>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-foreground-muted">접수 {c.received_on}</span>
+                        <span className="min-w-0 truncate">{c.symptom || "증상 미기재"}</span>
+                        <span className="ml-auto flex items-center gap-1">
+                          {c.amount != null && <span className="text-[11.5px] font-semibold">{c.amount.toLocaleString("ko-KR")}원</span>}
+                          <ChargeChip charge={c.charge} /><StatusChip status={c.status} />
+                        </span>
+                      </div>
+                      <CaseTimeline events={c.events} compact />
+                    </div>
+                  </li>
+                ))}
+              </ul>
             </li>
           ))}
         </ul>
@@ -392,7 +454,7 @@ function chargeBasis(unit: UnitDetail, received: string, cause: AsCase["cause"])
 /** step — 영업 건 상세에서 S/N 고르기(①) 다음 묶음 번호를 이어 붙일 때 */
 function CaseForm({ unit, more = [], onDone, step = 1 }: { unit: UnitDetail; more?: UnitDetail[]; onDone: (changed: boolean) => void; step?: number }) {
   const [f, setF] = useState({ customer: unit.customer ?? "", contact: "", received_on: todayIso(), cause: "확인 중" as AsCase["cause"],
-                               symptom: "", photos: [] as string[], status: "접수" as AsCase["status"], action: "" });
+                               symptom: "", photos: [] as string[], status: "접수" as AsCase["status"], action: "", amount: "" });
   const [picked, setPicked] = useState<AsCase["charge"] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -405,8 +467,9 @@ function CaseForm({ unit, more = [], onDone, step = 1 }: { unit: UnitDetail; mor
     setBusy(true);
     setError(null);
     try {
-      if (more.length) await call("/as-cases/batch", { unit_ids: all.map((u) => u.id), ...f, ...(picked || !mixed ? { charge } : {}) });
-      else await call("/as-cases", { unit_id: unit.id, ...f, charge });
+      const body = { ...f, amount: wonOf(f.amount) };
+      if (more.length) await call("/as-cases/batch", { unit_ids: all.map((u) => u.id), ...body, ...(picked || !mixed ? { charge } : {}) });
+      else await call("/as-cases", { unit_id: unit.id, ...body, charge });
       onDone(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : "저장하지 못했습니다.");
@@ -444,7 +507,7 @@ function CaseForm({ unit, more = [], onDone, step = 1 }: { unit: UnitDetail; mor
       </div>
       <div className="flex flex-col gap-3 rounded-xl border border-border p-4">
         <GroupHead n={step + 1} title="무상·유상 · 진행" tone="bg-cyan-600/10 text-cyan-800 dark:text-cyan-300" />
-        <div className="grid gap-3 md:grid-cols-[160px_160px_minmax(0,1fr)] md:items-end">
+        <div className="grid gap-3 md:grid-cols-[160px_160px_160px_minmax(0,1fr)] md:items-end">
           <label className={ROW_LABEL}><span>무상 / 유상</span>
             <select value={mixed && !picked ? "" : charge} onChange={(e) => setPicked(e.target.value ? e.target.value as AsCase["charge"] : null)} className={HEAD_FIELD}>
               {mixed && <option value="">S/N마다 (기본)</option>}
@@ -452,6 +515,10 @@ function CaseForm({ unit, more = [], onDone, step = 1 }: { unit: UnitDetail; mor
           <label className={ROW_LABEL}><span>진행</span>
             <select value={f.status} onChange={(e) => setF({ ...f, status: e.target.value as AsCase["status"] })} className={HEAD_FIELD}>
               {STATUSES.map((x) => <option key={x}>{x}</option>)}</select></label>
+          {/* A/S 금액(사용자 2026-10-30) — 수기로 적는다, 비워도 됨 */}
+          <label className={ROW_LABEL}><span>A/S 금액 (원)</span>
+            <input value={f.amount} inputMode="numeric" placeholder="예: 350,000" aria-label="A/S 금액"
+                   onChange={(e) => setF({ ...f, amount: moneyInput(e.target.value) })} className={cn(HEAD_FIELD, "text-right")} /></label>
           <p className="rounded-[10px] bg-foreground/[0.04] px-3 py-2 text-[12px] leading-relaxed text-foreground-muted">
             {mixed ? "고른 S/N의 무상 기간이 서로 달라 S/N마다 무상·유상을 정합니다" : basis.text}
             {picked && (mixed || picked !== basis.suggested) ? ` — ${mixed ? "모두" : `기본(${basis.suggested})에서`} ${picked}(으)로 바꿈` : ""}
@@ -464,7 +531,7 @@ function CaseForm({ unit, more = [], onDone, step = 1 }: { unit: UnitDetail; mor
       </div>
       {error && <p className="rounded-xl border border-red-500/25 bg-red-500/[0.06] px-3.5 py-2.5 text-red-700 dark:text-red-300">{error}</p>}
       <div className="flex flex-wrap items-center gap-2">
-        <p className="text-[11.5px] text-foreground-subtle">유상 A/S 견적서는 따로(수기) 작성합니다 — 여기는 접수와 진행 기록만 남깁니다.</p>
+        <p className="text-[11.5px] text-foreground-subtle">유상 A/S 견적서는 따로(수기) 작성하고, 금액은 위 A/S 금액 칸에 적어 둡니다.</p>
         <div className="ml-auto flex gap-2">
           <button type="button" onClick={() => onDone(false)} disabled={busy} className={secondaryBtn}>취소</button>
           <button type="button" onClick={() => void save()} disabled={busy} className={primaryBtn}>
@@ -565,7 +632,8 @@ function CaseRow({ c, onSaved }: { c: AsCase; onSaved: () => void }) {
   const [edit, setEdit] = useState(false);
   // 진행 상태는 버튼으로만 — 고치기는 내용만(사용자 2026-10-22)
   const [f, setF] = useState({ customer: c.customer ?? "", contact: c.contact, cause: c.cause, charge: c.charge,
-                               symptom: c.symptom, photos: c.photos, action: c.action, note: c.note });
+                               symptom: c.symptom, photos: c.photos, action: c.action, note: c.note,
+                               amount: c.amount == null ? "" : c.amount.toLocaleString("ko-KR") });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // 진행은 버튼으로만(사용자 2026-10-22): 접수 → [A/S 들어감 확인] → 진행 중 → [A/S 완료] → 완료
@@ -587,7 +655,7 @@ function CaseRow({ c, onSaved }: { c: AsCase; onSaved: () => void }) {
     setBusy(true);
     setError(null);
     try {
-      await call(`/as-cases/${c.id}`, f);
+      await call(`/as-cases/${c.id}`, { ...f, amount: wonOf(f.amount) });
       setEdit(false);
       onSaved();
     } catch (e) {
@@ -601,6 +669,7 @@ function CaseRow({ c, onSaved }: { c: AsCase; onSaved: () => void }) {
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-foreground-muted">{c.received_on}</span>
         <ChargeChip charge={c.charge} />
+        {c.amount != null && <span className="font-semibold">{c.amount.toLocaleString("ko-KR")}원</span>}
         <span className="rounded bg-foreground/8 px-1.5 py-0.5 text-[11.5px]">{c.status}</span>
         <span className="text-foreground-muted">원인: {c.cause}</span>
         {c.in_warranty != null && <span className="text-[11.5px] text-foreground-subtle">{c.in_warranty ? "무상 기간 안 접수" : "무상 기간 지나 접수"}</span>}
@@ -625,8 +694,8 @@ function CaseRow({ c, onSaved }: { c: AsCase; onSaved: () => void }) {
           <p className="mt-0.5 text-[11.5px] text-foreground-muted">
             {asking === "진행 중"
               ? (c.charge === "유상"
-                ? "유상 A/S 입니다 — 영업이 수기로 쓴 A/S 견적서에 고객이 동의하고(필요하면 입금까지) 확인한 뒤 누르세요. 누르면 'A/S 진행 중'이 되고, 제품 판매 관리에서 이 건의 줄이 연하게 보입니다."
-                : "제품을 받아 A/S 를 시작했으면 누르세요. 누르면 'A/S 진행 중'이 되고, 제품 판매 관리에서 이 건의 줄이 연하게 보입니다.")
+                ? "유상 A/S 입니다 — 영업이 수기로 쓴 A/S 견적서에 고객이 동의하고(필요하면 입금까지) 확인한 뒤 누르세요. 누르면 'A/S 진행 중'이 되고, 제품 영업 건 관리에서 이 건의 줄이 연하게 보입니다."
+                : "제품을 받아 A/S 를 시작했으면 누르세요. 누르면 'A/S 진행 중'이 되고, 제품 영업 건 관리에서 이 건의 줄이 연하게 보입니다.")
               : "누르면 '완료'가 되고 오늘이 완료일로 남습니다. 기록은 A/S 목록에 그대로 남습니다. 조치 내용은 [내용 고치기]로 적어 두세요."}
           </p>
           <div className="mt-2 flex justify-end gap-2">
@@ -644,6 +713,7 @@ function CaseRow({ c, onSaved }: { c: AsCase; onSaved: () => void }) {
           <p className="mt-1 text-[11.5px] text-foreground-muted">
             {c.customer ?? "고객사 없음"}{c.contact ? ` · ${c.contact}` : ""}{c.received_by ? ` · 접수 ${c.received_by}` : ""}
           </p>
+          <CaseTimeline events={c.events} />
           {c.symptom && <p className="mt-1 whitespace-pre-line">고장 원인·증상: {c.symptom}</p>}
           {c.photos.length > 0 && <div className="mt-1.5"><PhotoPicker photos={c.photos} onChange={() => {}} disabled /></div>}
           {c.action && <p className="mt-0.5 whitespace-pre-line text-foreground-muted">조치: {c.action}</p>}
@@ -661,6 +731,8 @@ function CaseRow({ c, onSaved }: { c: AsCase; onSaved: () => void }) {
               {CHARGES.map((x) => <option key={x}>{x}</option>)}</select>
             <select value={f.cause} onChange={(e) => setF({ ...f, cause: e.target.value as AsCase["cause"] })} className={SMALL} aria-label="고장 원인 구분">
               {CAUSES.map((x) => <option key={x}>{x}</option>)}</select>
+            <input value={f.amount} inputMode="numeric" placeholder="A/S 금액 (원)" aria-label="A/S 금액"
+                   onChange={(e) => setF({ ...f, amount: moneyInput(e.target.value) })} className={cn(SMALL, "w-[140px] text-right")} />
           </div>
           <textarea value={f.symptom} onChange={(e) => setF({ ...f, symptom: e.target.value })} rows={2} maxLength={1000} placeholder="고장 원인·증상"
                     className="rounded-md border border-border bg-surface px-2 py-1.5 outline-none focus:border-accent" />
@@ -680,68 +752,3 @@ function CaseRow({ c, onSaved }: { c: AsCase; onSaved: () => void }) {
   );
 }
 
-/** 무상 기간 기본값 — 제품마다(부품명·제조사에 이 이름이 들어 있으면 그 개월 수). 시리얼 등록 때 채워지고 건마다 고칠 수 있다. */
-function Policies() {
-  const [rows, setRows] = useState<WarrantyPolicy[] | null>(null);
-  const [canEdit, setCanEdit] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  useEffect(() => {
-    call<{ rows: WarrantyPolicy[]; can_edit: boolean }>("/warranty-policies")
-      .then((d) => { setRows(d.rows); setCanEdit(d.can_edit); }).catch(() => setRows([]));
-  }, []);
-  const save = async () => {
-    if (!rows) return;
-    setBusy(true);
-    setMsg(null);
-    try {
-      const d = await call<{ rows: WarrantyPolicy[] }>("/warranty-policies", { rows: rows.map(({ keyword, months, note }) => ({ keyword, months, note })) });
-      setRows(d.rows);
-      setMsg({ ok: true, text: "저장했습니다. 이미 등록한 S/N의 무상 기간은 바뀌지 않습니다." });
-    } catch (e) {
-      setMsg({ ok: false, text: e instanceof Error ? e.message : "저장하지 못했습니다." });
-    } finally {
-      setBusy(false);
-    }
-  };
-  if (rows === null) return <Muted>불러오는 중…</Muted>;
-  return (
-    <div className="flex flex-col gap-2 text-[12.5px]">
-      <p className="text-foreground-muted">
-        부품명·품목·제조사에 아래 이름이 들어 있으면 S/N 등록 때 그 개월 수가 채워집니다(여러 개 맞으면 긴 이름). 비우면 &lsquo;미정&rsquo;.
-        {!canEdit && " 고치기는 관리자만 할 수 있습니다."}
-      </p>
-      <div className="grid grid-cols-[minmax(0,1.2fr)_90px_minmax(0,1.5fr)_28px] gap-1.5 text-[11.5px] text-foreground-muted">
-        <span>제품 이름(예: TCV, Cable, Dobot)</span><span>무상(개월)</span><span>메모</span><span />
-      </div>
-      {rows.length === 0 && <Muted>아직 정한 기본값이 없습니다 — S/N마다 직접 적거나 &lsquo;미정&rsquo;으로 둡니다.</Muted>}
-      {rows.map((r, i) => (
-        <div key={i} className="grid grid-cols-[minmax(0,1.2fr)_90px_minmax(0,1.5fr)_28px] items-center gap-1.5">
-          <input value={r.keyword} disabled={!canEdit} maxLength={60} aria-label={`${i + 1}번 제품 이름`} className={SMALL}
-                 onChange={(e) => setRows(rows.map((x, j) => (j === i ? { ...x, keyword: e.target.value } : x)))} />
-          <input value={r.months ?? ""} disabled={!canEdit} inputMode="numeric" placeholder="미정" aria-label={`${i + 1}번 무상 기간`} className={SMALL}
-                 onChange={(e) => { const v = e.target.value.replace(/\D/g, "").slice(0, 3); setRows(rows.map((x, j) => (j === i ? { ...x, months: v === "" ? null : Number(v) } : x))); }} />
-          <input value={r.note} disabled={!canEdit} maxLength={300} aria-label={`${i + 1}번 메모`} className={SMALL}
-                 onChange={(e) => setRows(rows.map((x, j) => (j === i ? { ...x, note: e.target.value } : x)))} />
-          {canEdit ? (
-            <button type="button" aria-label={`${i + 1}번 지우기`} onClick={() => setRows(rows.filter((_, j) => j !== i))}
-                    className="grid h-7 w-7 place-items-center rounded text-foreground-subtle hover:bg-foreground/5 hover:text-foreground">
-              <Icon name="trash" className="h-3.5 w-3.5" />
-            </button>
-          ) : <span />}
-        </div>
-      ))}
-      {canEdit && (
-        <div className="flex items-center gap-2">
-          <button type="button" onClick={() => setRows([...rows, { keyword: "", months: null, note: "" }])}
-                  className="inline-flex items-center gap-1 rounded border border-border px-2 py-0.5 text-foreground-muted hover:text-foreground">
-            <Icon name="plus" className="h-3.5 w-3.5" /> 줄 추가
-          </button>
-          <button type="button" onClick={() => void save()} disabled={busy}
-                  className="ml-auto h-8 rounded-lg bg-accent px-4 font-semibold text-white disabled:opacity-60">{busy ? "저장 중…" : "저장"}</button>
-        </div>
-      )}
-      {msg && <p className={msg.ok ? "text-emerald-700 dark:text-emerald-300" : "text-red-600"}>{msg.text}</p>}
-    </div>
-  );
-}

@@ -202,9 +202,88 @@ def answer(data: dict[str, Any], since: dt.date | None, until: dt.date | None = 
         out.append(f"\n아직 출하 전인 R 제품(대여 전) {len(data['waiting'])}개 — 출하하면 위 목록에 나옵니다: "
                    + ", ".join(f"{x['serial']}({x['customer']})" for x in data["waiting"][:20]))
     if data["unregistered"]:
-        out.append(f"\nS/N을 아직 등록하지 않은 대여 건 {len(data['unregistered'])}건 — [제품 대여 관리]에서 출하 기록 때 S/N을 등록하면 위 목록에 나옵니다:")
+        out.append(f"\nS/N을 아직 등록하지 않은 대여 건 {len(data['unregistered'])}건 — [제품 영업 건 관리]에서 출하 기록 때 S/N을 등록하면 위 목록에 나옵니다:")
         for d in data["unregistered"][:20]:
             rent = d["rental"] or {}
             period = f"{rent.get('start')} ~ {rent.get('end')}" if rent.get("start") else f"{rent.get('months', '?')}개월 · 시작일 미정"
             out.append(f"- {d['customer']} · {d['title']} ({d['deal_no'] or '번호 없음'}) · {period} · {'수주' if d['won'] else '견적'}")
     return "\n".join(out)
+
+
+# ── 대여 제품 목록(사용자 2026-10-30) ─────────────────────────────────────────
+# [대여 제품 목록] 탭 — 건이 아니라 나간 제품 한 줄씩. 핵심은 언제 반납되는지와 지금 어떤 상태인지(금액은 보이지 않는다).
+SOON_DAYS = 30                 # 반납 예정일이 이 안이면 '반납 임박'
+
+
+def _phase(unit_status: str | None, ret: dict) -> str:
+    if ret.get("done") or unit_status == "회수":
+        return "회수 완료"
+    if ret.get("started"):
+        return "회수 중"
+    return "대여 중" if unit_status == "출하" else "출하 전"
+
+
+async def rental_units(db: AsyncSession, today: dt.date) -> dict[str, Any]:
+    """대여 건(대여 견적서로 낸 건)의 제품 — S/N 마다 한 줄 + 수주했는데 S/N 을 아직 안 적은 건은 견적 품목 줄로.
+    줄 = {unit_id, deal_id, product, part, serial, state(제품 상태 코드), phase, customer, contact, owner, deal_no, title,
+          start, end, returned(회수 완료일), return_started, days_left(반납 예정일까지, 지났으면 음수), free}."""
+    rs = (await db.execute(text(
+        "SELECT u.id, u.serial, u.no_serial, u.part_name, u.line_name, u.status, u.purpose, u.warranty_start, u.deal_id, "
+        "       d.customer, d.contact, d.owner, d.title, d.deal_no, d.quote, d.shipments "
+        "FROM product_units u JOIN sales_deals d ON d.id = u.deal_id "
+        "WHERE COALESCE(d.dropped, false) = false AND d.quote->>'biz' = 'rental' AND u.status <> '건 삭제' "
+        "ORDER BY u.deal_id, u.line_no, u.id"))).mappings().all()
+    rows: list[dict[str, Any]] = []
+    seen: set[int] = set()
+
+    def base(deal: dict, q: dict) -> dict[str, Any]:
+        rent = q.get("rental") or {}
+        ret = rent.get("return") or {}
+        items = q.get("items") or []
+        return {"deal_id": deal["deal_id"], "customer": deal["customer"] or "", "contact": deal["contact"] or "",
+                "owner": deal["owner"] or "", "deal_no": q.get("no") or deal["deal_no"] or "", "title": deal["title"] or "",
+                "end": rent.get("end"), "months": rent.get("months"), "returned": ret.get("done"), "return_started": ret.get("started"),
+                "free": q.get("amount") is not None and float(q["amount"]) == 0 and bool(items)}
+
+    for r in rs:
+        q = _j(r["quote"]) or {}
+        b = base(dict(r), q)
+        seen.add(r["deal_id"])
+        rows.append({**b, "unit_id": r["id"], "product": (r["line_name"] or "").split("\n")[0], "part": r["part_name"] or "",
+                     "serial": r["serial"] or "", "no_serial": bool(r["no_serial"]), "state": r["purpose"],
+                     "phase": _phase(r["status"], q.get("rental", {}).get("return") or {}),
+                     "start": _start(dict(r), q, _j(r["shipments"]) or [])})
+    # 수주했는데 S/N 이 하나도 없는 대여 건 — 견적 품목 줄을 그대로 보여 준다(무엇을 내보낼지는 보이게)
+    ds = (await db.execute(text(
+        "SELECT id AS deal_id, customer, contact, owner, title, deal_no, quote FROM sales_deals "
+        "WHERE quote->>'biz' = 'rental' AND won IS TRUE AND COALESCE(dropped, false) = false ORDER BY id"))).mappings().all()
+    for d in ds:
+        if d["deal_id"] in seen:
+            continue
+        q = _j(d["quote"]) or {}
+        b = base(dict(d), q)
+        if b["returned"]:
+            continue
+        for it in q.get("items") or []:
+            name = str(it.get("name") or "").split("\n")[0]
+            if not name:
+                continue
+            rows.append({**b, "unit_id": None, "product": name, "part": "", "serial": "", "no_serial": False, "state": None,
+                         "phase": "S/N 미등록", "qty": it.get("qty"), "start": (q.get("rental") or {}).get("start")})
+    for x in rows:
+        x["days_left"] = (dt.date.fromisoformat(x["end"]) - today).days if x.get("end") and x["phase"] in ("대여 중", "회수 중") else None
+    # 급한 것이 위 — 대여 중·회수 중은 반납 예정일 가까운 순(날짜 없으면 뒤), 그다음 출하 전·미등록, 회수 완료는 맨 아래(최근 회수 먼저)
+    group = {"대여 중": 0, "회수 중": 0, "출하 전": 1, "S/N 미등록": 2, "회수 완료": 3}
+
+    def key(x: dict) -> tuple:
+        g = group[x["phase"]]
+        when = (x["end"] or "9999") if g == 0 else _neg(x["returned"] or "0000") if g == 3 else ""
+        return g, when, x["customer"], x["serial"]
+
+    rows.sort(key=key)
+    return {"today": today.isoformat(), "soon_days": SOON_DAYS, "rows": rows}
+
+
+def _neg(day: str) -> str:
+    """최근 날짜가 먼저 오게 정렬 키를 뒤집는다('2026-10-30' → 작을수록 최근)."""
+    return "".join(chr(ord("9") - ord(c) + ord("0")) if c.isdigit() else c for c in day)

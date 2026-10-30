@@ -19,8 +19,10 @@ SCREENS: list[tuple[str, re.Pattern[str], str]] = [
     ("견적서 탭으로 이동", re.compile(r"견적서?\s*(탭|화면|페이지|목록|메뉴)|견적서\s*(로|으로)\s"), "/proposals/recommend?tab=quote"),
     ("수주 진행으로 이동", re.compile(r"수주\s*진행|거래\s*명세서\s*(발급\s*)?(탭|화면|페이지|목록)|출하\s*대기|입금\s*확인\s*(탭|화면|페이지|목록)"),
      "/proposals/recommend?tab=order"),
-    ("제품 대여 관리로 이동", re.compile(r"대여\s*관리|렌탈\s*관리|대여\s*(탭|화면|페이지|목록)"), "/proposals/recommend?tab=rentals"),
-    ("제품 판매 관리로 이동", re.compile(r"판매\s*관리|영업\s*건\s*(관리|목록|리스트|탭|화면|페이지)|건\s*목록|딜\s*목록|영업\s*관리"),
+    # 대여 제품 목록(사용자 2026-10-30) — 대여 나간 제품 한 줄씩(반납일·상태). 대여 건 자체는 제품 영업 건 관리에서
+    ("대여 제품 목록으로 이동", re.compile(r"대여\s*(관리|제품|목록|탭|화면|페이지)|렌탈\s*(관리|제품|목록)|반납\s*(일|예정|목록)"),
+     "/proposals/recommend?tab=rentals"),
+    ("제품 영업 건 관리로 이동", re.compile(r"판매\s*관리|영업\s*건\s*(관리|목록|리스트|탭|화면|페이지)|건\s*목록|딜\s*목록|영업\s*관리"),
      "/proposals/recommend?tab=deals"),
     ("승인 요청으로 이동", re.compile(r"승인\s*요청"), "/proposals/recommend?tab=memory&sub=approvals"),
     ("제품·A/S로 이동", re.compile(r"A\s*/\s*S\s*(탭|화면|페이지|기록|목록)|제품\s*·?\s*A\s*/\s*S|S\s*/\s*N\s*찾기|무상\s*기간\s*기본값", re.I),

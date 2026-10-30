@@ -216,8 +216,8 @@ async def flow(db, deal_id: int, qid: int) -> None:
     await svc.add_shipment(db, deal_id, None, dict(ship))
     rs = {r["serial"]: r for r in await units.deal_units(db, deal_id)}
     check(rs[s1]["shipment_index"] == 0 and rs[s1]["warranty_start"] == "2026-10-19" and rs[s1]["warranty_until"] == "2027-10-18"
-          and rs[s2]["warranty_until"] == "2027-04-18" and rs["특주"]["warranty_until"] is None and rs[s1]["status"] == "출하",
-          "출하 = 무상 기간 시작·종료일 확정(개월 없으면 미정)", str({k: (r["warranty_start"], r["warranty_until"]) for k, r in rs.items()}))
+          and all(r["warranty_months"] == 12 and r["warranty_until"] == "2027-10-18" for r in rs.values()) and rs[s1]["status"] == "출하",
+          "출하 = 무상 기간 시작·종료일 확정 — 모든 제품 1년 고정(보낸 6개월·미정도 1년, 사용자 2026-10-30)", str({k: (r["warranty_start"], r["warranty_until"]) for k, r in rs.items()}))
     # 출하한 시리얼은 지울 수 없음, 무상 기간을 고치면 종료일도 다시
     await expect_error(units.save_units(db, deal_id, None, qid, 0, [{"line_no": 0, "units": [{"id": rs[s1]["id"], "serial": s1}]}]),
                        "출하한 시리얼 지우기 → 막음", "지울 수 없습니다")
@@ -227,7 +227,8 @@ async def flow(db, deal_id: int, qid: int) -> None:
                                                 for u in ln["units"]]} for ln in cur["lines"]]
     await units.save_units(db, deal_id, None, qid, 0, pay)
     rs = {r["serial"]: r for r in await units.deal_units(db, deal_id)}
-    check(rs[s1]["warranty_until"] == "2028-10-18", "출하 뒤 무상 기간 고치면 종료일 다시(시작일 그대로)", rs[s1]["warranty_until"])
+    check(rs[s1]["warranty_until"] == "2027-10-18" and rs[s1]["warranty_months"] == 12,
+          "무상 기간은 1년 고정 — 24개월로 보내도 바뀌지 않음(사용자 2026-10-30)", rs[s1]["warranty_until"])
 
     # A/S — 기간 안 제품 결함 = 무상 제안, 고객 과실 = 유상, 완료하면 완료일
     c1 = await units.create_case(db, None, rs[s1]["id"], {"received_on": dt.date(2027, 3, 2), "symptom": "결합 불량", "cause": "제품 결함"})
@@ -241,14 +242,26 @@ async def flow(db, deal_id: int, qid: int) -> None:
     check(c2["customer"] == "(주)바뀐고객" and c2["contact"].startswith("김철수") and c2["photos"] == [pid] and "received_by" in c2,
           "A/S 접수서 = 고객사(고칠 수 있음)·담당자·사진(겹침 하나로)·접수자", str(c2)[:300])
     # 같은 S/N 에 진행 중 A/S(c2)가 있으면 새 접수는 막으므로(사용자 2026-10-27) 끝난 기록으로 남겨 확인한다
-    c3 = await units.create_case(db, None, rs[s2]["id"], {"received_on": dt.date(2027, 3, 2), "charge": "무상", "status": "완료"})
+    c3 = await units.create_case(db, None, rs[s2]["id"], {"received_on": dt.date(2027, 3, 2), "charge": "무상", "status": "완료",
+                                                          "amount": 120_000})
     check(c3["charge"] == "무상" and c3["in_warranty"] is True, "무상·유상 직접 고르면 그 값(제안은 출하일 기준 무상 기간)")
+    check(c3["amount"] == 120_000, "A/S 접수 때 금액도 저장", str(c3.get("amount")))
     await db.execute(text("DELETE FROM as_cases WHERE id = :i"), {"i": c3["id"]})
     await db.commit()
     await expect_error(units.create_case(db, None, rs[s2]["id"], {"photos": ["../../etc/passwd"]}), "사진 id 가 아니면 막음", "사진")
     await db.rollback()
     c2 = await units.update_case(db, None, c2["id"], {"photos": [], "contact": "이영희 대리"})
     check(c2["photos"] == [] and c2["contact"] == "이영희 대리", "접수서 고치기(담당자·사진)", str(c2)[:200])
+    # A/S 금액(원, 수기 — 사용자 2026-10-30): 비우면 None, 쉼표 글도 숫자로, 다시 비우기, 음수·글자는 막음
+    check(c2["amount"] is None, "A/S 금액 — 안 적으면 비움", str(c2.get("amount")))
+    c2 = await units.update_case(db, None, c2["id"], {"amount": "350,000"})
+    check(c2["amount"] == 350_000 and any("amount" in (h.get("changed") or {}) for h in c2["history"]), "A/S 금액 적기(쉼표 글 → 숫자) · 이력에 남음",
+          str(c2["amount"]))
+    for bad in (-1, "삼십만"):
+        await expect_error(units.update_case(db, None, c2["id"], {"amount": bad}), f"A/S 금액 {bad!r} → 막음", "A/S 금액")
+        await db.rollback()
+    c2 = await units.update_case(db, None, c2["id"], {"amount": None})
+    check(c2["amount"] is None, "A/S 금액 다시 비우기")
     d = await svc.get_deal(db, deal_id, today)
     lst = next(r for r in (await svc.list_deals(db, today))["rows"] if r["id"] == deal_id)
     check((d["as_open"], d["as_total"], lst["as_open"]) == (2, 2, 2), "영업 건에 A/S 진행 중 건수(상세·리스트)",
@@ -275,6 +288,16 @@ async def flow(db, deal_id: int, qid: int) -> None:
           "시리얼 찾기 결과에 프로젝트 건(id·판매/대여·건명)", str({k: hit.get(k) for k in ("deal_id", "deal_biz", "deal_title")}))
     c2 = await units.update_case(db, None, c2["id"], {"status": "완료"})
     check((await state()).scalar() == "S", "A/S 완료면 제품 상태가 들어가기 전(S)으로")
+    # A/S 이력(사용자 2026-10-30) — 접수·진행 중·완료가 덮이지 않고 모두, 최신이 위. 내용만 고친 일은 '수정'
+    ev = c2["events"]
+    check([e["kind"] for e in ev if e["kind"] != "수정"] == ["완료", "진행 중", "접수"] and ev[0]["kind"] == "완료"
+          and ev[-1]["label"] == "A/S 접수" and all(e["at"][:4].isdigit() and len(e["at"]) == 16 for e in ev),
+          "A/S 이력 = 완료 → 진행 중 → 접수(최신이 위, 한국 시각)", str(ev))
+    check(any(e["kind"] == "수정" and "A/S 금액" in e["detail"] for e in ev), "내용만 고친 일도 이력에(무엇을 고쳤는지)", str(ev))
+    cases = await units.list_cases(db, unit_id=rs[s2]["id"])
+    check(cases and cases[0]["id"] == c2["id"] and "events" in cases[0], "제품의 A/S 기록 — 마지막으로 바뀐 기록이 위 · 이력 함께")
+    dev = [e["detail"]["to"] for e in (await svc.get_deal(db, deal_id, today))["events"] if e["action"] == "as_case_status"]
+    check(dev[:2] == ["완료", "진행 중"], "A/S 진행 중·완료도 영업 건 변경 이력에(최신이 위)", str(dev))
     lst = next(r for r in (await svc.list_deals(db, today))["rows"] if r["id"] == deal_id)
     check(lst["as_active"] == 0 and lst["as_total"] == 2, "[A/S 완료] → 진행 중에서 빠지고 기록은 남음", str((lst["as_active"], lst["as_total"])))
     # 관리자 A/S 기록 삭제(사용자 2026-10-22) — 진행 중이던 건이면 제품 상태 되돌림, 보관함에 남김, 시리얼은 그대로
