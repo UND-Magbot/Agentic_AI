@@ -194,8 +194,8 @@ class StatementIn(BaseModel):
     initials: str = Field(default="", max_length=4)      # 발행자 이니셜(기본 = 로그인 계정, 폼에서 고침) — 번호는 서버가 매긴다
     date: dt.date
     buyer: StatementBuyerIn
-    items: list[StatementItemIn] = Field(min_length=1, max_length=30)
-    parts: list[OrderItemIn] = Field(default_factory=list, max_length=30)   # 세트로 묶었을 때 원래 품목(참고·되돌리기용)
+    items: list[StatementItemIn] = Field(min_length=1, max_length=150)   # 30줄 넘으면 여러 장(statement_xlsx, 2026-11-09)
+    parts: list[OrderItemIn] = Field(default_factory=list, max_length=150)   # 세트로 묶었을 때 원래 품목(참고·되돌리기용)
 
     @model_validator(mode="after")
     def _total(self) -> "StatementIn":
@@ -992,8 +992,8 @@ class OrderDraftIn(BaseModel):
     initials: str = Field(default="", max_length=4)       # 발행자 이니셜
     date: dt.date
     buyer: dict[Literal["reg_no", "name", "ceo", "address"], str] = Field(default_factory=dict)
-    items: list[OrderItemIn] = Field(default_factory=list, max_length=30)
-    parts: list[OrderItemIn] = Field(default_factory=list, max_length=30)
+    items: list[OrderItemIn] = Field(default_factory=list, max_length=150)
+    parts: list[OrderItemIn] = Field(default_factory=list, max_length=150)
 
 
 class OrderAgentIn(BaseModel):

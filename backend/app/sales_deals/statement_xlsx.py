@@ -5,6 +5,8 @@ A4 한 장에 같은 명세서 두 장: 위 '공급자보관용', 아래 '공급
 머리(발행번호·발행일자·공급자·공급받는자) → 품목(품명·규격·수량·단가·금액·비고) → 인수자 칸 + 공급가액·부가세·합계.
 공급자 칸은 양식 그대로(등록번호·상호·성명·주소, 직인), 공급받는자는 건마다 입력(고객사별로 기억 — service.statement_buyer).
 품목 줄은 양식의 8줄보다 많으면 늘린다(한 장에 맞춰 인쇄 — 쪽 맞춤).
+30줄을 넘으면(대여 S/N 목록 등, 사용자 2026-11-09) 한 장에 넣으면 글자가 너무 작아져 두 장을 각각 새 쪽에서 시작하고
+가로만 맞춰(양식 크기 그대로) 세로는 여러 장으로 찍는다.
 세트로 묶어서 발급할 수 있다(사용자 2026-10-08, 출하처럼 'TCC1 툴체인저(ATC) 1 SET') — 품목 한 줄 + unit 'SET',
 원래 품목은 parts 로 같이 남긴다(양식에는 세트 한 줄만, 품목별로 되돌릴 때 쓴다).
 """
@@ -22,6 +24,7 @@ from openpyxl.drawing.image import Image as XLImage
 from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
 from openpyxl.drawing.xdr import XDRPositiveSize2D
 from openpyxl.utils.units import pixels_to_EMU
+from openpyxl.worksheet.pagebreak import Break
 from openpyxl.styles import Alignment, Border, Font, Side
 
 from ..company_knowledge.product_prices import COMPANY_PROFILE
@@ -29,7 +32,8 @@ from ..company_knowledge.product_prices import COMPANY_PROFILE
 # 양식의 공급자 칸(샘플 거래명세서에 적힌 값)
 SUPPLIER = COMPANY_PROFILE["statement_supplier"]
 MIN_ROWS = 8                       # 양식의 품목 줄 수
-MAX_ITEMS = 30
+ONE_PAGE_MAX = 30                  # 이 줄 수까지는 A4 한 장에 두 장(공급자·공급받는자) — 넘으면 여러 장
+MAX_ITEMS = 150
 SEAL = Path(__file__).resolve().parents[1] / "company_knowledge" / "data" / "quote" / "seal.png"
 FONT = "맑은 고딕"
 WON = '"₩"#,##0'
@@ -288,17 +292,22 @@ def build_xlsx(st: dict[str, Any], *, strict: bool = True) -> bytes:
     for col, w in COL_PT.items():
         ws.column_dimensions[col].width = _col_width(w)
     n = max(MIN_ROWS, len(st["items"]))
+    one_page = len(st["items"]) <= ONE_PAGE_MAX
     nxt = _copy(ws, 1, st, "공급자보관용", n)
-    # 두 장 사이 — 빈 줄 · 자르는 선(굵은 가로줄) · 빈 줄
-    for k, h in enumerate(GAP_BETWEEN_PT):
-        _height(ws, nxt + k, h)
-    for col in COL_PT:
-        ws[f"{col}{nxt}"].border = Border(bottom=_MED)
-    _copy(ws, nxt + len(GAP_BETWEEN_PT), st, "공급받는자보관용", n)
+    if one_page:
+        # 두 장 사이 — 빈 줄 · 자르는 선(굵은 가로줄) · 빈 줄
+        for k, h in enumerate(GAP_BETWEEN_PT):
+            _height(ws, nxt + k, h)
+        for col in COL_PT:
+            ws[f"{col}{nxt}"].border = Border(bottom=_MED)
+        _copy(ws, nxt + len(GAP_BETWEEN_PT), st, "공급받는자보관용", n)
+    else:                                                 # 긴 명세서 — 공급받는자보관용은 새 쪽에서
+        ws.row_breaks.append(Break(id=nxt - 1))
+        _copy(ws, nxt, st, "공급받는자보관용", n)
     ws.page_setup.paperSize = ws.PAPERSIZE_A4
     ws.page_setup.orientation = "portrait"
     ws.sheet_properties.pageSetUpPr.fitToPage = True
-    ws.page_setup.fitToWidth, ws.page_setup.fitToHeight = 1, 1
+    ws.page_setup.fitToWidth, ws.page_setup.fitToHeight = 1, (1 if one_page else 0)   # 0 = 세로는 필요한 만큼
     ws.print_options.horizontalCentered = True
     ws.page_margins.left = ws.page_margins.right = round(SIDE_MARGIN_IN, 3)
     ws.page_margins.top, ws.page_margins.bottom = 0.5, 0.4

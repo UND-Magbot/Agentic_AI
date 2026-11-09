@@ -182,6 +182,23 @@ check(flow.supply_total(fr) == 19_600_000 and [t["amount"] for t in flow.terms(f
       "명세서가 있어도 공급가액·회차 금액은 견적 합계(물류비 포함) 기준", str((flow.supply_total(fr), [t["amount"] for t in flow.terms(fr)])))
 check(flow.supply_total({"statement": {"totals": {"supply": 5_000_000}}}) == 5_000_000, "견적 없는 옛 건은 명세서 공급가액")
 
+# 긴 거래명세서(사용자 2026-11-09) — 30줄까지는 A4 한 장에 두 장, 넘으면 두 장을 각각 새 쪽에서·세로 여러 장, 150줄까지
+def _st(n: int) -> dict:
+    return {"no": "DL-TS20261109-01", "date": "2026-11-09", "buyer": {"reg_no": "1", "name": "B", "ceo": "", "address": "A"},
+            "items": [{"name": f"P{i}", "spec": "", "qty": 1, "unit_price": 1000, "note": ""} for i in range(n)]}
+
+
+for n, pages in ((30, 1), (31, 0), (150, 0)):
+    ws = openpyxl.load_workbook(io.BytesIO(sx.build_xlsx(_st(n)))).active
+    breaks = len(ws.row_breaks.brk)
+    check(ws.page_setup.fitToHeight == pages and breaks == (0 if pages else 1),
+          f"명세서 {n}줄 — " + ("한 장" if pages else "공급받는자보관용 새 쪽·여러 장"), f"{ws.page_setup.fitToHeight} {breaks}")
+try:
+    sx.check(_st(151))
+    check(False, "명세서 151줄은 거절")
+except sx.StatementError:
+    check(True, "명세서 151줄은 거절")
+
 print(f"PASS {len(PASS)} / FAIL {len(FAIL)}")
 for label, detail in FAIL:
     print(f"  ✗ {label}: {detail}")
