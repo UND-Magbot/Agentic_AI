@@ -17,7 +17,7 @@ type ReadResult = { status: "ok" | "unreadable" | "failed"; items: Item[]; suppl
                     vat_included?: boolean | null; doc_no?: string | null; summary: string; template?: boolean };
 type SyncPreview = { applies: boolean; template: boolean; changes: string[]; warnings: string[]; message: string;
                      /** 대여 견적서 — 개월 수(파일 기준)·지금 정해진 시작일 */
-                     rental?: { months: number | null; start: string | null };
+                     rental?: { months: number | null; start: string | null; free?: boolean };
                      /** 판매/대여가 작성 중인 견적과 다름 — 발행 막음 */
                      blocked?: string };
 
@@ -125,7 +125,9 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
     try {
       const r = await fetch(confirmUrl, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ upload, doc_no: docNo.trim(), initials: initials.trim().toUpperCase(), items, overwrite,
+        body: JSON.stringify({ upload, doc_no: docNo.trim(), initials: initials.trim().toUpperCase(),
+                               // 무상 대여 — 비운 단가는 0(무상)으로(사용자 2026-11-09)
+                               items: free ? items.map((x) => ({ ...x, unit_price: x.unit_price ?? 0 })) : items, overwrite,
                                sync: doSync, rental_start: rentStart || null, rental_checked: rentOk }),
       });
       const d = await r.json().catch(() => ({}));
@@ -147,8 +149,9 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
   const setItem = (i: number, patch: Partial<Item>) => setItems((xs) => xs.map((x, j) => (j === i ? { ...x, ...patch } : x)));
   const num = (s: string) => (s.trim() === "" ? null : Number(s.replace(/,/g, "")));
   const total = items.reduce((a, x) => a + (x.qty ?? 0) * (x.unit_price ?? 0), 0);
-  const filled = items.length > 0 && items.every((x) => x.name.trim() && x.qty && x.qty > 0 && x.unit_price != null);
   const rental = sync?.rental ?? null;
+  const free = !!rental?.free;
+  const filled = items.length > 0 && items.every((x) => x.name.trim() && x.qty && x.qty > 0 && (free || x.unit_price != null));
   const why = sync?.blocked ? sync.blocked : !filled ? "품명·수량·단가를 모두 채워 주세요"
     : rental && !rentOk ? "대여 시작일을 확인해 주세요(날짜를 고르거나 확인에 체크)" : "";
   const SHOWN = 8;
@@ -222,7 +225,8 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
                                                        onChange={(e) => setItem(i, { spec: e.target.value })} /></td>
                       <td className="px-1 py-1"><input className={cn(inputCls, x.qty == null && "border-amber-500")} inputMode="decimal" value={x.qty ?? ""}
                                                        aria-label={`${i + 1}번 수량`} onChange={(e) => setItem(i, { qty: num(e.target.value) })} /></td>
-                      <td className="px-1 py-1"><input className={cn(inputCls, x.unit_price == null && "border-amber-500")} inputMode="numeric" value={x.unit_price ?? ""}
+                      <td className="px-1 py-1"><input className={cn(inputCls, x.unit_price == null && !free && "border-amber-500")} inputMode="numeric" value={x.unit_price ?? ""}
+                                                       placeholder={free ? "무상" : undefined}
                                                        aria-label={`${i + 1}번 단가`} onChange={(e) => setItem(i, { unit_price: num(e.target.value) })} /></td>
                       <td className="whitespace-nowrap px-1 py-1 text-right tabular-nums">{won((x.qty ?? 0) * (x.unit_price ?? 0))}</td>
                       <td className="px-1 py-1">

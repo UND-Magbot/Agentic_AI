@@ -26,7 +26,7 @@ _log = logging.getLogger("quote_upload")
 
 TYPES = {".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".pdf": "application/pdf"}
 MAX_BYTES = 20 * 1024 * 1024
-MAX_ITEMS = 60
+MAX_ITEMS = 150                     # 대여 견적서는 S/N 마다 한 줄이라 길다(88줄 사례, 사용자 2026-11-09)
 
 SYSTEM = """당신은 영업 담당자를 돕는 견적서 판독 도우미입니다. [견적서]에서 견적 품목을 빠짐없이 뽑습니다.
 규칙:
@@ -46,8 +46,13 @@ def read_template(data: bytes, filename: str) -> dict[str, Any] | None:
     if ext_of(filename) != ".xlsx":
         return None
     parsed = rb.parse(data)
-    if parsed is None:
-        return None
+    return None if parsed is None else template_read(parsed)
+
+
+def template_read(parsed: dict[str, Any]) -> dict[str, Any]:
+    """회사 양식으로 읽은 내용(quote_readback.parse) → 올리기 확인 창 결과. 무상 대여 건이면 as_free_rental 을 거친 뒤 다시 부른다."""
+    from ..company_knowledge import quote_readback as rb
+
     items = rb.items_of(parsed)
     total = round(sum((x["qty"] or 0) * (x["unit_price"] or 0) for x in items), 2)
     nego = next((r["amount"] for r in parsed["rows"] if r["row"] == "nego" and r.get("amount")), None)

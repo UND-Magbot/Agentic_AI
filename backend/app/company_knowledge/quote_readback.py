@@ -249,6 +249,20 @@ def parse(data: bytes) -> dict[str, Any] | None:
             "rownums": nums, "pos": pos, "pics": {k: v for k, v in pics.items() if k in {x.get("pic") for x in rows}}}
 
 
+def as_free_rental(parsed: dict[str, Any]) -> dict[str, Any]:
+    """무상 대여 건에 올린 대여 양식 파일(사용자 2026-11-09) — 엑셀에서 단가·금액 칸을 비워 둔 줄도 품목(단가 0)으로 본다.
+    무상 대여 건일 때만 부른다(판매·유상 대여에선 '금액 칸이 빈 줄 = 옵션' 그대로). 단가가 적힌 품목이 있으면 유상으로 바꾼 파일 — 그대로 둔다."""
+    if parsed["form"].get("purpose") != "rental":
+        return parsed
+    goods = [r for r in parsed["rows"] if r["row"] in ("item", "option") and r.get("in_total") is not False]
+    if any((r.get("unit_price") or 0) > 0 for r in goods if r["row"] == "item"):
+        return parsed
+    rows = [{**r, "row": "item", "unit_price": r.get("unit_price") or 0}
+            if r["row"] in ("item", "option") and r.get("in_total") is not False and not (r.get("unit_price") or 0) else r
+            for r in parsed["rows"]]
+    return {**parsed, "rows": rows, "form": {**parsed["form"], "rental_fee": "free"}}
+
+
 def items_of(parsed: dict[str, Any]) -> list[dict[str, Any]]:
     """읽은 견적서의 품목 줄(옵션 제외) → 올리기 확인 창의 품목 {name, spec, qty, unit_price, amount}. NEGO 는 음수 단가 한 줄."""
     out = []

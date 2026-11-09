@@ -181,6 +181,37 @@ for q, label in (({"biz": "rental", "amount": 150_000}, "물류비 받는 무상
         check(not flow.free(d) and [s["key"] for s in flow.steps(d)][:2] == ["statement", "case"], f"{label} — 거래명세서·결제 조건 절차 그대로",
               str(flow.steps(d)))
 
+# 12. 무상 대여 건에 올린 대여 양식 파일 — 단가·금액 칸을 비운 줄도 품목(단가 0), 88줄·'1 set' 수량(사용자 2026-11-09)
+import pathlib  # noqa: E402
+
+from app.sales_deals import quote_upload as qu  # noqa: E402
+
+ex = next((p for p in (pathlib.Path("/docs/examples/quotes"), pathlib.Path("/app/docs/examples/quotes"), pathlib.Path(__file__).resolve().parent.parent / "docs/examples/quotes")
+           if p.is_dir()), None)
+src = next(ex.glob("*SPICENERGY*대여*.xlsx"), None) if ex else None
+if src is None:
+    check(False, "예시 파일(SPICENERGY 대여) 없음", str(ex))
+else:
+    p = rb.parse(src.read_bytes())
+    check(rb.items_of(p) == [], "금액 칸이 빈 줄은 그대로 옵션(무상 대여 건이 아닐 때)")
+    fp = rb.as_free_rental(p)
+    rd = qu.template_read(fp)
+    check(len(rd["items"]) == 88 and all(x["unit_price"] == 0 for x in rd["items"]) and fp["form"].get("rental_fee") == "free",
+          "무상 대여 건 — 빈 단가 줄 88줄 모두 품목·단가 0·무상", f"{len(rd['items'])} {fp['form'].get('rental_fee')}")
+    sets = [x["qty"] for x in rd["items"] if x["spec"] == "mDPG8S7 + TCC1 Tool Plate"]
+    check(sets == [1.0], "수량 '1 set' → 1", str(sets))
+    cl = qu.clean_items(rd["items"], check_total=False)
+    check(len(cl) == 88 and qu.UploadConfirmIn(upload={"key": "k"}, items=rd["items"]).items, "88줄 확인·발행 요청 통과")
+    paid = {**p, "rows": [{**x, "row": "item", "unit_price": 100} if x["row"] == "option" else x for x in p["rows"]]}
+    check(rb.as_free_rental(paid) is paid, "단가가 적힌 파일은 무상으로 바꾸지 않음")
+    sale = {**p, "form": {**p["form"], "purpose": "sale"}}
+    check(rb.as_free_rental(sale) is sale, "판매 견적서 파일은 그대로")
+    fst = qs.draft_state({}, model="", payload_kg=None, manual=True,
+                         form={"customer": "Criken", "lang": "en", "purpose": "rental", "rental_fee": "free"})
+    new, _, _ = rb.merge(fst, fp)
+    check(qs.free_rental(new) and len([ln for ln in new["lines"] if ln.get("kind") != "note"]) >= 88, "작성 상태도 무상 대여·88줄로 맞춤",
+          str(len(new["lines"])))
+
 for label, detail in FAIL:
     print(f"FAIL {label} :: {detail}")
 print(f"PASS {len(PASS)} / FAIL {len(FAIL)}")

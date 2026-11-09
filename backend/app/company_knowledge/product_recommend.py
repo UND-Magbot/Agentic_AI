@@ -1576,6 +1576,11 @@ async def quote_issue_upload(*, qid: int | None, deal_id: int | None, user_id: i
             raise RecommendError("고객사가 없습니다 — 견적서에 고객사를 먼저 적어 주세요.")
         lang = f.get("lang") or "ko"
         parsed = _read_back(key, ext)
+        free = qs.free_rental(st)                       # 무상 대여 건 — 빈 단가·금액 줄도 품목, 0원 발행 허용(사용자 2026-11-09)
+        if free and parsed is not None:
+            from . import quote_readback as rb
+
+            parsed = rb.as_free_rental(parsed)
         f = _upload_biz(f, parsed)
         if f.get("purpose") == "rental" and not rental_checked:
             raise RecommendError("대여 견적서는 대여 시작일을 확인한 뒤 발행할 수 있습니다.")
@@ -1584,7 +1589,7 @@ async def quote_issue_upload(*, qid: int | None, deal_id: int | None, user_id: i
         if f.get("purpose") == "rental":     # 대여 — 파일의 단가는 월 납입금, 영업 건엔 × 개월(사용자 2026-10-22)
             lines = [{**x, "unit_price": x["unit_price"] * qs.month_factor(f, {"commodity": str(x["name"]).split("\n")[0], "name": x["name"],
                                                                                 "unit": x.get("unit") or ""})} for x in lines]
-        if sum(x["qty"] * x["unit_price"] for x in lines) <= 0:     # 0원 견적 발행 막음(검증 QT-066) — 대여는 × 개월 뒤 합계로
+        if not free and sum(x["qty"] * x["unit_price"] for x in lines) <= 0:     # 0원 견적 발행 막음(검증 QT-066) — 대여는 × 개월 뒤 합계로
             raise RecommendError("합계가 0원 이하입니다 — 품목 단가·NEGO 를 확인해 주세요.")
         day = deals.kst_today()
         cur = (await db.execute(text("SELECT revision, quote_no FROM product_quotes WHERE id = :i FOR UPDATE"),
@@ -1823,7 +1828,8 @@ def _upload_rental_view(form: dict[str, Any], parsed: dict[str, Any] | None, dea
         return {}
     start = (deal_quote.get("rental") or {}).get("start") if deal_quote.get("biz") == "rental" else None
     return {"rental": {"months": int(f["rental_months"]) if f.get("rental_months") else None,
-                       "start": start or f.get("rental_start") or None}}
+                       "start": start or f.get("rental_start") or None,
+                       "free": (parsed or {}).get("form", {}).get("rental_fee") == "free" or f.get("rental_fee") == "free"}}
 
 
 async def upload_sync_preview(*, qid: int | None, deal_id: int | None, user_id: int | None, owner_check: bool,
@@ -1843,6 +1849,12 @@ async def upload_sync_preview(*, qid: int | None, deal_id: int | None, user_id: 
             r = await _quote_row(db, max(ids), None) if ids else None
         link = deal_id or (r.get("deal_id") if r else None)
         dq = (await deals.get_deal(db, link, deals.kst_today()))["quote"] or {} if link else {}
+    from ..sales_deals import quote_upload as qu
+    from . import quote_session as qs
+
+    if r is not None and parsed is not None and qs.free_rental(r["state"] or {}):   # 무상 대여 건 — 빈 단가·금액 줄도 품목(사용자 2026-11-09)
+        parsed = rb.as_free_rental(parsed)
+        read.update({k: v for k, v in qu.template_read(parsed).items() if k != "_parsed"})
     biz = _upload_rental_view(((r["state"] or {}).get("form") or {}) if r else {}, parsed, dq)
     if r is None:
         return {"applies": True, "template": parsed is not None, "changes": [], "warnings": [], **biz,

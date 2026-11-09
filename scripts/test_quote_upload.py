@@ -64,6 +64,36 @@ async def cleanup() -> None:
         await db.commit()
 
 
+async def free_rental_upload(uid: int, head: dict) -> None:
+    """무상 대여로 1차 발행한 건에, 단가·금액 칸을 비운 대여 양식 파일(88줄)로 재발행(사용자 2026-11-09).
+    전: 품목 0줄로 읽혀 발행 버튼이 꺼지고, 품목을 채워도 '합계 0원'으로 막혔다."""
+    import pathlib
+
+    src = next((p for d in ("/docs/examples/quotes", str(pathlib.Path(__file__).resolve().parent.parent / "docs/examples/quotes"))
+                if pathlib.Path(d).is_dir() for p in pathlib.Path(d).glob("*SPICENERGY*대여*.xlsx")), None)
+    if src is None:
+        check(False, "무상 대여 재발행 — 예시 파일 없음(-v ./docs:/docs)")
+        return
+    q = await pr.quote_manual(user_id=uid, form=head)
+    q = await pr.quote_edit(q["id"], user_id=uid, payload={
+        "form": {"customer": CUSTOMER, "subject": "대여", "purpose": "rental", "rental_fee": "free", "rental_months": 3},
+        "delivery": {"case": 1},
+        "lines": [{"id": None, "name": "MG10", "qty": 1, "unit_price": 0, "remark": ""}]})
+    q = await pr.quote_issue(q["id"], user_id=uid)
+    up = store(f"product-quotes/{q['id']}/", src.read_bytes())
+    rd = qu.read_template(src.read_bytes(), src.name)
+    res_read = {**rd}
+    sync = await pr.upload_sync_preview(qid=q["id"], deal_id=None, user_id=uid, owner_check=True, read=res_read)
+    check(len(res_read["items"]) == 88 and all(x["unit_price"] == 0 for x in res_read["items"]) and (sync.get("rental") or {}).get("free"),
+          "무상 대여 건 — 올린 파일 88줄 모두 품목(단가 0)·확인 창에 무상 표시", f"{len(res_read['items'])} {sync.get('rental')}")
+    res = await pr.quote_issue_upload(qid=q["id"], deal_id=None, user_id=uid, owner_check=True, upload=up, initials="AL", doc_no="",
+                                      items=res_read["items"], rental_checked=True)
+    async with SessionLocal() as db:
+        d = await svc.get_deal(db, res["deal_id"], TODAY)
+    check(res["quote"]["revision"] == 1 and d["quote"]["amount"] == 0 and len(d["quote"]["items"]) == 88,
+          "무상 대여 — 0원 그대로 재발행·판 +1·영업 건 품목 88줄", f"rev {res['quote']['revision']} {d['quote']['amount']} {len(d['quote']['items'])}")
+
+
 async def run() -> None:
     await cleanup()
     # ── 품목 검사 ──
@@ -261,6 +291,7 @@ async def run() -> None:
     n2, got2 = await pr.quote_file(d2["quotes"][0]["id"], user_id=None, fmt="xlsx")
     check(got2 == pdf and n2.endswith(".pdf"), "올린 PDF 는 엑셀로 달라도 PDF 그대로", n2)
 
+    await free_rental_upload(uid, head)
     await cleanup()
     for k in KEYS:
         try:
