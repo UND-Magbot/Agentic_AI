@@ -327,7 +327,7 @@ class QuoteDeliveryIn(BaseModel):
 class QuoteEditIn(BaseModel):
     """왼쪽 화면 직접 수정 — 머리(form)·품목(lines, 물류비·인건비 줄 제외)·납품 방식(delivery)·설치 인원·일수·단가(work)·넣을 옵션."""
     form: dict[str, Any] = Field(default_factory=dict, max_length=40)   # 머리 칸 27개(대여 칸 포함, 2026-10-22)
-    lines: list[QuoteLineIn] | None = Field(default=None, max_length=60)
+    lines: list[QuoteLineIn] | None = Field(default=None, max_length=150)   # 대여 견적서는 S/N 마다 한 줄(88줄 사례, 2026-11-09)
     delivery: QuoteDeliveryIn | None = None
     work: QuoteWorkIn | None = None
     include_options: list[str] = Field(default_factory=list, max_length=10)

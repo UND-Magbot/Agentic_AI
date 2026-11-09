@@ -76,7 +76,7 @@ async def free_rental_upload(uid: int, head: dict) -> None:
         return
     q = await pr.quote_manual(user_id=uid, form=head)
     q = await pr.quote_edit(q["id"], user_id=uid, payload={
-        "form": {"customer": CUSTOMER, "subject": "대여", "purpose": "rental", "rental_fee": "free", "rental_months": 3},
+        "form": {"customer": CUSTOMER, "subject": "대여", "lang": "en", "purpose": "rental", "rental_fee": "free", "rental_months": 3},
         "delivery": {"case": 1},
         "lines": [{"id": None, "name": "MG10", "qty": 1, "unit_price": 0, "remark": ""}]})
     q = await pr.quote_issue(q["id"], user_id=uid)
@@ -92,6 +92,18 @@ async def free_rental_upload(uid: int, head: dict) -> None:
         d = await svc.get_deal(db, res["deal_id"], TODAY)
     check(res["quote"]["revision"] == 1 and d["quote"]["amount"] == 0 and len(d["quote"]["items"]) == 88,
           "무상 대여 — 0원 그대로 재발행·판 +1·영업 건 품목 88줄", f"rev {res['quote']['revision']} {d['quote']['amount']} {len(d['quote']['items'])}")
+
+    # 이어서 왼쪽 화면에서 품목 하나 추가 → 89줄 저장·다시 발행(전: 줄 60개 제한으로 422 '요청을 처리하지 못했습니다')
+    from app.api_product_recommend import QuoteEditIn, QuoteLineIn
+
+    cur = await pr.quote_get(q["id"], user_id=uid)
+    keys = set(QuoteLineIn.model_fields)
+    lines = [{k: v for k, v in ln.items() if k in keys} for ln in cur["state"]["lines"] if ln.get("kind") not in ("freight", "work")]
+    body = QuoteEditIn(lines=[*lines, {"id": None, "name": "MG30", "qty": 1, "unit_price": 0, "remark": ""}])
+    ed = await pr.quote_edit(q["id"], user_id=uid, payload=body.model_dump(exclude_none=True))
+    n = len([ln for ln in ed["state"]["lines"] if ln.get("kind") not in ("freight", "work")])
+    again = await pr.quote_issue(q["id"], user_id=uid)
+    check(n == 89 and again["revision"] == 2, "무상 대여 89줄 — 품목 추가 저장·다시 발행", f"{n} rev {again.get('revision')}")
 
 
 async def run() -> None:
