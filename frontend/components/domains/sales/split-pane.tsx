@@ -13,6 +13,17 @@ export interface Split {
   reset: () => void;
 }
 
+const DRAG_DECIDE_PX = 4;            // 이만큼 움직인 뒤 폭 조절/스크롤을 정한다
+
+/** 막대를 담은 세로 스크롤 칸(화면 내용) — 없으면 null */
+function scrollParent(el: HTMLElement): HTMLElement | null {
+  for (let p = el.parentElement; p; p = p.parentElement) {
+    const oy = getComputedStyle(p).overflowY;
+    if ((oy === "auto" || oy === "scroll") && p.scrollHeight > p.clientHeight) return p;
+  }
+  return null;
+}
+
 /** 왼쪽 폭 % — 막대를 끌거나 화살표 키로 바꾸고, 화면마다(storageKey) 이 브라우저에 기억한다. */
 export function useSplit(storageKey: string, fallback: number): Split {
   // 기억한 폭 — 내용을 받은 뒤(브라우저에서만) 그려지므로 처음 값으로 바로 읽는다
@@ -36,7 +47,20 @@ export function useSplit(storageKey: string, fallback: number): Split {
     if (!box) return;
     e.preventDefault();
     el.setPointerCapture(e.pointerId);
-    const move = (ev: PointerEvent) => keep(((ev.clientX - box.left) / box.width) * 100);
+    // 좌우로 끌면 폭, 위아래로 끌면 화면 스크롤(스크롤바처럼 — 사용자 2026-11-09). 처음 움직인 방향으로 정한다
+    const x0 = e.clientX, y0 = e.clientY;
+    const scroller = scrollParent(el);
+    const top0 = scroller?.scrollTop ?? 0;
+    let mode: "width" | "scroll" | null = null;
+    const move = (ev: PointerEvent) => {
+      const dx = ev.clientX - x0, dy = ev.clientY - y0;
+      if (!mode) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) < DRAG_DECIDE_PX) return;
+        mode = Math.abs(dy) > Math.abs(dx) && scroller ? "scroll" : "width";
+      }
+      if (mode === "width") keep(((ev.clientX - box.left) / box.width) * 100);
+      else if (scroller) scroller.scrollTop = top0 + dy * (scroller.scrollHeight / scroller.clientHeight);
+    };
     const up = () => {
       el.removeEventListener("pointermove", move);
       el.removeEventListener("pointerup", up);
@@ -59,11 +83,11 @@ export function useSplit(storageKey: string, fallback: number): Split {
 export const SPLIT_GRID = "grid items-start gap-4 lg:grid-cols-[minmax(0,var(--qs))_12px_minmax(0,1fr)] lg:gap-x-1.5";
 export const splitStyle = (s: Split) => ({ "--qs": `${s.pct}%` }) as React.CSSProperties;
 
-/** 폭 조절 막대 — 끌어서 조절, 두 번 누르면 기본 폭, 화살표 키로도 */
+/** 폭 조절 막대 — 좌우로 끌어 폭, 위아래로 끌어 스크롤, 두 번 누르면 기본 폭, 화살표 키로도 */
 export function SplitBar({ split, label }: { split: Split; label: string }) {
   return (
     <div role="separator" aria-orientation="vertical" aria-label={label} aria-valuenow={Math.round(split.pct)}
-         aria-valuemin={SPLIT_MIN} aria-valuemax={SPLIT_MAX} tabIndex={0} title="끌어서 폭 조절 · 두 번 누르면 기본 폭"
+         aria-valuemin={SPLIT_MIN} aria-valuemax={SPLIT_MAX} tabIndex={0} title="좌우로 끌면 폭 조절 · 위아래로 끌면 스크롤 · 두 번 누르면 기본 폭"
          onPointerDown={split.start} onDoubleClick={split.reset} onKeyDown={split.key}
          className="group hidden cursor-col-resize touch-none select-none items-center justify-center outline-none lg:sticky lg:top-4 lg:flex lg:h-[calc(100svh-2rem)]">
       <span className="h-16 w-1.5 rounded-full bg-border transition-colors group-hover:bg-accent group-focus-visible:bg-accent group-active:bg-accent" />
