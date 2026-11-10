@@ -338,7 +338,7 @@ def patch(base: bytes, base_lines: list[dict[str, Any]], base_header: dict[str, 
     buf = io.BytesIO()
     wb.save(buf)
     out = _put_shapes(base, _restore_auto_heights(buf.getvalue(), auto, sh), sh, notes)
-    return out, notes
+    return qx.fit_page_width(out), notes      # 엑셀에서 배율이 풀려 온 파일도 회사 양식처럼 너비 1쪽(2026-11-10)
 
 
 def _texts(r: dict[str, Any]) -> tuple:

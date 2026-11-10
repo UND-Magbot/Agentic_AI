@@ -160,7 +160,7 @@ class ShipmentIn(BaseModel):
     address: str | None = Field(default=None, max_length=300)
     purpose: Literal["판매", "개발", "샘플", "기타"] = "판매"
     force: bool = False
-    lines: list[ShipLineIn] = Field(default_factory=list, max_length=50)    # 제품별 출하 줄(사진 포함)
+    lines: list[ShipLineIn] = Field(default_factory=list, max_length=500)    # 제품별 출하 줄(사진 포함)
     # 이 출하로 나가는 제품 시리얼(product_units.id, 사용자 2026-10-19) — 없으면 수주 판에서 아직 안 나간 것 전부
     unit_ids: list[int] | None = Field(default=None, max_length=500)
 
@@ -194,8 +194,8 @@ class StatementIn(BaseModel):
     initials: str = Field(default="", max_length=4)      # 발행자 이니셜(기본 = 로그인 계정, 폼에서 고침) — 번호는 서버가 매긴다
     date: dt.date
     buyer: StatementBuyerIn
-    items: list[StatementItemIn] = Field(min_length=1, max_length=150)   # 30줄 넘으면 여러 장(statement_xlsx, 2026-11-09)
-    parts: list[OrderItemIn] = Field(default_factory=list, max_length=150)   # 세트로 묶었을 때 원래 품목(참고·되돌리기용)
+    items: list[StatementItemIn] = Field(min_length=1, max_length=500)   # 30줄 넘으면 여러 장(statement_xlsx, 2026-11-09)
+    parts: list[OrderItemIn] = Field(default_factory=list, max_length=500)   # 세트로 묶었을 때 원래 품목(참고·되돌리기용)
 
     @model_validator(mode="after")
     def _total(self) -> "StatementIn":
@@ -388,7 +388,7 @@ class UnitLineIn(BaseModel):
 class UnitsIn(BaseModel):
     quote_id: int
     revision: int = Field(ge=0, le=1000)
-    lines: list[UnitLineIn] = Field(default_factory=list, max_length=100)
+    lines: list[UnitLineIn] = Field(default_factory=list, max_length=500)
     # 출하 기록의 품목 줄마다 [S/N 등록](사용자 2026-10-23) — 보낸 줄만 바꾸고 다른 줄은 그대로
     partial: bool = False
     # 이미 남긴 출하 기록에 S/N 등록(사용자 2026-10-23) — 그 출하 번호(0부터). 보낸 줄의 안 묶인 S/N 을 그 출하로 묶는다
@@ -459,6 +459,20 @@ async def rental_units(_: User = Depends(require_sales), db: AsyncSession = Depe
     """[대여 제품 목록] 탭(사용자 2026-10-30) — 대여 건의 제품 한 줄씩: 제품·S/N·상태 코드·고객사·담당자·대여 기간·반납일. 금액 없음."""
     from .sales_deals import rental_query
     return await rental_query.rental_units(db, svc.kst_today())
+
+
+@router.get("/rental-deals")
+async def rental_deals(_: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    """[대여 제품 목록] 탭(사용자 2026-11-10) — 대여 건(유상·무상) 한 줄씩, 상태는 대여 시작일·반납일로 자동. 금액 없음."""
+    from .sales_deals import rental_deals as rd
+    return await rd.rental_list(db, svc.kst_today())
+
+
+@router.get("/rental-products")
+async def rental_products(_: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    """[대여 제품 목록] 탭(사용자 2026-11-10) — 대여 건(유상·무상)의 제품을 품목 줄마다 한 줄씩. 금액 없음."""
+    from .sales_deals import rental_deals as rd
+    return await rd.rental_products(db, svc.kst_today())
 
 
 @router.get("/units/search")
@@ -565,6 +579,20 @@ async def save_units(deal_id: int, body: UnitsIn, user: User = Depends(require_s
                                           units.save_units(db, deal_id, user.id, body.quote_id, body.revision,
                                                            [ln.model_dump() for ln in body.lines], partial=body.partial,
                                                            shipment_index=body.shipment_index)))
+
+
+@router.get("/{deal_id}/rental")
+async def rental_detail(deal_id: int, _: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    """대여 건 상세 — 발행한 견적서 판의 제품 목록, 품목 줄마다 등록한 S/N 과 견적서 Remark 에서 읽은 S/N(사용자 2026-11-10)."""
+    from .sales_deals import rental_deals as rd
+    return await _units_call(db, rd.rental_detail(db, deal_id, svc.kst_today()))
+
+
+@router.post("/{deal_id}/rental/serials")
+async def rental_load_serials(deal_id: int, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    """[S/N 불러오기] — 견적서 Remark 의 'S/N: …'을 품목 줄의 빈 S/N 칸에. 짝짓기 어려운 것은 비워 두고 알린다."""
+    from .sales_deals import rental_deals as rd
+    return await _units_call(db, rd.load_serials(db, deal_id, user.id, svc.kst_today()))
 
 
 @router.get("/{deal_id}")
@@ -992,8 +1020,8 @@ class OrderDraftIn(BaseModel):
     initials: str = Field(default="", max_length=4)       # 발행자 이니셜
     date: dt.date
     buyer: dict[Literal["reg_no", "name", "ceo", "address"], str] = Field(default_factory=dict)
-    items: list[OrderItemIn] = Field(default_factory=list, max_length=150)
-    parts: list[OrderItemIn] = Field(default_factory=list, max_length=150)
+    items: list[OrderItemIn] = Field(default_factory=list, max_length=500)
+    parts: list[OrderItemIn] = Field(default_factory=list, max_length=500)
 
 
 class OrderAgentIn(BaseModel):

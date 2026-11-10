@@ -10,35 +10,29 @@ import { useRouter } from "next/navigation";
 import { Fragment, useMemo, useState } from "react";
 import { DealDetail } from "@/components/domains/sales/deal-detail";
 import { DealMeetingDialog, hasMeeting } from "@/components/domains/sales/deal-meeting";
-import { Muted, STAGE_TONE, StageChip, eventDetail, eventLabel, quoteVer, shortDate, stamp, won } from "@/components/domains/sales/deal-format";
+import { Muted, RegionBadge, STAGE_TONE, StageChip, eventDetail, eventLabel, quoteVer, shortDate, stamp, won } from "@/components/domains/sales/deal-format";
 import { DealNewForm } from "@/components/domains/sales/deal-new-form";
 import type { DealBiz, DealKpi, DealListData, DealRental, DealRow, DealStage } from "@/lib/shared/sales-deals";
 import { cn } from "@/lib/shared/utils";
 
 const STAGES: DealStage[] = ["제품 추천 확정", "견적", "수주", "출하 후 입금 대기", "완료 (출하·완납)", "드랍", "출하 기록만 (이전)"];
-// 대여 관리 탭의 단계(사용자 2026-10-22) — 입금은 단계가 아니라 미수·예정일 알림으로
-const RENTAL_STAGES: DealStage[] = ["견적", "수주", "대여 중", "회수 중", "회수 완료", "드랍"];
-// 판매·대여 한 목록(사용자 2026-10-30: 대여 건도 제품 영업 건 관리에서) — 판매 단계 다음에 대여 단계
-const ALL_STAGES: DealStage[] = [...STAGES.slice(0, 5), "대여 중", "회수 중", "회수 완료", ...STAGES.slice(5)];
+// 대여 중·회수 중·회수 완료는 영업 건 단계가 아니다(사용자 2026-11-10 — 대여 건 한정 과정, [대여 제품 목록]에서만).
+// 유상 대여 건도 여기서는 판매와 같은 단계로 본다
 
-const hasReview = (r: DealRow) => r.alerts.some((a) => a.level === "review");
-// 미수 = 받을 일이 생겼는데(거래명세서 발급·출하, 이관 건은 옛 계산서 기록) 아직 완납이 아님
-const isUnpaid = (r: DealRow) => (!!r.statement || r.shipped || r.invoice_status.issued > 0) && !!r.won && !r.paid_full && !r.dropped && !r.flow?.free;
+// 확인 필요 = 알림 칸에 무엇이든 뜬 건(사용자 2026-11-10 — 예전엔 이관 검토 알림만 봐서 늘 0건이었다)
+const hasReview = (r: DealRow) => r.alerts.length > 0;
+// 미수 = 수주했는데 아직 완납이 아닌 건(사용자 2026-11-10 — 거래명세서·출하 전도 포함). 드랍·무상 대여·견적 없는 출하 제외
+const isUnpaid = (r: DealRow) => !!r.won && !r.paid_full && !r.dropped && !r.flow?.free && r.kind !== "shipment_only";
+// 완료(출하·완납) 건은 [완료] 칩을 눌렀을 때만 보인다(사용자 2026-11-10)
+const DONE_STAGE: DealStage = "완료 (출하·완납)";
 const isOverdue = (r: DealRow) => !!r.flow?.overdue?.length;
-/** ' (12일 지남)' — 반납일이 지난 날 수 */
-const lateDays = (end: string | null | undefined, today: string) =>
-  end ? ` (${Math.round((Date.parse(today) - Date.parse(end)) / 86_400_000)}일 지남)` : "";
-/** 반납일이 지났는데 반납 확인(회수 완료) 전인 대여 건(사용자 2026-10-30) — 서버 알림 RENTAL_END */
-const returnLate = (r: DealRow) => r.alerts.some((a) => a.code === "RENTAL_END");
 /** 표시 금액 = 공급가액(flow.total), 없으면 견적액(부가세 포함 견적은 ÷1.1) */
 const supplyOf = (r: DealRow) => r.flow?.total ?? (r.quote?.amount == null ? null
   : r.quote.vat_included ? Math.round(r.quote.amount / 1.1) : r.quote.amount);
 
 type Filter = { q: string; owner: string; stage: string; year: string; unpaid: boolean; review: boolean; overdue: boolean; as: boolean;
   /** 판매·대여 거르기('' = 둘 다) */
-  kind: string;
-  /** 반납일 지난 대여 건만 */
-  returnLate: boolean };
+  kind: string };
 
 export function DealList({ data, biz, initialOpenId = null, onRefresh, onMeeting, onOrder, onQuote }: {
   data: DealListData;
@@ -57,11 +51,10 @@ export function DealList({ data, biz, initialOpenId = null, onRefresh, onMeeting
 }) {
   const router = useRouter();
   const refresh = onRefresh ?? (() => router.refresh());
-  const [f, setF] = useState<Filter>({ q: "", owner: "", stage: "", year: "", unpaid: false, review: false, overdue: false, as: false, kind: "", returnLate: false });
-  const stages = biz === "rental" ? RENTAL_STAGES : biz === "sale" ? STAGES : ALL_STAGES;
+  const [f, setF] = useState<Filter>({ q: "", owner: "", stage: "", year: "", unpaid: false, review: false, overdue: false, as: false, kind: "" });
+  const stages = STAGES;
   const admin = !!data.me?.admin;
   const overdueRows = useMemo(() => data.rows.filter(isOverdue), [data.rows]);
-  const lateReturns = useMemo(() => data.rows.filter(returnLate), [data.rows]);
   // 예정 입금일 지난 건 팝업 — 하루 한 번(닫으면 그날은 다시 안 뜸, 리스트 강조는 그대로).
   // 리스트는 데이터를 받은 뒤 브라우저에서만 그려지므로(deals-tab) 처음 값을 바로 저장소에서 읽는다.
   const [lateOpen, setLateOpen] = useState(() => {
@@ -91,6 +84,10 @@ export function DealList({ data, biz, initialOpenId = null, onRefresh, onMeeting
   const [deleting, setDeleting] = useState(false);
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
   const set = (patch: Partial<Filter>) => setF((prev) => ({ ...prev, ...patch }));
+  // 칩은 한 번에 하나만(사용자 2026-11-10 — 겹쳐 걸리면 '왜 안 뜨지' 하게 된다). 다른 칩을 누르면 앞의 칩은 풀린다.
+  // 검색·담당자·판매·대여·연도는 칩과 같이 걸린다
+  const NO_CHIP = { stage: "", review: false, unpaid: false, as: false, overdue: false };
+  const chip = (patch: Partial<Filter>) => set({ ...NO_CHIP, ...patch });
 
   const toggle = (id: number) => setSelected((prev) => {
     const next = new Set(prev);
@@ -128,12 +125,11 @@ export function DealList({ data, biz, initialOpenId = null, onRefresh, onMeeting
     return data.rows.filter((r) => {
       if (f.owner && normOwner(r.owner) !== f.owner) return false;
       if (f.kind && (f.kind === "대여") !== (r.biz === "rental")) return false;
-      if (f.stage && r.stage !== f.stage) return false;
+      if (f.stage ? r.stage !== f.stage : r.stage === DONE_STAGE) return false;
       if (f.year && !r.base_date?.startsWith(f.year)) return false;
       if (f.unpaid && !isUnpaid(r)) return false;
       if (f.review && !hasReview(r)) return false;
       if (f.overdue && !isOverdue(r)) return false;
-      if (f.returnLate && !returnLate(r)) return false;
       if (f.as && !r.as_active) return false;               // A/S 진행 중(단계 필터와 같이 걸 수 있음)
       if (!q) return true;
       const hay = [r.display_no, r.statement_no, r.deal_no, r.legacy_no, r.customer, r.title, ...(r.quote?.items.map((i) => i.name) ?? [])]
@@ -163,7 +159,7 @@ export function DealList({ data, biz, initialOpenId = null, onRefresh, onMeeting
             {biz === "rental"
               ? "대여 견적서(견적서 수기 작성 → 제품 대여)로 낸 건 — 견적 → 수주 → 출하(품목마다 S/N 등록, R 대여)를 관리하고, 대여 기간·월 납입금을 함께 봅니다."
               : biz === "sale" ? "제품 추천 확정 → 견적 → 수주 → 거래명세서 발급·입금 확인 → 출하를 한 건씩 관리합니다."
-              : "판매·대여 건을 한 곳에서 — 견적 → 수주 → 거래명세서 발급·입금 확인 → 출하(대여는 대여 중 → 회수)를 한 건씩 관리합니다."} (전체 {data.counts.total}건) · 기준일 {data.today}
+              : "판매·대여 건을 한 곳에서 — 견적 → 수주 → 거래명세서 발급·입금 확인 → 출하를 한 건씩 관리합니다."} (전체 {data.counts.total}건) · 기준일 {data.today}
             · 금액은 공급가액 · 새로 만든 건이 위
           </p>
         </div>
@@ -209,25 +205,24 @@ export function DealList({ data, biz, initialOpenId = null, onRefresh, onMeeting
 
       {/* 단계 요약 — 누르면 그 단계만 */}
       <div className="mb-3 flex flex-wrap gap-2">
-        <SummaryChip label="전체" count={data.counts.total} active={!f.stage && !f.review}
-                     tone="bg-foreground/8 text-foreground" onClick={() => set({ stage: "", review: false })} />
+        {/* 전체 = 칩 거르기를 푼다(검색·담당자·판매·대여·연도는 그대로). 완료 건은 [완료] 칩에서만 보인다 */}
+        <SummaryChip label="전체" count={data.counts.total - (data.summary[DONE_STAGE] ?? 0)}
+                     active={!f.stage && !f.review && !f.unpaid && !f.as && !f.overdue}
+                     tone="bg-foreground/8 text-foreground" onClick={() => chip({})} />
         {stages.map((s) => (
           <SummaryChip key={s} label={s} count={data.summary[s]} active={f.stage === s}
-                       tone={STAGE_TONE[s]} onClick={() => set({ stage: f.stage === s ? "" : s })} />
+                       tone={STAGE_TONE[s]} onClick={() => chip({ stage: f.stage === s ? "" : s })} />
         ))}
         <SummaryChip label="⚠ 확인 필요" count={data.summary["확인 필요"]} active={f.review}
-                     tone="bg-sky-500/12 text-sky-700 dark:text-sky-300" onClick={() => set({ review: !f.review })} />
-        {data.summary["A/S 진행 중"] > 0 && (
-          <SummaryChip label="🔧 A/S 진행 중" count={data.summary["A/S 진행 중"]} active={f.as}
-                       tone="bg-amber-500/12 text-amber-700 dark:text-amber-300" onClick={() => set({ as: !f.as })} />
-        )}
-        {lateReturns.length > 0 && (
-          <SummaryChip label="📦 반납일 지남" count={lateReturns.length} active={f.returnLate}
-                       tone="bg-red-500/12 text-red-700 dark:text-red-300" onClick={() => set({ returnLate: !f.returnLate })} />
-        )}
+                     tone="bg-sky-500/12 text-sky-700 dark:text-sky-300" onClick={() => chip({ review: !f.review })} />
+        <SummaryChip label="💰 미수" count={data.summary["미수"] ?? 0} active={f.unpaid}
+                     tone="bg-orange-500/12 text-orange-700 dark:text-orange-300" onClick={() => chip({ unpaid: !f.unpaid })} />
+        {/* A/S 진행 중 — 0건이어도 늘 보이는 칩(사용자 2026-11-10, 체크 상자 대신) */}
+        <SummaryChip label="🔧 A/S 진행 중" count={data.summary["A/S 진행 중"] ?? 0} active={f.as}
+                     tone="bg-amber-500/12 text-amber-700 dark:text-amber-300" onClick={() => chip({ as: !f.as })} />
         {overdueRows.length > 0 && (
           <SummaryChip label="⏰ 입금 예정일 지남" count={overdueRows.length} active={f.overdue}
-                       tone="bg-red-500/12 text-red-700 dark:text-red-300" onClick={() => set({ overdue: !f.overdue })} />
+                       tone="bg-red-500/12 text-red-700 dark:text-red-300" onClick={() => chip({ overdue: !f.overdue })} />
         )}
       </div>
 
@@ -236,12 +231,10 @@ export function DealList({ data, biz, initialOpenId = null, onRefresh, onMeeting
         <input value={f.q} onChange={(e) => set({ q: e.target.value })} placeholder="고객사·품목·건번호 검색"
                className="h-9 w-64 rounded-lg border border-border bg-surface px-3 outline-none focus:border-accent" />
         <Select value={f.owner} onChange={(v) => set({ owner: v })} label="담당자" options={owners} />
-        <Select value={f.stage} onChange={(v) => set({ stage: v })} label="단계" options={stages} />
+        <Select value={f.stage} onChange={(v) => chip({ stage: v })} label="단계" options={stages} />
         {!biz && <Select value={f.kind} onChange={(v) => set({ kind: v })} label="판매·대여" options={["판매", "대여"]} />}
         <Select value={f.year} onChange={(v) => set({ year: v })} label="연도" options={years} />
-        <Check checked={f.unpaid} onChange={(v) => set({ unpaid: v })} label="미수만" />
-        <Check checked={f.review} onChange={(v) => set({ review: v })} label="확인 필요만" />
-        <Check checked={f.as} onChange={(v) => set({ as: v })} label="A/S 진행 중만" />
+        {/* 미수·확인 필요·A/S 진행 중은 위 칩으로만(사용자 2026-11-10 — 같은 거르기가 두 군데 있던 체크 상자 뺌) */}
         <span className="ml-auto text-foreground-subtle">{rows.length}건</span>
       </div>
 
@@ -270,9 +263,9 @@ export function DealList({ data, biz, initialOpenId = null, onRefresh, onMeeting
               <tr onClick={() => (selecting ? toggle(r.id) : setOpenId(r.id))}
                   aria-selected={selecting ? selected.has(r.id) : undefined}
                   className={cn("cursor-pointer border-b border-border/70 last:border-0 hover:bg-accent/5",
-                    (isOverdue(r) || returnLate(r)) && "bg-red-500/[0.07] shadow-[inset_3px_0_0_#dc2626]", r.dropped && "opacity-60",
-                    // A/S 진행 중인 건은 그 줄만 연하게(사용자 2026-10-22) — 마우스를 올리면 또렷하게
-                    !!r.as_active && "opacity-50 hover:opacity-100",
+                    isOverdue(r) && "bg-red-500/[0.07] shadow-[inset_3px_0_0_#dc2626]", r.dropped && "opacity-60",
+                    // A/S 진행 중 — 흐리게 대신 왼쪽 주황 막대 + 옅은 주황 배경(사용자 2026-11-10). 입금 예정일 지남(빨강)이 더 급해 그쪽이 먼저
+                    !!r.as_active && !isOverdue(r) && "bg-amber-500/[0.06] shadow-[inset_3px_0_0_#f59e0b]",
                     !selecting && openId === r.id && "bg-accent/8", selecting && selected.has(r.id) && "bg-red-500/8")}>
                 {selecting && (
                   <td className="w-10 px-3 py-2" onClick={(e) => e.stopPropagation()}>
@@ -285,6 +278,7 @@ export function DealList({ data, biz, initialOpenId = null, onRefresh, onMeeting
                   <div className="truncate font-semibold" title={r.customer ?? undefined}>{r.customer ?? <Muted>고객사 미기재</Muted>}</div>
                   <div className="mt-0.5 flex items-center gap-1.5">
                     <span className="truncate text-[12.5px] text-foreground-muted" title={r.title}>{r.title}</span>
+                    {r.quote && <RegionBadge overseas={r.quote.currency === "USD"} />}
                     {r.biz === "rental" && biz !== "rental" && (
                       <span className="shrink-0 rounded bg-emerald-500/12 px-1.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">{r.flow?.free ? "무상 대여" : "대여"}</span>
                     )}
@@ -297,7 +291,7 @@ export function DealList({ data, biz, initialOpenId = null, onRefresh, onMeeting
                       </button>
                     )}
                   </div>
-                  {r.rental && <RentalLine rental={r.rental} today={data.today} />}
+                  {r.rental && <RentalLine rental={r.rental} />}
                 </td>
                 <td className="whitespace-nowrap px-3 py-2 font-mono text-[12px]">
                   {r.display_no ?? r.deal_no ?? "번호 미부여"}
@@ -322,18 +316,19 @@ export function DealList({ data, biz, initialOpenId = null, onRefresh, onMeeting
                 </td>
                 <td className="whitespace-nowrap px-3 py-2">
                   <StageChip stage={r.stage} version={quoteVer(r.stage, r.quote?.revision)} />
-                </td>
-                <td className="whitespace-nowrap px-3 py-2">{paymentCell(r)}</td>
-                <td className="whitespace-nowrap px-3 py-2">
-                  {r.shipments.length ? `${r.shipments.length}회` : r.shipped ? <Muted>완료(비고)</Muted> : <Muted>-</Muted>}
+                  {/* A/S — 단계 옆 배지(색만으로는 뜻을 몰라 글자로 함께, 사용자 2026-11-10) */}
                   {!!r.as_active && (
-                    <span className="ml-1.5 rounded bg-amber-500/12 px-1.5 py-0.5 text-[11.5px] font-semibold text-amber-700 dark:text-amber-300"
-                          title={`A/S ${r.as_total}건 중 ${r.as_active}건 진행 중`}>A/S 진행 {r.as_active}</span>
+                    <span className="ml-1.5 rounded bg-amber-500/15 px-1.5 py-0.5 text-[11.5px] font-semibold text-amber-800 dark:text-amber-300"
+                          title={`A/S ${r.as_total}건 중 ${r.as_active}건 진행 중`}>🔧 A/S 진행 중{r.as_active > 1 ? ` ${r.as_active}` : ""}</span>
                   )}
                   {!!r.as_open && r.as_open > (r.as_active ?? 0) && (
                     <span className="ml-1.5 rounded border border-amber-500/40 px-1.5 py-0.5 text-[11.5px] font-semibold text-amber-700 dark:text-amber-300"
                           title="A/S 접수만 하고 아직 A/S 에 들어가지 않은 건">A/S 접수 {r.as_open - (r.as_active ?? 0)}</span>
                   )}
+                </td>
+                <td className="whitespace-nowrap px-3 py-2">{paymentCell(r)}</td>
+                <td className="whitespace-nowrap px-3 py-2">
+                  {r.shipments.length ? `${r.shipments.length}회` : r.shipped ? <Muted>완료(비고)</Muted> : <Muted>-</Muted>}
                 </td>
                 <td className="max-w-[260px] px-3 py-2"><AlertCell row={r} /></td>
               </tr>
@@ -381,41 +376,16 @@ export function DealList({ data, biz, initialOpenId = null, onRefresh, onMeeting
           </div>
         </div>
       )}
-      {/* 하루 한 번 팝업 — 입금 예정일 지난 건 · 반납일 지났는데 반납 확인 전인 대여 건(사용자 2026-10-30) */}
-      {lateOpen && (overdueRows.length > 0 || lateReturns.length > 0) && (
+      {/* 하루 한 번 팝업 — 입금 예정일 지난 건(반납일 지난 대여 건은 [대여 제품 목록]에서, 사용자 2026-11-10) */}
+      {lateOpen && overdueRows.length > 0 && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-4" onClick={closeLate}>
           <div role="alertdialog" aria-label="기한 지난 건" onClick={(e) => e.stopPropagation()}
                className="w-full max-w-[560px] rounded-2xl bg-background p-5 shadow-2xl">
-            {lateReturns.length > 0 && (
-              <section className="mb-4 last:mb-0">
-                <div className="flex items-center gap-2">
-                  <h2 className="text-[16px] font-bold text-red-700 dark:text-red-300">📦 반납일이 지난 대여 건 {lateReturns.length}건</h2>
-                  <button type="button" onClick={() => { closeLate(); set({ returnLate: true, overdue: false, stage: "" }); }}
-                          className="ml-auto text-[12px] font-semibold text-accent hover:underline">리스트에서 보기</button>
-                </div>
-                <p className="mt-1 text-[12.5px] text-foreground-muted">제품을 돌려받았으면 건을 열어 &lsquo;대여 · 회수&rsquo;의 [회수 완료]를 눌러 주세요.</p>
-                <ul className="scroll-thin mt-2 max-h-56 overflow-y-auto rounded-lg border border-border text-[12.5px]">
-                  {lateReturns.map((r) => (
-                    <li key={r.id}>
-                      <button type="button" onClick={() => { closeLate(); setOpenId(r.id); }}
-                              className="flex w-full items-center gap-2 border-b border-border/70 px-3 py-2 text-left last:border-0 hover:bg-red-500/5">
-                        <span className="font-mono text-foreground-muted">{r.display_no ?? r.deal_no ?? "번호 미부여"}</span>
-                        <span className="min-w-0 flex-1 truncate font-medium">{r.customer ?? "고객사 미기재"} · {r.title}</span>
-                        <span className="whitespace-nowrap text-foreground-muted">{r.stage}</span>
-                        <span className="whitespace-nowrap font-semibold text-red-600 dark:text-red-400">
-                          반납일 {shortDate(r.rental?.end)}{lateDays(r.rental?.end, data.today)}
-                        </span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            )}
             {overdueRows.length > 0 && (
               <section>
                 <div className="flex items-center gap-2">
                   <h2 className="text-[16px] font-bold text-red-700 dark:text-red-300">⏰ 입금 예정일이 지난 건 {overdueRows.length}건</h2>
-                  <button type="button" onClick={() => { closeLate(); set({ overdue: true, returnLate: false, stage: "" }); }}
+                  <button type="button" onClick={() => { closeLate(); chip({ overdue: true }); }}
                           className="ml-auto text-[12px] font-semibold text-accent hover:underline">리스트에서 보기</button>
                 </div>
                 <p className="mt-1 text-[12.5px] text-foreground-muted">입금되었으면 건을 열어 회차의 [입금 확인]을 눌러 주세요. 금액은 공급가액입니다.</p>
@@ -570,15 +540,6 @@ function Select({ value, onChange, label, options }: {
   );
 }
 
-function Check({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
-  return (
-    <label className="flex h-9 cursor-pointer items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5">
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="accent-[var(--color-accent,#2563eb)]" />
-      {label}
-    </label>
-  );
-}
-
 // 엑셀에 'lucas'·'Lucas' 처럼 대소문자가 섞여 있다
 function normOwner(o: string | null): string {
   return o ? o.charAt(0).toUpperCase() + o.slice(1).toLowerCase() : "";
@@ -633,20 +594,13 @@ function HistoryPanel({ row }: { row: DealRow }) {
 }
 
 /** 대여 기간·월 납입금(사용자 2026-10-22) — 끝나는 날이 지났거나 30일 안이면 붉게(반납 처리는 다음 단계). */
-export function RentalLine({ rental, today }: { rental: DealRental; today: string }) {
-  const ret = rental.return ?? {};
-  // 회수를 시작·마친 건은 끝나는 날 경고 대신 회수 상태(사용자 2026-10-22)
-  const left = rental.end && !ret.started ? Math.round((Date.parse(rental.end) - Date.parse(today)) / 86_400_000) : null;
+export function RentalLine({ rental }: { rental: DealRental }) {
+  // 대여 조건만 — 대여 중·회수 같은 대여 상태는 [대여 제품 목록]에서(사용자 2026-11-10)
   return (
-    <div className={cn("mt-0.5 text-[11.5px]", ret.done ? "text-foreground-muted"
-      : ret.started ? "font-semibold text-amber-700 dark:text-amber-300"
-      : left != null && left < 0 ? "font-semibold text-red-600 dark:text-red-400"
-      : left != null && left <= 30 ? "font-semibold text-amber-700 dark:text-amber-300" : "text-emerald-700 dark:text-emerald-300")}>
+    <div className="mt-0.5 text-[11.5px] text-emerald-700 dark:text-emerald-300">
       대여 {rental.months}개월
       {rental.start ? ` · ${rental.start} ~ ${rental.end}` : " · 시작일 미정"}
       {rental.monthly ? ` · 월 ${rental.monthly.toLocaleString("ko-KR")}원` : ""}
-      {ret.done ? ` · 회수 완료 ${ret.done}` : ret.started ? ` · 회수 중(${ret.started} 시작)`
-        : left != null && (left < 0 ? " · 대여 기간 끝남" : left <= 30 ? ` · ${left}일 남음` : "")}
     </div>
   );
 }

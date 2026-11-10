@@ -79,12 +79,14 @@ const fromUnit = (u: ProductUnit): Draft => ({ key: `u${u.id}`, id: u.id, part_n
                                                note: u.note, locked: u.shipment_index != null });
 
 /** 품목 줄 하나의 S/N 칸 — 출하 수량만큼. 저장하면 이 줄만 바뀐다(다른 줄 S/N은 그대로). */
-export function SnPanel({ dealId, view, line, need, editIndex, bindIndex, bindExpect, onSaved, onClose }: {
+export function SnPanel({ dealId, view, line, need, editIndex, bindIndex, bindExpect, scope = "이 출하", onSaved, onClose }: {
   dealId: number; view: IssueUnits; line: SnLine; need: number; editIndex?: number;
   /** 이미 남긴 출하 기록에 적을 때 — 저장하면 그 출하로 바로 묶인다(그 출하일부터 무상 기간) */
   bindIndex?: number;
   /** 그 출하 기록(화면에서 본 것) — 그사이 다른 사람이 출하를 지워 번호가 밀렸으면 서버가 막는다 */
   bindExpect?: unknown;
+  /** 머리 문구의 '이 출하' 자리 — 대여 제품 목록에서는 '이 품목'(사용자 2026-11-10) */
+  scope?: string;
   onSaved: (v: IssueUnits) => void; onClose: () => void;
 }) {
   const purpose = view.biz === "rental" ? "R" : "S";      // 대여 건은 R(대여), 판매 건은 S(판매)(사용자 2026-10-22)
@@ -151,7 +153,7 @@ export function SnPanel({ dealId, view, line, need, editIndex, bindIndex, bindEx
     <div className="mt-3 rounded-xl border border-accent/30 bg-accent/[0.03] p-3.5" onKeyDown={(e) => { if (e.key === "Escape" && !busy) { e.stopPropagation(); onClose(); } }}>
       <div className="mb-3 flex flex-wrap items-baseline gap-x-2 gap-y-1">
         <b className="text-[13.5px] font-extrabold">S/N 등록</b>
-        <span className="text-[12px] text-foreground-muted">이 출하 {need}개 중 <b className={filled >= need ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>{Math.min(filled, need)}개</b> 적음</span>
+        <span className="text-[12px] text-foreground-muted">{scope} {need}개 중 <b className={filled >= need ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>{Math.min(filled, need)}개</b> 적음</span>
         {/* 무상 기간은 모든 제품 출하일부터 1년 고정(사용자 2026-10-30) */}
         <span className="text-[11.5px] text-foreground-subtle">무상 기간 출하일부터 1년</span>
         <span className="ml-auto text-[11.5px] text-foreground-subtle">S/N이 없는 품목은 &lsquo;특주&rsquo;처럼 적습니다</span>

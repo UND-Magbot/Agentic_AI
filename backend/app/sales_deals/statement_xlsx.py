@@ -33,7 +33,7 @@ from ..company_knowledge.product_prices import COMPANY_PROFILE
 SUPPLIER = COMPANY_PROFILE["statement_supplier"]
 MIN_ROWS = 8                       # 양식의 품목 줄 수
 ONE_PAGE_MAX = 30                  # 이 줄 수까지는 A4 한 장에 두 장(공급자·공급받는자) — 넘으면 여러 장
-MAX_ITEMS = 150
+MAX_ITEMS = 500                    # 사용자 2026-11-10(150 → 500)
 SEAL = Path(__file__).resolve().parents[1] / "company_knowledge" / "data" / "quote" / "seal.png"
 FONT = "맑은 고딕"
 WON = '"₩"#,##0'

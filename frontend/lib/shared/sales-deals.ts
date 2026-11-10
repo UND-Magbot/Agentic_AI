@@ -6,9 +6,8 @@ import { cookies } from "next/headers";
 const TOKEN_COOKIE = "und_cortex_token";
 const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:8002";
 
-export type DealStage = "제품 추천 확정" | "견적" | "수주" | "출하 후 입금 대기" | "완료 (출하·완납)" | "드랍" | "출하 기록만 (이전)"
-  /** 대여 건만(사용자 2026-10-22) — 출하하면 대여 중, [회수 시작] → 회수 중, [회수 완료] → 회수 완료 */
-  | "대여 중" | "회수 중" | "회수 완료";
+/** 영업 건 단계 — 대여 중·회수는 영업 건 단계가 아니다(사용자 2026-11-10, 대여 상태는 RentalPhase) */
+export type DealStage = "제품 추천 확정" | "견적" | "수주" | "출하 후 입금 대기" | "완료 (출하·완납)" | "드랍" | "출하 기록만 (이전)";
 
 export interface DealAlert {
   code: string;
@@ -277,7 +276,7 @@ export interface DealKpi {
 
 export interface DealListData {
   today: string;
-  summary: Record<DealStage | "확인 필요" | "알림" | "A/S 진행 중", number>;
+  summary: Record<DealStage | "확인 필요" | "알림" | "A/S 진행 중" | "미수", number>;
   counts: { total: number; imported: number };
   rows: DealRow[];
   kpi: DealKpi;
@@ -345,6 +344,8 @@ export interface ProductUnit {
   deal_title?: string | null;
   deal_display_no?: string | null;
   deal_biz?: DealBiz;
+  /** 무상 대여 건 — [프로젝트 건 열기]가 대여 제품 목록으로(사용자 2026-11-10) */
+  deal_free?: boolean;
   warranty_months: number | null;
   warranty_start: string | null;
   warranty_until: string | null;
@@ -376,7 +377,11 @@ export interface IssueUnits {
   won_issue_no: string | null;
   /** 이 건에서 이미 시리얼을 등록한 다른 판 */
   other_issues: string[];
-  lines: { line_no: number; name: string; qty: number; part: string; suggest_months: number | null; units: ProductUnit[] }[];
+  lines: { line_no: number; name: string; qty: number; part: string; suggest_months: number | null; units: ProductUnit[];
+    /** 견적서 Remark 에서 읽은 S/N(대여 건 상세만, 사용자 2026-11-10) */
+    hints?: string[] }[];
+  /** Remark 에서 읽은 S/N 수(대여 건 상세만) */
+  hint_total?: number;
   summary: Omit<UnitSummary, "quote_id" | "revision" | "issue_no">;
   policies: WarrantyPolicy[];
 }
@@ -423,3 +428,85 @@ export type DealBiz = "sale" | "rental";
 export type DealRental = { months: number; start: string | null; end: string | null; monthly: number | null;
   /** 회수 — started 회수 시작일, done 회수 완료일 */
   return?: { started?: string; done?: string } };
+
+
+// ── 대여 제품 목록(대여 건 단위, 사용자 2026-11-10) ─────────────────────────────
+
+/** 대여 상태 — 수주·출하 단계 없이 대여 시작일·반납일로 자동(backend flow.rental_phase) */
+export type RentalPhase = "견적" | "대여 예정" | "대여 중" | "회수 중" | "반납일 지남" | "회수 완료";
+
+export interface RentalDealRow {
+  id: number;
+  customer: string;
+  /** 고객사 담당자(견적서 To) · 우리 담당자 */
+  contact: string;
+  owner: string;
+  title: string;
+  /** 견적서 발행번호 */
+  no: string;
+  free: boolean;
+  /** 해외(달러 견적서) — 아니면 국내 */
+  overseas: boolean;
+  phase: RentalPhase;
+  months: number | null;
+  start: string | null;
+  end: string | null;
+  /** 반납일까지 남은 날(지났으면 음수) — 견적·회수 완료는 null */
+  days_left: number | null;
+  returned: string | null;
+  return_started: string | null;
+  /** 품목 줄 수 · 제품 수(수량 합) · 등록한 S/N 수 */
+  products: number;
+  qty: number;
+  sn: number;
+  serials: string[];
+  /** 대여 시작일 미정 */
+  no_start: boolean;
+}
+
+export interface RentalDealList {
+  today: string;
+  soon_days: number;
+  rows: RentalDealRow[];
+  counts: Record<RentalPhase, number>;
+  free: number;
+  paid: number;
+}
+
+/** [대여 제품 목록] 한 줄 = 대여 건의 품목 줄 하나(사용자 2026-11-10) + 그 건 정보 */
+export interface RentalProductRow extends Omit<RentalDealRow, "id" | "products" | "qty" | "sn" | "serials"> {
+  deal_id: number;
+  /** 견적서 판의 품목 줄 위치(발행본이 없는 예전 건은 null) */
+  line_no: number | null;
+  product: string;
+  part: string;
+  qty: number;
+  /** 등록한 S/N 수(수량까지) */
+  sn: number;
+  serials: string[];
+}
+
+export interface RentalProductList {
+  today: string;
+  soon_days: number;
+  rows: RentalProductRow[];
+  counts: Record<RentalPhase, number>;
+  free: number;
+  paid: number;
+}
+
+export interface RentalDetail {
+  deal: DealRow;
+  phase: RentalPhase;
+  /** 대여가 시작됐는지(시작일이 지났거나 출하 기록) — 회수 버튼 조건 */
+  started: boolean;
+  /** 제품 목록을 읽은 견적서 판(발행 전이면 null) */
+  issue: IssueUnits | null;
+}
+
+export interface SerialLoadResult {
+  filled: number;
+  skipped: { serial: string; line: string; why: string }[];
+  hint_total: number;
+  detail: RentalDetail;
+}

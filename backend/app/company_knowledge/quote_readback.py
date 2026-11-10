@@ -496,11 +496,16 @@ def merge(state: dict[str, Any], parsed: dict[str, Any]) -> tuple[dict[str, Any]
     if pf.get("rental_months") and (f.get("purpose") != "rental" or f.get("rental_months") != pf["rental_months"]):
         changes.append(f"대여 개월 수: {f.get('rental_months') or '(없음)'} → {pf['rental_months']}")
         f.update(purpose="rental", rental_months=pf["rental_months"])
-    if pf.get("purpose") == "rental" and (free or f.get("purpose") == "rental"):   # 유상 ↔ 무상 대여(사용자 2026-10-30)
+    if pf.get("purpose") == "rental" and (free or f.get("purpose") == "rental"):
+        # 유상/무상은 견적서를 만들 때 정한다(사용자 2026-11-10) — 파일이 달라도 바꾸지 않고 알린다
         fee = "free" if free else "paid"
-        if f.get("purpose") != "rental" or (f.get("rental_fee") or "paid") != fee:
-            changes.append(f"대여: {qs.RENTAL_FEES[fee]}")
-            f.update(purpose="rental", rental_fee=fee)
+        now_fee = (f.get("rental_fee") or "paid") if f.get("purpose") == "rental" else None
+        if now_fee and now_fee != fee:
+            warns.append(f"올린 파일은 {qs.RENTAL_FEES[fee]} 견적서지만 이 견적서는 {qs.RENTAL_FEES[now_fee]}입니다 — 유상/무상은 바꾸지 않습니다"
+                         "(무상 대여는 [대여 제품 목록]의 [무상 대여 건 등록]에서 만듭니다).")
+        elif f.get("purpose") != "rental":
+            changes.append("대여: 유상 대여")
+            f.update(purpose="rental", rental_fee="paid")
     if "notes" in pf:
         scope = qx._SCOPE[lang]
         pogo = any(ln.get("key") in ("PPM", "PPF") for ln in st["lines"])

@@ -53,7 +53,7 @@ function ChargeChip({ charge }: { charge: AsCase["charge"] }) {
 
 export function ProductUnitsTab({ onOpenDeal }: {
   /** [프로젝트 건 열기] — 그 건을 판매·대여 관리 탭의 상세로 연다(사용자 2026-10-22) */
-  onOpenDeal?: (dealId: number, biz: DealBiz) => void;
+  onOpenDeal?: (dealId: number, biz: DealBiz, free?: boolean) => void;
 } = {}) {
   // 무상 기간 기본값 탭은 뺐다 — 모든 제품 출하일부터 1년 고정(사용자 2026-10-30)
   const [view, setView] = useState<"units" | "cases">("units");
@@ -324,7 +324,7 @@ function CaseList({ onOpen, onChanged }: { onOpen: (unitId: number) => void; onC
   );
 }
 
-function UnitPanel({ unitId, onOpenDeal }: { unitId: number; onOpenDeal?: (dealId: number, biz: DealBiz) => void }) {
+function UnitPanel({ unitId, onOpenDeal }: { unitId: number; onOpenDeal?: (dealId: number, biz: DealBiz, free?: boolean) => void }) {
   const [u, setU] = useState<UnitDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
@@ -356,7 +356,7 @@ function UnitPanel({ unitId, onOpenDeal }: { unitId: number; onOpenDeal?: (dealI
         <UnitStateBadge code={u.purpose} status={u.status} rentalDeal={u.deal_biz === "rental"} />
         <WarrantyChip state={u.warranty_state} />
         {u.deal_id && onOpenDeal && (
-          <button type="button" onClick={() => onOpenDeal(u.deal_id as number, u.deal_biz ?? "sale")}
+          <button type="button" onClick={() => onOpenDeal(u.deal_id as number, u.deal_biz ?? "sale", !!u.deal_free)}
                   className="ml-auto inline-flex items-center gap-1 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-accent/90">
             프로젝트 건 열기 →
           </button>

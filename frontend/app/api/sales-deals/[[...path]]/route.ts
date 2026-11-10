@@ -20,6 +20,7 @@
  * GET  /api/sales-deals/units/search?q= · /units/{unitId} · /as-cases?case_status= · /warranty-policies
  * POST /api/sales-deals/as-cases · /as-cases/batch(여러 시리얼) · /as-cases/{caseId} · /warranty-policies (관리자)
  * A/S 접수서 사진: POST /api/sales-deals/as-photos (multipart) · GET /as-photos/{pid}
+ * 대여 제품 목록(사용자 2026-11-10): GET /rental-deals · /{id}/rental · POST /{id}/rental/serials(S/N 불러오기)
  */
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
@@ -83,8 +84,8 @@ export async function GET(req: NextRequest, { params }: Params) {
   }
   // 제품 시리얼·A/S(사용자 2026-10-19) — 검색어·견적서 판 등 쿼리는 그대로
   const unitsGet = (path.length === 2 && path[0] === "units" && (path[1] === "search" || /^\d+$/.test(path[1])))
-    || (path.length === 1 && (path[0] === "as-cases" || path[0] === "warranty-policies" || path[0] === "rental-units"))
-    || (path.length === 2 && /^\d+$/.test(path[0]) && path[1] === "units");
+    || (path.length === 1 && (path[0] === "as-cases" || path[0] === "warranty-policies" || path[0] === "rental-units" || path[0] === "rental-deals" || path[0] === "rental-products"))
+    || (path.length === 2 && /^\d+$/.test(path[0]) && (path[1] === "units" || path[1] === "rental"));
   if (path.length === 2 && path[0] === "as-photos" && /^[0-9a-f]{32}\.(jpg|jpeg|png|webp)$/.test(path[1])) {
     return passFile(`${BACKEND_URL}${BASE}/as-photos/${path[1]}`, tok);
   }
@@ -152,6 +153,8 @@ export async function POST(req: NextRequest, { params }: Params) {
     || (path.length === 2 && path[0] === "approvals" && path[1] === "seen");     // 팝업을 봤음(DB 기록)
   // 제품 시리얼 저장 · A/S 접수·고치기 · 무상 기간 기본값(사용자 2026-10-19)
   const isUnits = (path.length === 2 && /^\d+$/.test(path[0]) && path[1] === "units")
+    // 대여 건 [S/N 불러오기](사용자 2026-11-10)
+    || (path.length === 3 && /^\d+$/.test(path[0]) && path[1] === "rental" && path[2] === "serials")
     || (path.length === 1 && (path[0] === "as-cases" || path[0] === "warranty-policies"))
     || (path.length === 2 && path[0] === "as-cases" && (/^\d+$/.test(path[1]) || path[1] === "delete" || path[1] === "batch"));   // 지우기는 관리자(사용자 2026-10-22)
   const ok = path.length === 0 || isUpload || isOrder || isBatch || isPoCompare || isQuoteConfirm || isDecide || isUnits

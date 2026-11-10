@@ -153,11 +153,11 @@ const FEATURES: {
     },
   },
   {
-    href: "/proposals/recommend?tab=rentals",   // [대여 제품 목록] 탭(사용자 2026-10-30) — 나간 제품 한 줄씩, 반납일·상태 중심
+    href: "/proposals/recommend?tab=rentals",   // [대여 제품 목록] 탭(사용자 2026-11-10) — 대여 건 단위, 펼치면 제품·S/N
     title: "대여 제품 목록",
-    desc: "대여 나간 제품을 S/N·상태 코드·고객사·담당자와 함께 한 줄씩 보고, 언제 반납되는지·지금 어떤 상태인지 확인합니다. 반납일이 지나면 빨갛게 표시됩니다.",
+    desc: "유상·무상 대여 건을 한 줄씩 보고 언제 반납되는지·지금 어떤 상태인지 확인합니다. 무상 대여 건 등록, 제품별 S/N 불러오기·입력도 여기서 합니다.",
     icon: "refresh",
-    steps: ["대여 중", "반납 예정", "회수 중", "회수 완료"],
+    steps: ["대여 예정", "대여 중", "회수 중", "회수 완료"],
     tone: {
       band: "from-sky-600 to-cyan-500",
       icon: "bg-white/20 text-white",

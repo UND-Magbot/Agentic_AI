@@ -146,13 +146,18 @@ async def rented_units(db: AsyncSession, since: dt.date | None, until: dt.date |
         "  OR (u.status = '등록' AND u.purpose = 'R' AND d.quote->'rental'->'return'->>'done' IS NULL)) "
         "ORDER BY d.customer, u.deal_id, u.line_no, u.id"))).mappings().all()
     rows, undated, waiting = [], [], []
+    from .service import kst_today
+
+    today = kst_today().isoformat()
     for r in rs:
         q = _j(r["quote"]) or {}
         start = _start(dict(r), q, _j(r["shipments"]) or [])
         item = {"serial": r["serial"] or "(S/N 없음)", "part": r["part_name"] or "", "line": (r["line_name"] or "").split("\n")[0],
                 "customer": r["customer"] or "", "deal_no": q.get("no") or r["deal_no"] or "", "title": r["title"] or "",
                 "start": start, "end": ((q.get("rental") or {}).get("end")), "status": r["status"], "as_now": r["purpose"] == "A"}
-        if r["status"] == "등록":
+        # 출하 기록 없이 대여 시작일로 대여 중이 된 건(사용자 2026-11-10)의 S/N 은 등록 상태여도 대여 중
+        begun = bool((q.get("rental") or {}).get("start")) and q["rental"]["start"] <= today
+        if r["status"] == "등록" and not begun:
             waiting.append(item)
         elif start is None:
             undated.append(item)

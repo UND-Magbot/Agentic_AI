@@ -11,15 +11,12 @@ import { QuoteUploadDialog } from "@/components/domains/sales/quote-upload-dialo
 import { DealAsIntake } from "@/components/domains/sales/product-units-tab";
 import { ShipForm, shipmentDraft } from "@/components/domains/sales/deal-flow";
 import { SnButton, SnPanel, flatName, loadSnView, shipmentSnLines } from "@/components/domains/sales/unit-register";
-import { Field, INPUT, Muted, StageChip, UnitStateBadge, dealRequest, eventDetail, eventLabel, quoteVer, shortDate, stamp, termExpect, todayIso, won } from "@/components/domains/sales/deal-format";
+import { Field, INPUT, Muted, RegionBadge, StageChip, UnitStateBadge, dealRequest, eventDetail, eventLabel, quoteVer, shortDate, stamp, termExpect, todayIso, won } from "@/components/domains/sales/deal-format";
 import type { ApprovalAdmin, ApprovalRequest, DealEvent, DealRow, IssueUnits, DealShipment, PoCompare, ProductUnit } from "@/lib/shared/sales-deals";
 import { cn } from "@/lib/shared/utils";
 
+// 대여 건도 영업 건에서는 판매와 같은 진행(사용자 2026-11-10 — 대여 중·회수는 [대여 제품 목록]의 대여 상태로만)
 const STEPS = ["제품 추천 확정", "견적", "수주", "거래명세서", "출하", "입금 완료"] as const;
-// 대여 건 진행(사용자 2026-10-22) — 출하 = 대여 시작, 회수까지
-const RENTAL_STEPS = ["견적", "수주", "거래명세서", "대여 중(출하)", "회수 완료", "입금 완료"] as const;
-// 무상 대여(합계 0원, 사용자 2026-10-30) — 수주 → 바로 출하(거래명세서·입금 없음)
-const FREE_RENTAL_STEPS = ["견적", "수주", "대여 중(출하)", "회수 완료"] as const;
 
 
 type Act = (path: string, body: unknown) => Promise<boolean>;
@@ -122,11 +119,8 @@ export function DealDetail({ row, admin = false, onClose, onChanged, onMeeting, 
   const alerts = deal.alerts.filter((a) => a.level === "alert");
   const isRental = deal.biz === "rental";
   const freeRental = isRental && !!deal.flow?.free;
-  const steps: readonly string[] = freeRental ? FREE_RENTAL_STEPS : isRental ? RENTAL_STEPS : STEPS;
-  const done = freeRental ? [!!deal.quote, !!deal.won, deal.shipped, !!deal.rental?.return?.done]
-    : isRental
-    ? [!!deal.quote, !!deal.won, !!deal.statement, deal.shipped, !!deal.rental?.return?.done, deal.paid_full]
-    : [!!deal.proposal_id, !!deal.quote, !!deal.won, !!deal.statement, deal.shipped, deal.paid_full];
+  const steps: readonly string[] = STEPS;
+  const done = [!!deal.proposal_id, !!deal.quote, !!deal.won, !!deal.statement, deal.shipped, deal.paid_full];
   const isShipOnly = deal.kind === "shipment_only";
   const free = freeRental;                  // 무상 대여(합계 0원) — 결제·입금 칸 없이 출하만
 
@@ -156,7 +150,10 @@ export function DealDetail({ row, admin = false, onClose, onChanged, onMeeting, 
                 {deal.legacy_no && ` · 옛 번호 ${deal.legacy_no}`}
               </div>
               <h2 className="mt-0.5 truncate text-[18px] font-bold">{deal.customer ?? "고객사 미기재"}</h2>
-              <p className="mt-0.5 text-[13px] text-foreground-muted">{deal.title}</p>
+              <p className="mt-0.5 flex items-center gap-1.5 text-[13px] text-foreground-muted">
+                {deal.quote && <RegionBadge overseas={deal.quote.currency === "USD"} className="py-0.5" />}
+                <span className="min-w-0 truncate">{deal.title}</span>
+              </p>
               {!deal.imported && deal.kind !== "shipment_only" && (
                 <button type="button" onClick={() => (deal.proposal_id && onMeeting ? onMeeting(deal.proposal_id) : setMeetingOpen(true))}
                         className={cn("mt-1.5 rounded-md border px-2 py-0.5 text-[12px] font-medium hover:bg-accent/8",
@@ -212,7 +209,7 @@ export function DealDetail({ row, admin = false, onClose, onChanged, onMeeting, 
 
           {!isShipOnly && <DropBlock deal={deal} busy={busy} act={act} />}
           {!isShipOnly && !deal.dropped && <WonBlock deal={deal} busy={busy} act={act} uploadPo={uploadPo} comparing={comparing} comparePo={comparePo} />}
-          {isRental && deal.won && !deal.dropped && <RentalReturn deal={deal} busy={busy} act={act} />}
+          {isRental && !deal.dropped && <RentalTerms deal={deal} />}
           {!isShipOnly && deal.won && onOrder && deal.kind !== "sales_only" && (
             <button type="button" onClick={() => onOrder(deal.id)}
                     className="-mb-2 flex items-center justify-between rounded-xl border border-accent/50 bg-accent/[0.06] px-4 py-2.5 text-left hover:bg-accent/10">
@@ -541,97 +538,16 @@ function issuedVersions(deal: DealRow) {
   }))).sort((a, b) => b.issued_at.localeCompare(a.issued_at));
 }
 
-/** 대여 회수(사용자 2026-10-22) — 출하(대여 시작) 뒤 [회수 시작] → 회수 중 → [회수 완료] → 회수 완료(시리얼 출하 상태 → 회수).
- *  기록 취소는 관리자만. 입금은 결제 회차 칸에서 따로 확인한다. */
-function RentalReturn({ deal, busy, act }: { deal: DealRow; busy: boolean; act: Act }) {
-  const admin = useContext(AdminCtx);
+/** 대여 조건(보기만) — 대여 시작일·회수 같은 대여 과정은 [대여 제품 목록]에서 한다(사용자 2026-11-10: 대여 건 한정 과정이라 영업 건에서는 상태를 보이지 않음) */
+function RentalTerms({ deal }: { deal: DealRow }) {
   const r = deal.rental;
-  const ret = r?.return ?? {};
-  const [asking, setAsking] = useState<"start" | "done" | null>(null);
-  const [date, setDate] = useState(todayIso());
-  // 대여 시작일 — 담당자가 정한다(출하일과 따로, 사용자 2026-10-22). 바꾸면 끝나는 날 다시 계산
-  const [startEdit, setStartEdit] = useState<string | null>(null);
-  const saveStart = async () => {
-    if (startEdit && (await act("rental-start", { date: startEdit }))) setStartEdit(null);
-  };
-  const go = async (step: "start" | "done" | "cancel") => {
-    if (await act("rental-return", { step, ...(step === "cancel" ? {} : { date }) })) setAsking(null);
-  };
-  const left = r?.end ? Math.round((Date.parse(r.end) - Date.parse(todayIso())) / 86_400_000) : null;
   return (
-    <Section title="대여 · 회수">
-      <div className="flex flex-col gap-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="w-[110px] shrink-0 text-foreground-muted">대여 시작일</span>
-          {startEdit === null ? (
-            <>
-              <b className={cn(!r?.start && "text-amber-700 dark:text-amber-300")}>{r?.start ?? "미정"}</b>
-              <button type="button" disabled={busy} onClick={() => setStartEdit(r?.start ?? deal.shipments[0]?.date ?? todayIso())}
-                      className="rounded-md border border-border px-2 py-0.5 text-[12px] font-semibold text-accent hover:bg-accent/8">
-                {r?.start ? "바꾸기" : "정하기"}
-              </button>
-            </>
-          ) : (
-            <>
-              <input type="date" value={startEdit} onChange={(e) => setStartEdit(e.target.value)} className={cn(INPUT, "h-8 w-auto")} />
-              <PrimaryBtn disabled={busy || !startEdit} onClick={() => void saveStart()}>저장</PrimaryBtn>
-              <button type="button" onClick={() => setStartEdit(null)} className="text-[12px] text-foreground-subtle hover:underline">취소</button>
-              <span className="text-[11.5px] text-foreground-subtle">끝나는 날 = 시작일 + {r?.months}개월 − 1일로 다시 계산</span>
-            </>
-          )}
-        </div>
-        <Grid rows={[
-          ["대여 기간", r ? `${r.months}개월${r.start ? ` · ${r.start} ~ ${r.end}` : " · 시작일 미정"}` : null],
-          ["월 납입금", r?.monthly ? `${r.monthly.toLocaleString("ko-KR")}원` : null],
-          ["출하일", deal.shipments[0]?.date ?? (deal.shipped ? "출하함" : "출하 전")],
-          ["회수", ret.done ? `완료 ${ret.done}${ret.started && ret.started !== ret.done ? ` (시작 ${ret.started})` : ""}`
-            : ret.started ? `회수 중 · ${ret.started} 시작` : "—"],
-        ]} />
-        {/* 대여·회수 이력(사용자 2026-10-30) — 출하(대여 시작)·대여 시작일·회수 시작·회수 완료·취소를 최신순으로. 변경 이력에도 같이 남는다 */}
-        {(() => {
-          const evs = (deal.events ?? []).filter((e) => ["shipment", "shipment_edit", "rental_start", "rental_return"].includes(e.action));
-          return evs.length > 0 && (
-            <div className="rounded-lg bg-foreground/[0.03] px-3 py-2">
-              <p className="mb-1 text-[12px] font-semibold text-foreground-muted">대여·회수 이력</p>
-              <EventList events={evs} />
-            </div>
-          );
-        })()}
-        {!ret.started && deal.shipped && left != null && left <= 30 && (
-          <p className={cn("rounded-lg px-3 py-1.5 text-[12.5px]", left < 0 ? "bg-red-500/10 text-red-700 dark:text-red-300" : "bg-amber-500/10 text-amber-800 dark:text-amber-200")}>
-            {left < 0 ? `대여 기간이 ${-left}일 지났습니다 — 회수를 시작하세요.` : `대여 끝나는 날까지 ${left}일 남았습니다.`}
-          </p>
-        )}
-        {!asking && (
-          <div className="flex flex-wrap items-center gap-2">
-            {!deal.shipped && <Muted>출하(대여 시작)를 기록하면 [회수 시작]을 누를 수 있습니다.</Muted>}
-            {deal.shipped && !ret.started && <PrimaryBtn disabled={busy} onClick={() => { setDate(todayIso()); setAsking("start"); }}>회수 시작</PrimaryBtn>}
-            {deal.shipped && !ret.done && (
-              <button type="button" disabled={busy} onClick={() => { setDate(todayIso()); setAsking("done"); }}
-                      className={cn("h-8 rounded-lg px-3 text-[12.5px] font-semibold disabled:opacity-50",
-                        ret.started ? "bg-emerald-600 text-white" : "border border-border text-foreground-muted hover:bg-foreground/5")}>
-                회수 완료
-              </button>
-            )}
-            {admin && (ret.started || ret.done) && (
-              <button type="button" disabled={busy} onClick={() => void go("cancel")}
-                      className="text-[12px] text-foreground-subtle hover:underline">회수 기록 취소(관리자)</button>
-            )}
-          </div>
-        )}
-        {asking && (
-          <FormBox onCancel={() => setAsking(null)} onSave={() => void go(asking)} canSave={!!date && !busy} busy={busy}>
-            <Field label={asking === "start" ? "회수 시작일" : "회수 완료일"}>
-              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={INPUT} />
-            </Field>
-            <p className="mt-1 text-[11.5px] text-foreground-subtle">
-              {asking === "start"
-                ? "고객에게서 제품을 가져오기 시작하면 누르세요. 단계가 '회수 중'이 됩니다."
-                : "제품을 다 받았으면 누르세요. 단계가 '회수 완료'가 되고, 이 건 S/N의 출하 상태가 '회수'로 바뀌어 'AI 대여 나간 제품' 목록에서 빠집니다."}
-            </p>
-          </FormBox>
-        )}
-      </div>
+    <Section title="대여 조건">
+      <Grid rows={[
+        ["대여 기간", r ? `${r.months}개월${r.start ? ` · ${r.start} ~ ${r.end}` : " · 시작일 미정"}` : null],
+        ["월 납입금", r?.monthly ? `${r.monthly.toLocaleString("ko-KR")}원` : null],
+      ]} />
+      <p className="mt-1.5 text-[12px] text-foreground-subtle">대여 시작일·회수·제품별 S/N 은 [대여 제품 목록] 탭에서 이 건을 펼쳐 관리합니다.</p>
     </Section>
   );
 }

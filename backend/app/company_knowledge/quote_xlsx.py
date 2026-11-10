@@ -11,6 +11,8 @@
 from __future__ import annotations
 
 import io
+import re
+import zipfile
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -522,6 +524,60 @@ def total(lines: list[dict[str, Any]]) -> float:
     """견적 합계 — 품목·Total 반영 옵션·NEGO 줄만(소계·미반영 옵션·사양·문구 줄 제외). 예전 기록(row 없음)은 모두 품목."""
     return round(sum(ln["amount"] for ln in lines if ln.get("row") in (None, "nego")
                      or (ln.get("row") == "option" and ln.get("in_total"))), 2)
+
+
+# ── 인쇄 폭 맞춤(올린 견적서) ─────────────────────────────────────────────────
+# 엑셀에서 고친 파일은 인쇄 배율이 '조정 안 함'(100%)으로 바뀌어 올 때가 있다 — A~G 열이 A4 보다 넓어
+# 열 단위로 쪽이 갈려 Remark 가 맨 뒤 쪽에만 찍힌다(SPICENERGY 88줄, 사용자 2026-11-10).
+# openpyxl 로 다시 저장하면 도형·텍스트 상자가 빠지므로 시트 XML 의 인쇄 설정만 고친다.
+_FIT_ON = re.compile(r'<pageSetUpPr\b[^>]*\bfitToPage="(?:1|true)"')
+_FIT_ATTRS = re.compile(r'\s(?:fitToWidth|fitToHeight|scale)="[^"]*"')
+
+
+def _fit_sheet_xml(x: str) -> str | None:
+    """시트 XML 에 '너비 1쪽·높이 자동' 맞춤을 넣는다. 이미 맞춤이 켜져 있거나 넣을 자리를 못 찾으면 None."""
+    if _FIT_ON.search(x):
+        return None
+    if re.search(r"<pageSetUpPr\b", x):                                   # 있는데 꺼져 있음
+        x = re.sub(r'<pageSetUpPr\b([^>]*?)\s*fitToPage="[^"]*"', r"<pageSetUpPr\1", x, count=1)
+        x = re.sub(r"<pageSetUpPr\b", '<pageSetUpPr fitToPage="1"', x, count=1)
+    elif re.search(r"<sheetPr\b[^>]*/>", x):
+        x = re.sub(r"<sheetPr\b([^>]*?)\s*/>", r'<sheetPr\1><pageSetUpPr fitToPage="1"/></sheetPr>', x, count=1)
+    elif "</sheetPr>" in x:                                               # pageSetUpPr 는 sheetPr 의 마지막 자식
+        x = x.replace("</sheetPr>", '<pageSetUpPr fitToPage="1"/></sheetPr>', 1)
+    else:                                                                 # sheetPr 는 worksheet 의 첫 자식
+        m = re.search(r"<worksheet\b[^>]*>", x)
+        if not m:
+            return None
+        x = x[:m.end()] + '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>' + x[m.end():]
+    m = re.search(r"<pageSetup\b[^>]*?/?>", x)
+    if m:
+        tag = _FIT_ATTRS.sub("", m.group(0))
+        tag = re.sub(r"<pageSetup\b", '<pageSetup fitToWidth="1" fitToHeight="0"', tag, count=1)
+        return x[:m.start()] + tag + x[m.end():]
+    m = re.search(r"<pageMargins\b[^>]*/>", x)                            # pageSetup 은 pageMargins 바로 뒤
+    if not m:
+        return None
+    return x[:m.end()] + '<pageSetup paperSize="9" fitToWidth="1" fitToHeight="0"/>' + x[m.end():]
+
+
+def fit_page_width(xlsx: bytes) -> bytes:
+    """견적서 엑셀의 모든 시트를 인쇄 시 '너비 1쪽, 높이 자동'으로(회사 양식과 같게). 고칠 게 없으면 받은 바이트 그대로."""
+    try:
+        src = zipfile.ZipFile(io.BytesIO(xlsx))
+    except zipfile.BadZipFile:
+        return xlsx
+    out = io.BytesIO()
+    changed = False
+    with src, zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as dst:
+        for info in src.infolist():
+            data = src.read(info)
+            if re.fullmatch(r"xl/worksheets/sheet\d+\.xml", info.filename):
+                fixed = _fit_sheet_xml(data.decode("utf-8"))
+                if fixed is not None:
+                    data, changed = fixed.encode("utf-8"), True
+            dst.writestr(info, data)
+    return out.getvalue() if changed else xlsx
 
 
 # ── PDF(미리보기·PDF 내려받기) ────────────────────────────────────────────────

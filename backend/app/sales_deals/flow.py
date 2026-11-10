@@ -92,7 +92,36 @@ def free(d: dict) -> bool:
     """받을 돈이 없는 무상 대여 건(사용자 2026-10-30) — 대여 견적 합계 0원(물류비·설치비도 우리가 부담).
     거래명세서·결제 조건·입금 확인 없이 수주 → 바로 출하, 목록 금액은 '무상'."""
     q = d.get("quote") or {}
-    return q.get("biz") == "rental" and q.get("amount") is not None and float(q["amount"]) == 0
+    if q.get("biz") != "rental":
+        return False
+    # [무상 대여 건 등록](대여 제품 목록)으로 만든 건은 표시가 있다(사용자 2026-11-10) — 그 전 건은 합계 0원으로 본다
+    return bool((q.get("rental") or {}).get("free")) or (q.get("amount") is not None and float(q["amount"]) == 0)
+
+
+# 대여 건 상태(대여 제품 목록, 사용자 2026-11-10) — 수주·출하 단계 없이 대여 시작일·반납일로 자동.
+# 견적(유상 대여 수주 전) → 대여 예정 → 대여 중(시작일부터) → 회수 중([회수 시작]) → 회수 완료([회수 완료]).
+# 반납일이 지났는데 회수 완료 전이면 '반납일 지남'(회수 중이어도).
+RENTAL_PHASES = ("견적", "대여 예정", "대여 중", "회수 중", "반납일 지남", "회수 완료")
+
+
+def rental_phase(d: dict, today: dt.date) -> str:
+    rent = (d.get("quote") or {}).get("rental") or {}
+    ret = rent.get("return") or {}
+    if ret.get("done"):
+        return "회수 완료"
+    if not free(d) and not d.get("won"):
+        return "견적"
+    if rent.get("end") and rent["end"] < today.isoformat():
+        return "반납일 지남"
+    if ret.get("started"):
+        return "회수 중"
+    return "대여 중" if rent.get("start") and rent["start"] <= today.isoformat() else "대여 예정"
+
+
+def rental_started(d: dict, today: dt.date) -> bool:
+    """대여가 시작됐는지 — 대여 시작일이 지났거나(무상·유상 공통) 예전처럼 출하 기록이 있음. 회수 버튼의 조건."""
+    start = ((d.get("quote") or {}).get("rental") or {}).get("start")
+    return bool(start and start <= today.isoformat()) or bool(d.get("shipments")) or bool(d.get("shipped_note"))
 
 
 def steps(d: dict) -> list[dict[str, Any]]:

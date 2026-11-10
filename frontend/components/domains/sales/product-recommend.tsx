@@ -26,7 +26,7 @@ import { ErrorBox, inputCls, primaryBtn, secondaryBtn } from "./proposal-actions
 import { OPEN_APPROVALS_EVENT } from "./approval-alert";
 import { ApprovalRequests } from "./approval-requests";
 import { DealsTab } from "./deals-tab";
-import { RentalUnitsTab } from "./rental-units-tab";
+import { RentalDealsTab } from "./rental-deals-tab";
 import { ProductUnitsTab } from "./product-units-tab";
 import { InitialsPrompt } from "./initials-prompt";
 import { QuoteTab, savedContact } from "./quote-workspace";
@@ -933,7 +933,7 @@ const TAB_HEAD: Record<RecommendTab, { title: string; desc: string }> = {
   deals: { title: "제품 영업 건 관리",
     desc: "제품 판매·대여 건을 견적부터 수주·거래명세서·입금·출하(대여는 회수까지) 한 건씩 리스트로 관리합니다. 줄을 누르면 오른쪽에 상세가 열리고, 기록을 남기면 단계가 바뀝니다." },
   rentals: { title: "대여 제품 목록",
-    desc: "대여 나간 제품을 한 줄씩 — S/N·상태 코드·고객사·담당자와 함께 언제 반납되는지·지금 어떤 상태인지를 봅니다. 반납일이 지나면 빨갛게, 가까우면 주황으로 표시됩니다." },
+    desc: "유상·무상 대여 제품을 품목마다 한 줄씩 — 대여 시작일이 되면 자동으로 대여 중, 반납일이 지나면 빨갛게 표시됩니다. 줄을 누르면 그 제품의 S/N 과 고객사·대여 건 정보가 열리고, 무상 대여 건은 여기서 등록합니다." },
   units: { title: "제품 A/S건 관리",
     desc: "S/N 으로 고객사·출하일·무상 기간·A/S 이력을 찾고, 접수한 A/S 를 원인·무상/유상·진행 상태와 함께 기록합니다." },
   memory: { title: "검토·승인",
@@ -1005,6 +1005,19 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
   const [askManual, setAskManual] = useState(false);
   // [제품·A/S] 탭 → [프로젝트 건 열기] — 판매·대여 관리 탭을 열며 그 건 상세를 띄운다(사용자 2026-10-22)
   const [dealOpen, setDealOpen] = useState<number | null>(initialTab === "deals" ? initialDeal ?? null : null);
+  // [대여 제품 목록]에서 펼칠 대여 건 — 채팅 이동 버튼(?tab=rentals&deal=)·[제품·A/S]의 무상 대여 건(사용자 2026-11-10)
+  const [rentalOpen, setRentalOpen] = useState<number | null>(initialTab === "rentals" ? initialDeal ?? null : null);
+  // [+ 무상 대여 건 등록] — 무상 대여 견적서(예전 견적서 수기 작성의 무상 대여와 같은 양식)를 만들어 견적서 탭에서 연다
+  const newFreeRental = async () => {
+    const r = await fetch("/api/product-recommend/quotes/manual", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ form: { ...savedContact(), purpose: "rental", rental_fee: "free" } }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(typeof d?.detail === "string" ? d.detail : "무상 대여 견적서를 만들지 못했습니다.");
+    setQuoteId(d.id as number);
+    setTab("quote");
+  };
   useEffect(() => {
     if (!startManual || manualStarted.current) return;
     manualStarted.current = true;
@@ -1814,7 +1827,7 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
         {([["recommend", "제품 추천"], ["quote", "견적서"], ["order", "수주 진행"], ["deals", "제품 영업 건 관리"], ["rentals", "대여 제품 목록"], ["units", "제품·A/S"], ["memory", "검토·승인"]] as const).map(([key, label]) => {
           const pending = list.items.filter((c) => c.review_status === "pending").length;
           return (
-            <button key={key} type="button" role="tab" aria-selected={tab === key} onClick={() => { setDealOpen(null); setTab(key); }}
+            <button key={key} type="button" role="tab" aria-selected={tab === key} onClick={() => { setDealOpen(null); setRentalOpen(null); setTab(key); }}
                     className="und-tab">
               {label}
               {key === "memory" && (
@@ -2215,9 +2228,11 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
       {tab === "order" && <OrderTab openId={orderId} focus={orderFocus} onOpen={(id) => { setOrderFocus(undefined); setOrderId(id); }} />}
       {tab === "deals" && <DealsTab openDealId={dealOpen} onMeeting={setMeetingId} onOrder={(id) => { setOrderId(id); setTab("order"); }}
                                      onQuote={(id) => { setQuoteId(id); setTab("quote"); }} />}
-      {/* 대여 제품 목록(사용자 2026-10-30) — 제품 한 줄씩, 반납일·상태 중심. 줄을 누르면 제품 영업 건 관리에서 그 건 */}
-      {tab === "rentals" && <RentalUnitsTab onOpenDeal={(id) => { setDealOpen(id); setTab("deals"); }} />}
-      {tab === "units" && <ProductUnitsTab onOpenDeal={(id) => { setDealOpen(id); setTab("deals"); }} />}
+      {/* 대여 제품 목록(사용자 2026-11-10) — 대여 제품(유상·무상)을 품목마다 한 줄씩, 누르면 S/N·고객사·대여 건. 무상 대여 건은 여기서만 */}
+      {tab === "rentals" && <RentalDealsTab key={rentalOpen ?? "list"} openDealId={rentalOpen} onOpenDeal={(id) => { setDealOpen(id); setTab("deals"); }}
+                                            onQuote={(id) => { setQuoteId(id); setTab("quote"); }} onNewFree={newFreeRental} />}
+      {tab === "units" && <ProductUnitsTab onOpenDeal={(id, _biz, free) => {
+        if (free) { setRentalOpen(id); setTab("rentals"); } else { setDealOpen(id); setTab("deals"); } }} />}
       {meetingId && <MeetingInfo id={meetingId} onClose={() => setMeetingId(null)} />}
       {/* 공개 사양 검색이 끝나면 어느 질문을 작성 중이든 요약 팝업(사용자 2026-10-12) */}
       {specAsk ? <SpecAskPopup items={specAsk.items} onAnswer={answerSpecAsk} />

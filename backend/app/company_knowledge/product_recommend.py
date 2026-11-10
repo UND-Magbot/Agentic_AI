@@ -1265,7 +1265,9 @@ def _deal_rental(form: dict[str, Any]) -> dict[str, Any]:
     """대여 견적서(사용자 2026-10-22) → 영업 건에 넘길 대여 조건(개월 수·시작일). 판매면 빈 dict."""
     if form.get("purpose") != "rental" or not form.get("rental_months"):
         return {}
-    return {"rental": {"months": int(form["rental_months"]), "start": form.get("rental_start") or None}}
+    return {"rental": {"months": int(form["rental_months"]), "start": form.get("rental_start") or None,
+                       # 무상 대여 건 등록(대여 제품 목록, 사용자 2026-11-10) — 영업 건 관리에서 빠진다
+                       **({"free": True} if form.get("rental_fee") == "free" else {})}}
 
 
 def _snap_biz(form: dict[str, Any]) -> dict[str, Any]:
@@ -1581,6 +1583,13 @@ async def quote_issue_upload(*, qid: int | None, deal_id: int | None, user_id: i
             from . import quote_readback as rb
 
             parsed = rb.as_free_rental(parsed)
+        if parsed is not None:   # 판 기록 줄에 Remark 도(확인 창 품목 = 읽은 품목 줄 순서) — 대여 건 S/N 불러오기가 읽는다(2026-11-10)
+            rems = [row["remark"] for row in parsed["rows"] if row["row"] == "item"]
+            goods = [i for i, x in enumerate(lines) if x.get("name") != "NEGO"]
+            if len(rems) == len(goods):
+                for i, rem in zip(goods, rems):
+                    if rem:
+                        lines[i] = {**lines[i], "remark": rem}
         f = _upload_biz(f, parsed)
         if f.get("purpose") == "rental" and not rental_checked:
             raise RecommendError("대여 견적서는 대여 시작일을 확인한 뒤 발행할 수 있습니다.")
@@ -1929,8 +1938,8 @@ async def quote_preview(qid: int, *, user_id: int | None) -> bytes:
 async def _to_pdf(xlsx: bytes) -> bytes:
     from . import quote_xlsx as qx
 
-    try:
-        return await qx.to_pdf(xlsx)
+    try:   # 저장본은 그대로 두고 보기·PDF 만 너비 1쪽으로 — 배율이 풀린 올린 파일·예전 발행본(2026-11-10)
+        return await qx.to_pdf(qx.fit_page_width(xlsx))
     except qx.QuoteError as e:
         raise QuotePdfError(str(e)) from e
 

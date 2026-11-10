@@ -45,7 +45,7 @@ _F_AMOUNT = re.compile(r"금액|얼마|가격|총액|합계|공급가")
 # 건 이름이 아닌 질문 말(deal_goto 의 이름 거르기에 더해)
 _QWORD = re.compile(r"금액|얼마|가격|총액|합계|공급가|입금|결제|잔금|선금|중도금|받았|들어왔|들어온|완납|품목|구성|내역|들어간|들어갔|"
                     r"출하|납품|배송|나갔|했어|했나|언제|됐|되었|제품|물건|목록|현황|정리|알려|다\b|모두|전부|혹시", re.I)
-_DONE_STAGES = {"완료 (출하·완납)", "드랍", "회수 완료", "출하 기록만 (이전)"}
+_DONE_STAGES = {"완료 (출하·완납)", "드랍", "출하 기록만 (이전)"}
 
 
 def _deal_names(t: str) -> tuple[list[str], bool]:
@@ -226,7 +226,7 @@ def _count(data: dict, biz: str | None) -> str:
     for r in rows:
         by[r["stage"]] = by.get(r["stage"], 0) + 1
     what = "대여 건" if biz == "rental" else "영업 건"
-    out = [f"진행 중인 {what}은 {len(active)}건입니다. (전체 {len(rows)}건 중 완료·드랍·회수 완료 제외)"]
+    out = [f"진행 중인 {what}은 {len(active)}건입니다. (전체 {len(rows)}건 중 완료·드랍 제외)"]
     out.append("단계별: " + " · ".join(f"{s} {n}건" for s, n in by.items()))
     if not biz:
         rent = sum(1 for r in active if r["biz"] == "rental")

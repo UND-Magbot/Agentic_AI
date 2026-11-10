@@ -82,7 +82,7 @@ def target_lines(lines: list[dict]) -> list[dict]:
         sold = ln.get("row") is None or (ln.get("row") == "option" and ln.get("in_total"))
         if not sold or ln.get("kind") in _NOT_TARGET or ln.get("key") in _NOT_TARGET:
             continue
-        if str(ln.get("commodity") or "").strip().lower() == "service":
+        if str(ln.get("commodity") or "").strip().lower() == "service" or is_service_line(ln):
             continue
         qty = ln.get("qty")
         if not isinstance(qty, (int, float)) or isinstance(qty, bool) or qty <= 0:
@@ -93,6 +93,23 @@ def target_lines(lines: list[dict]) -> list[dict]:
         if name:
             out.append({"line_no": i, "name": name, "qty": int(round(qty))})
     return out
+
+
+# 품목으로 직접 적은 서비스·비용 줄(설치·배송·유지보수 등) — 제품이 아니라 S/N 을 받지 않는다(사용자 2026-11-10, 상주보건소 대여 견적의
+# '설치 및 시운전'·'배송비'·'유지보수 3년'). 납품 방식으로 넣은 물류비·설치 인건비 줄(kind work·freight)은 위에서 이미 빠진다.
+SERVICE_UNITS = {"식", "lot", "lots", "md", "m/d", "인·일", "인일", "man-day", "man-days"}
+_SERVICE_WORDS = re.compile(r"(?:설치|시운전|배송|운송|택배|물류비|운임|유지\s*보수|교육|출장|인건비|용역|서비스|"
+                            r"maintenance|installation|freight|shipping|delivery fee|training|commissioning)"
+                            # 뒤에 '용'·제품 이름이 붙으면 제품('교육용 키트'·'배송 로봇'·'설치 브라켓', 사용자 2026-11-10)
+                            r"(?!\s*(?:용|로봇|키트|장비|기기|모듈|브라켓|브래킷|kit|robot|module|bracket|unit\b))", re.I)
+
+
+def is_service_line(ln: dict) -> bool:
+    """서비스·비용 줄인지 — 단위가 '식·MD·인·일'이거나, Commodity·품목 첫 줄이 설치·배송·유지보수 같은 말."""
+    if str(ln.get("unit") or "").strip().lower() in SERVICE_UNITS:
+        return True
+    head = str(ln.get("name") or ln.get("desc") or "").strip().splitlines()[:1]
+    return bool(_SERVICE_WORDS.search(" ".join([str(ln.get("commodity") or ""), *head])))
 
 
 def default_part(name: str) -> str:
@@ -190,7 +207,10 @@ _UNIT_COLS = ("id, deal_id, quote_id, quote_revision, issue_no, line_no, line_na
 
 # 시리얼이 속한 프로젝트(영업 건) — 제목·판매/대여·대여 조건. 시리얼 찾기에서 [프로젝트 건 열기]로 그 건 상세로 간다(사용자 2026-10-22)
 _DEAL_COLS = ("s.title AS deal_title, COALESCE(s.quote->>'no', s.deal_no) AS deal_display_no, "
-              "COALESCE(s.quote->>'biz', 'sale') AS deal_biz, s.quote->'rental' AS deal_rental")
+              "COALESCE(s.quote->>'biz', 'sale') AS deal_biz, s.quote->'rental' AS deal_rental, "
+              # 무상 대여 건(flow.free) — [프로젝트 건 열기]가 영업 건 관리 대신 대여 제품 목록으로(사용자 2026-11-10)
+              "(COALESCE(s.quote->>'biz', '') = 'rental' AND (COALESCE(s.quote->'rental'->>'free', '') = 'true' "
+              "OR COALESCE(s.quote->>'amount', '') IN ('0', '0.0'))) AS deal_free")
 
 
 def _summary(lines: list[dict]) -> dict:

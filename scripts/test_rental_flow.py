@@ -23,6 +23,7 @@ from sqlalchemy import text  # noqa: E402
 
 from app.config import settings  # noqa: E402
 from app.database import SessionLocal  # noqa: E402
+from app.sales_deals import flow  # noqa: E402
 from app.sales_deals import rental_query as rq  # noqa: E402
 from app.sales_deals import service as svc  # noqa: E402
 
@@ -131,37 +132,43 @@ async def run() -> None:
             check((await stage(r_oct))["stage"] == "견적", "대여 건 수주 전 = 견적")
             await svc.set_won(db, r_oct, uid, True, TODAY)
             check((await stage(r_oct))["stage"] == "수주", "수주 확정 → 수주")
+            # 대여 시작일 전·출하 전에는 회수 못 함(2026-11-10: 시작일이 지났으면 출하 기록 없이도 회수 가능)
+            await svc.set_rental_start(db, r_oct, uid, dt.date(2030, 1, 1))
             try:
                 await svc.set_rental_return(db, r_oct, uid, "start", TODAY)
-                check(False, "출하 전에는 회수 시작 못 함")
+                check(False, "시작일 전·출하 전에는 회수 시작 못 함")
             except svc.DealError:
                 await db.rollback()
-                check(True, "출하 전에는 회수 시작 못 함")
+                check(True, "시작일 전·출하 전에는 회수 시작 못 함")
+            await svc.set_rental_start(db, r_oct, uid, dt.date(2026, 10, 5))
             await db.execute(text("UPDATE product_units SET status = '출하' WHERE deal_id = :d"), {"d": r_oct})
             await svc.add_shipment(db, r_oct, uid, {"date": dt.date(2026, 10, 5), "carrier": "화물", "tracking": "", "receiver": "",
                                                     "address": "", "items": "", "purpose": "대여", "lines": []})
             d = await stage(r_oct)
-            check(d["stage"] == "대여 중" and not any(a["code"] == "RENTAL_END" for a in d["alerts"]), "출하 → 대여 중(기간 안이면 알림 없음)",
-                  str((d["stage"], d["alerts"])))
+            # 영업 건 단계는 판매와 같게, 대여 중·회수는 대여 상태로만(사용자 2026-11-10)
+            ph = lambda x: flow.rental_phase(x, TODAY)  # noqa: E731
+            check(d["stage"] == "출하 후 입금 대기" and ph(d) == "대여 중" and not any(a["code"] == "RENTAL_END" for a in d["alerts"]),
+                  "출하 → 영업 단계는 판매와 같게 · 대여 상태 대여 중(기간 안이면 알림 없음)", str((d["stage"], ph(d), d["alerts"])))
             late = await svc.get_deal(db, r_oct, dt.date(2029, 11, 1))
             check(any(a["code"] == "RENTAL_END" for a in late["alerts"]), "대여 기간 지나도 회수 안 했으면 '회수 필요' 알림",
                   str(late["alerts"]))
             await svc.set_rental_return(db, r_oct, uid, "start", dt.date(2026, 10, 20))
             d = await stage(r_oct)
-            check(d["stage"] == "회수 중" and d["rental"]["return"] == {"started": "2026-10-20"}, "[회수 시작] → 회수 중",
-                  str((d["stage"], d["rental"])))
+            check(ph(d) == "회수 중" and d["stage"] not in flow.RENTAL_PHASES and d["rental"]["return"] == {"started": "2026-10-20"},
+                  "[회수 시작] → 대여 상태 회수 중(영업 단계엔 안 나옴)", str((d["stage"], d["rental"])))
             await svc.set_rental_return(db, r_oct, uid, "done", dt.date(2026, 10, 22))
             d = await stage(r_oct)
             sts = (await db.execute(text("SELECT DISTINCT status FROM product_units WHERE deal_id = :d"), {"d": r_oct})).scalars().all()
-            check(d["stage"] == "회수 완료" and d["rental"]["return"]["done"] == "2026-10-22" and sts == ["회수"],
-                  "[회수 완료] → 회수 완료, 시리얼 출하 상태 '회수'", str((d["stage"], sts)))
+            check(ph(d) == "회수 완료" and d["rental"]["return"]["done"] == "2026-10-22" and sts == ["회수"],
+                  "[회수 완료] → 대여 상태 회수 완료, 시리얼 출하 상태 '회수'", str((d["stage"], sts)))
             data = await rq.rented_units(db, dt.date(2026, 10, 1))
             check(not any(x["customer"] == CUST and x["serial"].startswith("ZZTEST-RENT-000") and x["serial"] != "ZZTEST-RENT-0003"
                           for x in data["rows"]) and not any(u["title"] == "방역 로봇 3년 렌탈" for u in data["unregistered"]),
                   "회수한 제품은 AI '대여 나간 제품'에서 빠지고, 미등록 건에도 안 나옴")
             listed = {r["id"]: r["stage"] for r in (await svc.list_deals(db, TODAY, "rental"))["rows"]}
             summ = (await svc.list_deals(db, TODAY, "rental"))["summary"]
-            check(listed.get(r_oct) == "회수 완료" and summ["회수 완료"] >= 1, "대여 관리 목록·단계 칩에 회수 완료", str(summ))
+            check(listed.get(r_oct) == "출하 후 입금 대기" and "회수 완료" not in summ and "대여 중" not in summ,
+                  "영업 건 목록·단계 칩에 대여 상태 없음", str((listed.get(r_oct), summ)))
             try:
                 await svc.set_rental_return(db, r_oct, uid, "cancel", None, admin=False)
                 check(False, "회수 기록 취소는 관리자만")
@@ -170,14 +177,14 @@ async def run() -> None:
                 check(True, "회수 기록 취소는 관리자만")
             await svc.set_rental_return(db, r_oct, uid, "cancel", None, admin=True)
             sts = (await db.execute(text("SELECT DISTINCT status FROM product_units WHERE deal_id = :d"), {"d": r_oct})).scalars().all()
-            check((await stage(r_oct))["stage"] == "대여 중" and sts == ["출하"], "관리자 취소 → 대여 중, 시리얼 출하 상태 되돌림", str(sts))
+            check(ph(await stage(r_oct)) == "대여 중" and sts == ["출하"], "관리자 취소 → 대여 중, 시리얼 출하 상태 되돌림", str(sts))
             # 대여 시작일은 담당자가 정한다(사용자 2026-10-22) — 출하했는데 비어 있으면 확인 필요
             await svc.set_won(db, r_nos, uid, True, TODAY)
             await svc.add_shipment(db, r_nos, uid, {"date": dt.date(2026, 10, 20), "carrier": "택배", "tracking": "", "receiver": "",
                                                     "address": "", "items": "", "purpose": "대여", "lines": []})
             d = await stage(r_nos)
-            check(d["stage"] == "대여 중" and any(a["code"] == "RENTAL_START" for a in d["alerts"]),
-                  "출하했는데 대여 시작일이 비면 '정해 주세요' 확인 필요", str(d["alerts"]))
+            check(d["stage"] == "출하 후 입금 대기" and any(a["code"] == "RENTAL_START" for a in d["alerts"]),
+                  "수주했는데 대여 시작일이 비면 '정해 주세요' 확인 필요", str((d["stage"], d["alerts"])))
             await svc.set_rental_start(db, r_nos, uid, dt.date(2026, 10, 22))
             d = await stage(r_nos)
             check(d["rental"]["start"] == "2026-10-22" and d["rental"]["end"] == "2026-11-21"

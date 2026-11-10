@@ -76,10 +76,16 @@ P = edit(S, {"lines": [{"id": "L1", "name": "방역 로봇 UV-1", "commodity": "
                        {"id": None, "name": "충전 스테이션", "commodity": "Dock", "qty": 1, "unit_price": None}]})
 check(len(P["lines"]) == len(S["lines"]), "유상 대여 — 단가 없는 새 줄은 지금처럼 빠짐", str([x["name"] for x in P["lines"]]))
 
-# 2. [무상 대여] — 잘못된 값은 무시, 고르면 Comments·주석 바뀜
+# 2. 무상 대여는 만들 때만([대여 제품 목록]의 [무상 대여 건 등록], 사용자 2026-11-10) — 작성 중에는 유상↔무상을 바꾸지 않음
 check(edit(S, {"form": {"rental_fee": "공짜"}})["form"].get("rental_fee") in (None, "paid"), "잘못된 무상/유상 값은 무시")
-F = edit(S, {"form": {"rental_fee": "free"}})
-check(qs.free_rental(F), "[무상 대여] 저장")
+check(not qs.free_rental(edit(S, {"form": {"rental_fee": "free"}})), "유상 대여 견적서는 화면·대화로 무상이 되지 않음")
+F = qs.draft_state({"applicable": True, "items": []}, model="", payload_kg=None, form={**FORM, "rental_fee": "free"}, manual=True)
+F.update(asked=["extra"], delivery={"case": 2, "freight": 150_000})
+F["form"]["rental_months"] = 12
+F["lines"] = copy.deepcopy(S["lines"])
+F["next_id"] = 2
+qs._sync_work(F)
+check(qs.free_rental(F), "[무상 대여 건 등록]으로 만든 견적서 = 무상 대여")
 check(F["form"]["comments"] == qs.FREE_RENTAL_COMMENTS, "Comments 기본 문구 = 제품 무상 대여 건", F["form"]["comments"])
 check(qs.RENTAL_NOTE not in (F["form"].get("foot_notes") or []), "중도 해지(월 납입료 위약금) 주석 빠짐", str(F["form"].get("foot_notes")))
 
@@ -134,16 +140,16 @@ check("월 납입금" not in str(ws["E16"].value), "단가 머리에 월 납입�
 
 # 6. 되읽기 — 무상 파일은 무상 대여로, 고치지 않은 무상 파일 → 바뀐 점 없음(물류비 있는 것·없는 것 둘 다)
 M, ch, wn = rb.merge(S, rb.parse(data))
-check(qs.free_rental(M), "무상 파일(물류비 있음)을 유상 상태에 올리면 무상 대여로", f"{ch} {wn}")
-check(any("무상 대여" in c for c in ch), "되읽기 바뀐 점에 무상 대여", str(ch))
+check(not qs.free_rental(M) and any("바꾸지 않습니다" in w for w in wn),
+      "무상 파일을 유상 견적서에 올려도 유상 그대로 · 알림(사용자 2026-11-10)", f"{ch} {wn}")
 for st, label in ((F2, "물류비 있음"), (FN, "물류비 없음")):
     _, chx, wnx = rb.merge(st, rb.parse(build(st)))
     check(chx == [] and wnx == [], f"고치지 않은 무상 파일({label}) 되읽기 → 바뀐 점 없음", f"{chx} {wnx}")
-MN, _, _ = rb.merge(S, rb.parse(build(FN)))
+MN, _, _ = rb.merge(F, rb.parse(build(FN)))
 check(qs.free_rental(MN) and MN["form"].get("rental_months") == 12, "물류비 없는 무상 파일 → 무상 · 12개월")
-M3, ch3, _ = rb.merge(F2, rb.parse(build(edit(F2, {"form": {"rental_fee": "paid"}, "lines": [
-    {"id": "L1", "name": "방역 로봇 UV-1", "commodity": "Robot", "qty": 2, "unit_price": 500_000}]}))))
-check(not qs.free_rental(M3) and qs.is_rental(M3), "유상 대여 파일을 무상 상태에 올리면 유상으로", str(ch3))
+M3, ch3, wn3 = rb.merge(F2, rb.parse(build(S)))
+check(qs.free_rental(M3) and any("바꾸지 않습니다" in w for w in wn3), "유상 대여 파일을 무상 견적서에 올려도 무상 그대로 · 알림",
+      f"{ch3} {wn3}")
 
 # 7. 올린 파일 위에서 고치기는 무상이면 회사 양식으로 새로 그림
 bl, bh = parts(S)
@@ -157,14 +163,11 @@ except qp.PatchError:
 deal_items = svc.snapshot_items(lines)
 check(sorted(it["unit_price"] for it in deal_items) == [0, 0, 150_000], "영업 건 품목 0원 · 물류비 금액", str(deal_items))
 
-# 9. 유상으로 되돌리면 중도 해지 주석·Comments 복귀, 단가 필요
+# 9·10. 무상 대여 건 등록 견적서는 유상·판매로 바꾸지 않음(사용자 2026-11-10)
 B = edit(F2, {"form": {"rental_fee": "paid"}})
-check(qs.RENTAL_NOTE in B["form"]["foot_notes"] and B["form"]["comments"] == qs.RENTAL_COMMENTS, "유상으로 되돌리면 주석·Comments 복귀")
-check(any("단가" in p for p in qs.problems(B)), "유상으로 되돌리면 단가 없는 줄이 다시 막힘", str(qs.problems(B)))
-
-# 10. 판매로 바꾸면 무상 표시 사라짐
+check(qs.free_rental(B) and qs.RENTAL_NOTE not in (B["form"].get("foot_notes") or []), "무상 → 유상으로 바꾸지 않음")
 SA = edit(F2, {"form": {"purpose": "sale"}})
-check(not qs.free_rental(SA) and SA["form"]["comments"] != qs.FREE_RENTAL_COMMENTS, "판매로 바꾸면 무상 대여 아님", SA["form"]["comments"])
+check(qs.free_rental(SA) and SA["form"]["comments"] == qs.FREE_RENTAL_COMMENTS, "무상 → 판매로 바꾸지 않음", SA["form"]["comments"])
 
 # 11. 영업 건 — 합계 0원 대여 = 무상: 수주 → 바로 출하(거래명세서·결제 조건·입금 없음). 물류비를 받는 무상 대여·유상 대여는 지금 절차
 from app.sales_deals import flow  # noqa: E402

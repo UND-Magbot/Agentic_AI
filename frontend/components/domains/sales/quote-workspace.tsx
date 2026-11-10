@@ -689,7 +689,9 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
       load(s);
       rememberContact(s.state.form);
       const h = s.history[s.history.length - 1];
-      if (h) setSaving({ revision: h.revision, fileName: h.file_name, title: `발행했습니다${h.quote_no ? ` — ${h.quote_no}` : ""} · 내려받기` });
+      // 무상 대여 건 등록은 [대여 제품 목록]에 건이 생긴다(사용자 2026-11-10, 영업 건 관리에는 나오지 않음)
+      const where = s.state.form.purpose === "rental" && s.state.form.rental_fee === "free" ? " · [대여 제품 목록]에 등록됨" : "";
+      if (h) setSaving({ revision: h.revision, fileName: h.file_name, title: `발행했습니다${h.quote_no ? ` — ${h.quote_no}` : ""}${where} · 내려받기` });
     }
   }
 
@@ -847,8 +849,9 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
                 {(["sale", "rental"] as const).map((p) => {
                   const on = (d.form.purpose ?? "sale") === p;
                   return (
-                    <button key={p} type="button" disabled={!!busy} aria-pressed={on} onClick={() => { if (!on) void save({ purpose: p }); }}
-                            title={p === "sale" ? "판매 견적서로(바로 저장)" : "대여 견적서로 — 대여 개월 수·월 납입금·중도 해지 문구(바로 저장)"}
+                    // 무상 대여 건 등록 견적서는 대여 그대로(사용자 2026-11-10)
+                    <button key={p} type="button" disabled={!!busy || (free && p === "sale")} aria-pressed={on} onClick={() => { if (!on) void save({ purpose: p }); }}
+                            title={free ? "무상 대여 건 등록 견적서는 대여로만 씁니다" : p === "sale" ? "판매 견적서로(바로 저장)" : "대여 견적서로 — 대여 개월 수·월 납입금·중도 해지 문구(바로 저장)"}
                             className={cn(SEG_BTN, on && cn(SEG_ON, p === "rental" ? "text-emerald-700 dark:text-emerald-300" : "text-blue-700 dark:text-blue-300"))}>
                       {p === "sale" ? "제품 판매" : "제품 대여"}
                     </button>
@@ -878,19 +881,12 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
               <div className="flex flex-wrap items-center gap-2">
                 <span className="rounded-full bg-emerald-600 px-2.5 py-0.5 text-[11.5px] font-bold text-white">대여</span>
                 <h4 className="text-[14px] font-extrabold text-emerald-900 dark:text-emerald-200">대여 조건</h4>
-                {/* 유상 / 무상 대여(사용자 2026-10-30) — 무상이면 금액 관련 칸을 숨기고 견적서엔 '무상' */}
-                <div role="group" aria-label="유상·무상 대여" className={SEG}>
-                  {(["paid", "free"] as const).map((v) => {
-                    const on = (d.form.rental_fee ?? "paid") === v;
-                    return (
-                      <button key={v} type="button" disabled={!!busy} aria-pressed={on} onClick={() => { if (!on) void save({ rental_fee: v }); }}
-                              title={v === "paid" ? "대여료를 받는 대여(바로 저장)" : "대여료 없는 대여 — 단가·금액 없이 품목·수량·기간만(바로 저장)"}
-                              className={cn(SEG_BTN, on && cn(SEG_ON, "text-emerald-700 dark:text-emerald-300"))}>
-                        {v === "paid" ? "유상 대여" : "무상 대여"}
-                      </button>
-                    );
-                  })}
-                </div>
+                {/* 유상/무상은 만들 때 정한다(사용자 2026-11-10) — 견적서 수기 작성은 유상 대여만, 무상은 [대여 제품 목록]의
+                    [무상 대여 건 등록]으로 만든 견적서. 무상이면 금액 관련 칸을 숨기고 견적서엔 '무상' */}
+                <span className={cn("rounded-full px-2.5 py-0.5 text-[11.5px] font-bold",
+                  free ? "bg-emerald-500/15 text-emerald-800 dark:text-emerald-200" : "bg-foreground/8 text-foreground-muted")}>
+                  {free ? "무상 대여 건 등록" : "유상 대여"}
+                </span>
                 <span className="text-[12px] text-emerald-800/80 dark:text-emerald-300/80">
                   {free ? "대여료 없음 — 품목은 수량·대여 기간만 적으면 견적서 단가·금액 칸에 '무상'으로 나갑니다. 물류비·설치비는 아래 납품 방식에서 넣으세요."
                     : "월 납입금 = 수량 × 월 단가 × 대여 개월 (설치·물류 등 1회 비용은 한 번만)"}

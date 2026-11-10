@@ -41,7 +41,8 @@ async def run() -> None:
         await db.execute(text("DELETE FROM sales_deal_trash WHERE deal->>'customer' = :c"), {"c": CUST})
         await db.commit()
         uid = (await db.execute(text("SELECT id FROM users WHERE username = 'alex'"))).scalar()
-        before = (await db.execute(text("SELECT COUNT(*) FROM sales_deals"))).scalar()
+        # 목록 기준 — 무상 대여 건은 영업 건 목록에 안 나온다(사용자 2026-11-10)
+        before = len((await svc.list_deals(db, TODAY))["rows"])
 
         a = await svc.create_deal(db, uid, new_deal(uid, "삭제 테스트 A"))
         b = await svc.create_deal(db, uid, new_deal(uid, "삭제 테스트 B"))

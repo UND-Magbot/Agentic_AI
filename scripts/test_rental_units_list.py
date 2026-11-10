@@ -112,7 +112,7 @@ async def run() -> None:
             check(any(a["code"] == "RENTAL_END" and "30일 지남" in a["text"] for a in ld["alerts"]), "반납일 지남 → 알림", str(ld["alerts"]))
             await svc.set_rental_return(db, late, None, "start", TODAY)
             ld = await svc.get_deal(db, late, TODAY)
-            check(ld["stage"] == "회수 중" and any(a["code"] == "RENTAL_END" and "반납 확인" in a["text"] for a in ld["alerts"]),
+            check(any(a["code"] == "RENTAL_END" and "반납 확인" in a["text"] for a in ld["alerts"]),
                   "회수 중이어도 반납 확인 전이면 알림", str(ld["alerts"]))
             await svc.set_rental_return(db, late, None, "done", TODAY)
             ld = await svc.get_deal(db, late, TODAY)

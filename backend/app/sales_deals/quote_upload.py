@@ -26,7 +26,7 @@ _log = logging.getLogger("quote_upload")
 
 TYPES = {".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".pdf": "application/pdf"}
 MAX_BYTES = 20 * 1024 * 1024
-MAX_ITEMS = 150                     # 대여 견적서는 S/N 마다 한 줄이라 길다(88줄 사례, 사용자 2026-11-09)
+MAX_ITEMS = 500                     # 대여 견적서는 S/N 마다 한 줄이라 길다(88줄 사례 → 500줄, 사용자 2026-11-10)
 
 SYSTEM = """당신은 영업 담당자를 돕는 견적서 판독 도우미입니다. [견적서]에서 견적 품목을 빠짐없이 뽑습니다.
 규칙:

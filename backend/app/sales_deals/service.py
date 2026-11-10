@@ -140,8 +140,10 @@ async def _as_counts(db: AsyncSession, deal_id: int | None = None) -> dict[int, 
     return {r.deal_id: {"as_open": r.open, "as_active": r.active, "as_total": r.total} for r in rs}
 
 
-async def list_deals(db: AsyncSession, today: dt.date, biz: str | None = None) -> dict:
-    """리스트·단계별 건수·KPI. biz = 'sale'(제품 영업 건 관리) · 'rental'(제품 대여 관리, 사용자 2026-10-22) · None(전체)."""
+async def list_deals(db: AsyncSession, today: dt.date, biz: str | None = None, *, include_free: bool = False) -> dict:
+    """리스트·단계별 건수·KPI. biz = 'sale'(제품 영업 건 관리) · 'rental'(제품 대여 관리, 사용자 2026-10-22) · None(전체).
+    무상 대여 건은 빼다(사용자 2026-11-10 — 매출·가격이 없는 건이라 영업 취지에 맞지 않음, [대여 제품 목록]에서 관리).
+    include_free = 채팅의 건 찾아 이동처럼 무상 대여 건도 찾아야 할 때."""
     rs = (await db.execute(text(
         # 새로 만든 건이 위 — 단계·내용이 바뀌어도 줄이 움직이지 않는다(사용자 2026-10-22, 10-08 '최근 변경이 위' 대체)
         f"SELECT {COLS} FROM sales_deals ORDER BY created_at DESC, id DESC"))).mappings().all()
@@ -150,11 +152,15 @@ async def list_deals(db: AsyncSession, today: dt.date, biz: str | None = None) -
     rows = []
     for r in rs:
         row = view(_row(r), today)
-        if biz and row["biz"] != biz:
+        if (biz and row["biz"] != biz) or (row["flow"]["free"] and not include_free):
             continue
         rows.append({**row, **asc.get(r["id"], {"as_open": 0, "as_active": 0, "as_total": 0}), "history": _mark_updated(row, hist.get(r["id"], []))})
     summary = {s: sum(1 for r in rows if r["stage"] == s) for s in STAGES}
-    summary["확인 필요"] = sum(1 for r in rows if any(a["level"] == "review" for a in r["alerts"]))
+    # 확인 필요 = 알림 칸에 무엇이든 뜬 건(사용자 2026-11-10 — 예전엔 이관 검토 알림만 세어 늘 0건이었다)
+    summary["확인 필요"] = sum(1 for r in rows if r["alerts"])
+    # 미수 = 수주했는데 아직 완납이 아닌 건(사용자 2026-11-10 — 거래명세서·출하 전도 포함, 드랍·무상 대여 제외)
+    summary["미수"] = sum(1 for r in rows if r.get("won") and not r.get("paid_full") and not r.get("dropped")
+                        and not r["flow"]["free"] and r["kind"] != "shipment_only")
     summary["A/S 진행 중"] = sum(1 for r in rows if r["as_active"])
     summary["알림"] = sum(1 for r in rows if any(a["level"] == "alert" for a in r["alerts"]))
     return {"today": today.isoformat(), "summary": summary, "rows": rows, "kpi": kpi(rows, today),
@@ -367,7 +373,9 @@ def _rental(p: dict, amount: float | None) -> dict:
         start = dt.date.fromisoformat(start)
     end = term_end(start, months) if start else None
     monthly = -(-round(amount) // (months * 1000)) * 1000 if amount else None
-    return {"biz": "rental", "rental": {"months": months, "start": _iso(start), "end": _iso(end), "monthly": monthly}}
+    return {"biz": "rental", "rental": {"months": months, "start": _iso(start), "end": _iso(end), "monthly": monthly,
+                                        # 무상 대여 건 등록(사용자 2026-11-10) — 영업 건 관리에서 빼고 대여 제품 목록에서만
+                                        **({"free": True} if r.get("free") else {})}}
 
 
 async def set_rental_start(db: AsyncSession, deal_id: int, user_id: int | None, day: dt.date) -> None:
@@ -403,26 +411,28 @@ async def set_rental_return(db: AsyncSession, deal_id: int, user_id: int | None,
     q = dict(d.get("quote") or {})
     if q.get("biz") != "rental" or not q.get("rental"):
         raise DealError("대여 건이 아닙니다.")
-    shipped = bool(d["shipments"]) or bool(d.get("shipped_note"))
+    # 대여 시작일이 지났으면 출하 기록 없이도 회수할 수 있다(사용자 2026-11-10 — 대여 상태는 시작일로 자동)
+    shipped = flow.rental_started(d, kst_today())
     rental = dict(q["rental"])
     ret = dict(rental.get("return") or {})
     today = day or kst_today()
     if step == "start":
         if not shipped:
-            raise DealError("출하(대여 시작) 기록이 있어야 회수를 시작할 수 있습니다.")
+            raise DealError("대여 시작일이 지나야(또는 출하 기록이 있어야) 회수를 시작할 수 있습니다.")
         if ret.get("started"):
             raise DealError("이미 회수를 시작했습니다.")
         ret["started"] = today.isoformat()
     elif step == "done":
         if not ret.get("started"):
             if not shipped:
-                raise DealError("출하(대여 시작) 기록이 있어야 회수를 마칠 수 있습니다.")
+                raise DealError("대여 시작일이 지나야(또는 출하 기록이 있어야) 회수를 마칠 수 있습니다.")
             ret["started"] = today.isoformat()
         if ret.get("done"):
             raise DealError("이미 회수를 마쳤습니다.")
         ret["done"] = today.isoformat()
-        await db.execute(text("UPDATE product_units SET status = '회수', updated_at = NOW() WHERE deal_id = :d AND status = '출하'"),
-                         {"d": deal_id})
+        # 출하 기록 없이 시작일로 대여한 S/N(등록 상태)도 함께 회수(사용자 2026-11-10)
+        await db.execute(text("UPDATE product_units SET status = '회수', updated_at = NOW() WHERE deal_id = :d "
+                              "AND status IN ('출하', '등록')"), {"d": deal_id})
     elif step == "cancel":
         if not admin:
             raise DealError("회수 기록 취소는 관리자만 할 수 있습니다.", 403)
@@ -515,6 +525,10 @@ async def quote_deal(db: AsyncSession, user_id: int | None, proposal_id: int | N
     # 대여 시작일은 건에서 담당자가 정한 값이 먼저(사용자 2026-10-27) — 재발행이 지우거나 견적서의 옛 날짜로 되돌리지 않게
     kept = (await db.execute(text("SELECT quote->'rental'->>'start' FROM sales_deals WHERE id = :i"), {"i": r.id})).scalar()
     quote.update(_rental({**p, "rental": {**p["rental"], "start": kept}} if kept and p.get("rental") else p, quote["amount"]))
+    # 회수 기록도 재발행이 지우지 않게(사용자 2026-11-10 — 무상 대여는 수주 없이 발행만 다시 하므로)
+    ret = (await db.execute(text("SELECT quote->'rental'->'return' FROM sales_deals WHERE id = :i"), {"i": r.id})).scalar()
+    if ret and quote.get("rental"):
+        quote["rental"]["return"] = json.loads(ret) if isinstance(ret, str) else ret
     first = (p["items"][0]["name"].split("\n")[0] if p["items"] else "")[:40]
     title = first + (f" 외 {len(p['items']) - 1}" if len(p["items"]) > 1 else "")
     # 견적서 판(첫 발행 1, 고쳐 다시 발행 2 …)은 quote.revision(사내용), 문서 번호는 quote.no
@@ -555,8 +569,10 @@ async def quote_replaced(db: AsyncSession, deal_id: int, user_id: int | None, p:
         new = _quote_from_items(p["items"], day, bool(q.get("vat_included")), p["currency"])
         fresh = {**q, "items": new["items"], "amount": new["amount"], "currency": p["currency"]}
         if p.get("rental"):   # 대여 — 개월 수는 파일 기준, 시작일은 담당자가 정한 그대로, 끝나는 날·월 납입금 다시 계산(사용자 2026-10-27)
-            fresh.update(_rental({"rental": {"months": p["rental"]["months"], "start": (q.get("rental") or {}).get("start")}},
-                                 new["amount"]))
+            fresh.update(_rental({"rental": {"months": p["rental"]["months"], "start": (q.get("rental") or {}).get("start"),
+                                             "free": p["rental"].get("free")}}, new["amount"]))
+            if (q.get("rental") or {}).get("return"):
+                fresh["rental"]["return"] = q["rental"]["return"]
         await _save(db, deal_id, quote=fresh)
     await _log(db, deal_id, user_id, "quote_replace", {"no": p["doc_no"], "revision": p["revision"], "amount": p["total"],
                                                        "file": p["file"], "latest": latest})
@@ -631,7 +647,7 @@ def _picked_rental(h: dict, cur: dict, amount: float | None) -> dict:
     old = cur.get("rental") or {}
     if h.get("biz") == "rental" and (h.get("rental") or {}).get("months"):
         start = (old.get("start") if cur.get("biz") == "rental" else None) or h["rental"].get("start")
-        out = _rental({"rental": {"months": h["rental"]["months"], "start": start}}, amount)
+        out = _rental({"rental": {"months": h["rental"]["months"], "start": start, "free": h["rental"].get("free")}}, amount)
         if old.get("return"):
             out["rental"]["return"] = old["return"]
         return out

@@ -74,7 +74,8 @@ async def free_rental_upload(uid: int, head: dict) -> None:
     if src is None:
         check(False, "무상 대여 재발행 — 예시 파일 없음(-v ./docs:/docs)")
         return
-    q = await pr.quote_manual(user_id=uid, form=head)
+    # 무상 대여는 [대여 제품 목록]의 [무상 대여 건 등록]으로 만들 때만(사용자 2026-11-10) — 만들 때 rental_fee
+    q = await pr.quote_manual(user_id=uid, form={**head, "purpose": "rental", "rental_fee": "free"})
     q = await pr.quote_edit(q["id"], user_id=uid, payload={
         "form": {"customer": CUSTOMER, "subject": "대여", "lang": "en", "purpose": "rental", "rental_fee": "free", "rental_months": 3},
         "delivery": {"case": 1},

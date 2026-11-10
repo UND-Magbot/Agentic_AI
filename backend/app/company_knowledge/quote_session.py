@@ -710,13 +710,15 @@ def apply_ops(state: dict[str, Any], ops: Any, message: str | None) -> tuple[dic
                 if v not in ("ko", "en"):
                     continue
             elif typ == "purpose":
-                if v not in PURPOSES:
+                if v not in PURPOSES or (free_rental(st) and v != "rental"):   # 무상 대여 건 등록 견적서는 대여 그대로
                     continue
             elif typ == "vat":
                 if v not in VAT_MODES:
                     continue
             elif typ == "rental_fee":
-                if v not in RENTAL_FEES:
+                # 유상/무상은 만들 때 정한다(사용자 2026-11-10) — 수기 견적서는 유상 대여만, 무상은 [대여 제품 목록]의
+                # [무상 대여 건 등록]에서 만든 견적서만. 화면·대화로 바꾸지 않는다
+                if v not in RENTAL_FEES or v != (st["form"].get("rental_fee") or "paid"):
                     continue
             elif typ == "date":
                 v = clean_date(v)
@@ -1113,8 +1115,6 @@ ops 종류:
    answer 로 새 은행·계좌번호·예금주를 물어본다. 계좌 변경을 거절하거나 내부 정책·담당 부서 확인 같은 말을 지어내지 않는다.)
 - {"op":"set","field":<purpose|rental_months|rental_start>,"value":...}  — 판매/대여 견적서: purpose 는 "sale"(판매) 또는 "rental"(대여·렌탈),
   rental_months 는 대여 계약 개월 수(정수, '3년'이면 36), rental_start 는 대여 시작일(YYYY-MM-DD) — [말]에 있을 때만.
-- {"op":"set","field":"rental_fee","value":"free"|"paid"}  — 대여 견적서의 무상/유상: '무상 대여'·'무료로 빌려줌'이면 "free",
-  '유상 대여'·'렌탈료 받음'이면 "paid". 무상이면 단가를 묻지 않는다.
 - {"op":"set","field":"vat","value":"included"|"excluded"}  — 부가세 포함/별도 견적서(국내만): '부가세 포함으로'·'VAT 포함 견적'·'공공기관용'
   이면 "included", '부가세 별도로' 면 "excluded". 단가는 공급가액 그대로 두고(바꾸지 않는다) 견적서에 찍을 때만 부가세 10%를 더한다.
 - {"op":"delivery","case":1|2|3|4|5,"freight":물류비}  — 납품 방식: 1 택배 발송(품목 그대로), 2 화물 직납(물류비 추가),

@@ -32,9 +32,6 @@ export const STAGE_TONE: Record<DealStage, string> = {
   "완료 (출하·완납)": "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300",
   드랍: "bg-zinc-500/15 text-zinc-600 line-through decoration-1 dark:text-zinc-300",
   "출하 기록만 (이전)": "bg-foreground/8 text-foreground-muted",
-  "대여 중": "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300",
-  "회수 중": "bg-amber-500/15 text-amber-800 dark:text-amber-300",
-  "회수 완료": "bg-zinc-500/12 text-zinc-700 dark:text-zinc-300",
 };
 
 export function won(n: number | null | undefined, currency: "KRW" | "USD" = "KRW"): string {
@@ -152,5 +149,15 @@ export function Field({ label, children, wide, className }: {
       <span className="text-[12px] text-foreground-muted">{label}</span>
       {children}
     </label>
+  );
+}
+
+/** 국내·해외 표시(사용자 2026-11-10) — 영업 건·대여 건 목록과 상세. 해외 = 달러 견적서 */
+export function RegionBadge({ overseas, className }: { overseas: boolean; className?: string }) {
+  return (
+    <span className={cn("shrink-0 rounded px-1.5 text-[11px] font-semibold",
+      overseas ? "bg-indigo-500/12 text-indigo-700 dark:text-indigo-300" : "bg-foreground/8 text-foreground-muted", className)}>
+      {overseas ? "해외" : "국내"}
+    </span>
   );
 }

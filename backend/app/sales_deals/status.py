@@ -14,10 +14,9 @@ UNPAID_DAYS = 30      # 거래명세서 발급(이관 건은 옛 계산서 기�
 # 세금계산서는 이 프로그램 밖에서 처리한다(사용자 2026-10-07) — '청구 중' 단계는 없앴다(계산서 기록이 있던 이관 건은 '수주').
 # 이름은 남은 일이 보이게(사용자 2026-10-07): 출하했지만 완납 전 = 출하 후 입금 대기, 예전 엑셀의 견적 없는 출하 = 출하 기록만 (이전)
 # 실주는 없앴다 — 수주까지 못 간 건은 모두 드랍(사용자 2026-10-08)
-STAGES = ["제품 추천 확정", "견적", "수주", "출하 후 입금 대기", "완료 (출하·완납)", "드랍", "출하 기록만 (이전)",
-          # 대여 건만(사용자 2026-10-22) — 출하하면 대여 중, [회수 시작] → 회수 중, [회수 완료] → 회수 완료. 입금은 알림으로 따로
-          "대여 중", "회수 중", "회수 완료"]
-RENTAL_STAGES = ["견적", "수주", "대여 중", "회수 중", "회수 완료", "드랍"]
+# 대여 중·회수 중·회수 완료는 영업 건 단계가 아니다(사용자 2026-11-10 — 대여 건 한정 과정이라 [대여 제품 목록]의 대여 상태로만,
+# flow.rental_phase). 유상 대여 건도 영업 건 관리에서는 판매와 같은 단계로 본다.
+STAGES = ["제품 추천 확정", "견적", "수주", "출하 후 입금 대기", "완료 (출하·완납)", "드랍", "출하 기록만 (이전)"]
 
 
 def _days(since: str | None, today: dt.date) -> int | None:
@@ -36,11 +35,6 @@ def derive(d: dict, today: dt.date) -> dict:
         stage = "출하 기록만 (이전)"
     elif d["kind"] == "recommend":                   # 최종 제안 확정 — 견적서 발행 전
         stage = "제품 추천 확정"
-    elif (d.get("quote") or {}).get("biz") == "rental":
-        # 대여 — 대여료는 매달 들어오므로 입금은 단계가 아니라 알림(미입금·예정일 지남)으로 본다
-        ret = ((d.get("quote") or {}).get("rental") or {}).get("return") or {}
-        stage = ("회수 완료" if ret.get("done") else "회수 중" if ret.get("started") else "대여 중" if shipped
-                 else "수주" if d["won"] else "견적")
     elif d["paid_full"] and (shipped or not d.get("pay_case")):
         stage = "완료 (출하·완납)"                  # 결제 방식을 고른 건(선입금)은 출하까지 끝나야 완료
     elif shipped:
@@ -70,15 +64,18 @@ def derive(d: dict, today: dt.date) -> dict:
     if rent.get("unverified"):                       # 대여 조건 기록이 없는 예전 판으로 수주(사용자 2026-10-26)
         alerts.append({"code": "RENTAL_UNVERIFIED", "level": "review",
                        "text": f"수주한 판에 대여 조건 기록이 없어 지금 값({rent.get('months')}개월)을 유지했습니다 — 개월 수·월 납입금을 확인해 주세요"})
-    if stage == "대여 중" and not rent.get("start"):   # 출하했는데 대여 시작일을 안 정함(사용자 2026-10-22)
-        alerts.append({"code": "RENTAL_START", "level": "review", "text": "대여 시작일을 정해 주세요 — 끝나는 날·회수 알림의 기준입니다"})
-    if stage in ("대여 중", "회수 중") and rent.get("end"):
-        # 반납일(대여 끝나는 날)이 지났는데 회수 완료(반납 확인)가 안 됨(사용자 2026-10-22 → 10-30: 회수 중이어도 반납 확인 전이면 알림·팝업)
-        n = _days(rent["end"], today)
-        if n is not None and n > 0:
+    from .flow import overdue, rental_phase           # 예정 입금일이 지난 회차(사용자 2026-10-08: 팝업·리스트 강조)
+
+    if quote.get("biz") == "rental" and stage != "드랍":
+        # 대여 알림은 대여 상태(시작일·반납일, flow.rental_phase) 기준 — 단계 이름은 영업 건에 쓰지 않는다(사용자 2026-11-10)
+        phase = rental_phase(d, today)
+        if phase == "대여 예정" and not rent.get("start"):
+            alerts.append({"code": "RENTAL_START", "level": "review", "text": "대여 시작일을 정해 주세요 — 반납일·회수 알림의 기준입니다"})
+        if phase == "반납일 지남":
+            ret = rent.get("return") or {}
             alerts.append({"code": "RENTAL_END", "level": "alert",
-                           "text": f"반납일 지남({rent['end']}, {n}일 지남) — " + ("회수 중, 반납 확인 필요" if stage == "회수 중" else "회수 필요")})
-    from .flow import overdue                         # 예정 입금일이 지난 회차(사용자 2026-10-08: 팝업·리스트 강조)
+                           "text": f"반납일 지남({rent['end']}, {_days(rent['end'], today)}일 지남) — "
+                                   + ("회수 중, 반납 확인 필요" if ret.get("started") else "회수 필요")})
     # 출하는 입금 확인과 상관없이 할 수 있다(사용자 2026-10-08) — '입금 확인 전 출하' 알림은 없앴다
 
     if stage != "드랍":

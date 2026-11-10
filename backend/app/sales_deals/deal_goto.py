@@ -162,7 +162,8 @@ def _btn(label: str, query: str) -> str:
 
 
 def _deal_tab(r: dict) -> str:
-    return "deals"          # 대여 건도 제품 영업 건 관리 탭(사용자 2026-10-30, 예전엔 대여 관리 탭)
+    # 대여 건도 제품 영업 건 관리 탭(사용자 2026-10-30) — 무상 대여 건만 [대여 제품 목록](사용자 2026-11-10)
+    return "rentals" if (r.get("flow") or {}).get("free") else "deals"
 
 
 def actions(kind: str, r: dict, quotes: list[dict]) -> tuple[str | None, list[str]]:
@@ -186,6 +187,8 @@ def actions(kind: str, r: dict, quotes: list[dict]) -> tuple[str | None, list[st
         note = "완납까지 끝난 건이라 고쳐서 발행할 때 한 번 더 확인합니다." if r["stage"].startswith("완료") else None
         return note, [_btn(label, f"tab=quote&quote={q['id']}"), open_btn]
     # 거래명세서·출하 — 수주 진행 화면(수주 확정한 새 절차 건만)
+    if (r.get("flow") or {}).get("free"):
+        return "무상 대여 건은 거래명세서·출하 단계 없이 [대여 제품 목록]에서 대여 시작일·S/N·회수를 관리합니다.", [open_btn]
     if not r.get("won"):
         return "아직 수주 확정 전입니다 — 건을 열어 [수주 확정]을 먼저 해 주세요.", [open_btn]
     if not (r.get("flow") or {}).get("steps"):
@@ -234,7 +237,7 @@ async def answer(db: AsyncSession, intent: dict, today: dt.date, user_id: int | 
         return ("채팅에서는 화면을 바로 열 수 없어 버튼으로 이동합니다 — 아래 버튼을 눌러 주세요.\n"
                 + "  ".join(f"[{label}]({href})" for label, href in intent["links"]))
     ns = intent["names"]
-    rows = (await svc.list_deals(db, today))["rows"]
+    rows = (await svc.list_deals(db, today, include_free=True))["rows"]
     found = [r for r in rows if r["id"] == intent["deal_id"]] if intent.get("deal_id") else match(rows, ns)
     said = "·".join(ns)
     if not found and not intent.get("lead"):
