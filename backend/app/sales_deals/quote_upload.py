@@ -115,9 +115,16 @@ async def read(data: bytes, filename: str, mime: str) -> dict[str, Any]:
             "vat_included": vat, "doc_no": po_compare._in_text(out.get("doc_no"), text), "summary": summary}
 
 
-def clean_items(items: Any, *, check_total: bool = True) -> list[dict[str, Any]]:
+LENIENT_NAME = "(품목 미확인 — 올린 파일 참조)"
+
+
+def clean_items(items: Any, *, check_total: bool = True, lenient: bool = False) -> list[dict[str, Any]]:
     """담당자가 확인한 품목 → 영업 건 품목({name, unit_price, qty}). 품명은 '품명\\n- 규격'(견적서 표기·거래명세서 나눔과 같게).
-    틀리면 ValueError(무엇이 틀렸는지). check_total=False = 합계 0원 검사는 호출부가(대여: × 개월 뒤에, 검증 2026-10-26)."""
+    틀리면 ValueError(무엇이 틀렸는지). check_total=False = 합계 0원 검사는 호출부가(대여: × 개월 뒤에, 검증 2026-10-26).
+    lenient = [버그 신고 후 넘어가기](사용자 2026-11-11 — AI 판독이 실패하거나 이상해도 [버그 신고 후 넘어가기]로 이 파일 그대로 발행하고 다음 단계로) — 막지 않고 채운다: 품명 없으면 '{LENIENT_NAME}', 수량 없으면 1, 단가 없으면 0,
+    품목이 하나도 없으면 그 한 줄. 합계 0원도 받는다."""
+    if lenient:
+        return _lenient_items(items)
     if not isinstance(items, list) or not items:
         raise ValueError("품목을 한 줄 이상 적어 주세요.")
     if len(items) > MAX_ITEMS:
@@ -144,6 +151,30 @@ def clean_items(items: Any, *, check_total: bool = True) -> list[dict[str, Any]]
     if check_total and sum(x["qty"] * x["unit_price"] for x in out) <= 0:     # 0원 견적 발행 막음(검증 QT-066, 2026-10-15)
         raise ValueError("합계가 0원 이하입니다 — 품목 단가·NEGO 를 확인해 주세요.")
     return out
+
+
+def _lenient_items(items: Any) -> list[dict[str, Any]]:
+    out = []
+    for it in (items if isinstance(items, list) else [])[:MAX_ITEMS]:
+        if not isinstance(it, dict):
+            continue
+        name = re.sub(r"\s+", " ", str(it.get("name") or "")).strip()[:120]
+        spec = re.sub(r"\s+", " ", str(it.get("spec") or "")).strip()[:120]
+        if not name and not spec and it.get("qty") in (None, "") and it.get("unit_price") in (None, ""):
+            continue                                       # 완전히 빈 줄은 버린다
+        try:
+            qty = float(it.get("qty"))
+        except (TypeError, ValueError):
+            qty = 1.0
+        try:
+            price = float(it.get("unit_price"))
+        except (TypeError, ValueError):
+            price = 0.0
+        qty = qty if qty > 0 else 1.0
+        name = name or LENIENT_NAME
+        out.append({"name": f"{name}\n- {spec}" if spec else name, "qty": int(qty) if qty.is_integer() else qty,
+                    "unit_price": int(price) if price.is_integer() else price})
+    return out or [{"name": LENIENT_NAME, "qty": 1, "unit_price": 0}]
 
 
 def ext_of(filename: str) -> str:
@@ -191,6 +222,8 @@ class UploadConfirmIn(BaseModel):
     # 대여 견적서는 발행 전에 대여 시작일을 한 번 더 확인(사용자 2026-10-27) — 비우면 미정
     rental_start: dt.date | None = None
     rental_checked: bool = False
+    # [버그 신고 후 넘어가기](사용자 2026-11-11 — AI 판독이 실패하거나 이상해도 [버그 신고 후 넘어가기]로 이 파일 그대로 발행하고 다음 단계로) — 품목이 덜 채워져도 발행(clean_items lenient)
+    forced: bool = False
 
 
 async def store_and_read(file, folder: str) -> dict[str, Any]:

@@ -53,7 +53,6 @@ ADMIN_ONLY = [
     ("/v1/sales-deals/delete", {"ids": [999999999]}),
     ("/v1/sales-deals/999999999/remove", {"kind": "payments", "index": 0}),
     ("/v1/sales-deals/999999999/reset-to-quote", {}),
-    ("/v1/sales-deals/999999999/unconfirm-term", {"index": 0}),
     ("/v1/sales-deals/999999999/won", {"won": None}),
     ("/v1/sales-deals/999999999/paid-full", {"full": False}),
     ("/v1/sales-deals/999999999/drop", {"dropped": False}),
@@ -61,6 +60,8 @@ ADMIN_ONLY = [
 OPEN = [
     ("/v1/sales-deals/999999999/drop", {"dropped": True, "reason": "x"}),
     ("/v1/sales-deals/999999999/confirm-term", {"index": 0}),
+    # 입금 확인 취소는 누구나(사용자 2026-11-11 — 견적이 바뀌며 금액이 바뀔 수 있어서)
+    ("/v1/sales-deals/999999999/unconfirm-term", {"index": 0}),
     ("/v1/sales-deals/999999999/won", {"won": True}),
 ]
 

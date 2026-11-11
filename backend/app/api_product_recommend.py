@@ -453,7 +453,7 @@ async def quote_upload_confirm(qid: int, body: QuoteUploadConfirm, current_user:
                                           upload=body.upload.model_dump(), items=[x.model_dump() for x in body.items],
                                           initials=body.initials, doc_no=body.doc_no, overwrite=body.overwrite,
                                           sync=body.sync, rental_start=body.rental_start,
-                                          rental_checked=body.rental_checked)
+                                          rental_checked=body.rental_checked, forced=body.forced)
     except pr.OverwriteNeeded as e:                       # 같은 건의 같은 번호 — 화면이 덮어쓸지 묻는다
         raise HTTPException(status.HTTP_409_CONFLICT, detail={"message": str(e), "overwrite": True,
                                                                "doc_no": e.doc_no, "revision": e.revision}) from e

@@ -21,6 +21,7 @@ from .api_product_recommend import router as product_recommend_router
 from .api_proposal_records import router as proposal_records_router
 from .api_rag import router as rag_router
 from .api_sales_deals import router as sales_deals_router
+from .api_purchases import router as purchases_router
 from .config import settings, validate_security_settings
 from .database import dispose, ping
 from .migrations import run_migrations_on_startup
@@ -98,6 +99,7 @@ app.include_router(proposal_records_router)
 app.include_router(proposal_projects_router)
 app.include_router(product_recommend_router)
 app.include_router(sales_deals_router)
+app.include_router(purchases_router)
 app.include_router(bug_reports_router)
 app.include_router(my_profile_router)
 

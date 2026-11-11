@@ -91,16 +91,65 @@ const PROPOSAL_TASK: RequestTask = {
 };
 
 /** 대표 기능 카드 — 기능마다 색·흐름을 달리해 한눈에 구분되게(사용자 2026-10-01: 부가 기능처럼 보이고 서로 구별이 안 됨). */
+// group: top = 윗줄 3개, bottom = 아랫줄 4개 — 7개가 한 화면에 3 + 4 로(사용자 2026-11-11 구매 건 관리 추가).
+// 더 자주 쓰는 영업 건·구매 건 관리를 윗줄로(사용자 2026-11-11 — 제안서 만들기·회사 제품 추천과 자리 바꿈)
 const FEATURES: {
-  href: string; title: string; desc: string; icon: IconName; steps: string[];
+  href: string; title: string; desc: string; icon: IconName; steps: string[]; group: "top" | "bottom";
   tone: { band: string; icon: string; chip: string; cta: string; ring: string };
 }[] = [
+  {
+    href: "/proposals/recommend?tab=deals",     // 회사 제품 추천 화면의 [제품 영업 건 관리] 탭(사용자 2026-10-06)
+    title: "제품 영업 건 관리",
+    desc: "제품 판매·대여 건을 견적부터 수주·거래명세서·입금·출하(대여는 회수까지) 한 건씩 리스트로 관리합니다. 기록을 남기면 단계가 바뀝니다.",
+    icon: "file-spreadsheet",
+    steps: ["견적", "수주", "거래명세서·입금", "출하"],
+    group: "top",
+    tone: {
+      band: "from-amber-600 to-orange-500",
+      icon: "bg-white/20 text-white",
+      chip: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+      cta: "text-amber-700 dark:text-amber-300",
+      ring: "hover:ring-amber-500/40",
+    },
+  },
+  {
+    href: "/proposals/recommend?tab=purchases",  // [제품 구매 건 관리] 탭(사용자 2026-11-11) — 판매의 역순, 공급사에서 살 때
+    title: "제품 구매 건 관리",
+    desc: "공급사에서 제품을 살 때 견적·재가·발주서부터 송금·배송·입고(해외는 통관 서류·관세사 송금까지) 한 건씩 관리합니다. 기록을 남기면 단계가 바뀝니다.",
+    icon: "ledger",
+    steps: ["견적·재가", "발주", "송금·배송", "입고"],
+    group: "top",
+    tone: {
+      band: "from-lime-600 to-green-600",
+      icon: "bg-white/20 text-white",
+      chip: "bg-lime-500/15 text-lime-800 dark:text-lime-300",
+      cta: "text-lime-700 dark:text-lime-300",
+      ring: "hover:ring-lime-500/40",
+    },
+  },
+  {
+    // 견적서 수기 작성(사용자 2026-10-08) — AI 추천이 아직 없는 제품(그리퍼·AMR 등)도 견적서부터 시작해 같은 흐름으로 관리
+    href: "/proposals/recommend?tab=quote&new=manual",
+    title: "견적서 수기 작성",
+    desc: "AI 추천이 아직 없는 제품(그리퍼·AMR 등)도 견적서부터 바로 — 제품 판매·제품 대여를 고르고 품목을 직접 넣거나 단가표에서 고르면, 발행할 때 건 번호가 붙어 판매·대여 관리로 이어집니다.",
+    icon: "edit",
+    steps: ["품목 입력", "견적 발행", "영업 건 관리"],
+    group: "top",
+    tone: {
+      band: "from-violet-600 to-fuchsia-500",
+      icon: "bg-white/20 text-white",
+      chip: "bg-violet-500/10 text-violet-700 dark:text-violet-300",
+      cta: "text-violet-700 dark:text-violet-300",
+      ring: "hover:ring-violet-500/40",
+    },
+  },
   {
     href: "/proposals/new",
     title: "제안서 만들기",
     desc: "고객 메일·자료를 넣으면 AI 가 필요한 정보를 뽑고, 빠진 것만 물어 가며 컨셉 이미지와 제안서(PPT)를 만듭니다.",
     icon: "edit",
     steps: ["자료 입력", "핵심 질문", "컨셉 확정", "PPT 완성"],
+    group: "bottom",
     tone: {
       band: "from-blue-600 to-indigo-500",
       icon: "bg-white/20 text-white",
@@ -115,6 +164,7 @@ const FEATURES: {
     desc: "대상물·무게·로봇·현장 조건을 답하면 AI 가 회사 제품 DB 에서 가장 맞는 제품 하나를 이유와 함께 골라 줍니다.",
     icon: "search",
     steps: ["조건 Q&A", "AI 추천", "묻기·바로잡기"],
+    group: "bottom",
     tone: {
       band: "from-emerald-600 to-teal-500",
       icon: "bg-white/20 text-white",
@@ -124,40 +174,12 @@ const FEATURES: {
     },
   },
   {
-    // 견적서 수기 작성(사용자 2026-10-08) — AI 추천이 아직 없는 제품(그리퍼·AMR 등)도 견적서부터 시작해 같은 흐름으로 관리
-    href: "/proposals/recommend?tab=quote&new=manual",
-    title: "견적서 수기 작성",
-    desc: "AI 추천이 아직 없는 제품(그리퍼·AMR 등)도 견적서부터 바로 — 제품 판매·제품 대여를 고르고 품목을 직접 넣거나 단가표에서 고르면, 발행할 때 건 번호가 붙어 판매·대여 관리로 이어집니다.",
-    icon: "edit",
-    steps: ["품목 입력", "견적 발행", "영업 건 관리"],
-    tone: {
-      band: "from-violet-600 to-fuchsia-500",
-      icon: "bg-white/20 text-white",
-      chip: "bg-violet-500/10 text-violet-700 dark:text-violet-300",
-      cta: "text-violet-700 dark:text-violet-300",
-      ring: "hover:ring-violet-500/40",
-    },
-  },
-  {
-    href: "/proposals/recommend?tab=deals",     // 회사 제품 추천 화면의 [제품 영업 건 관리] 탭(사용자 2026-10-06)
-    title: "제품 영업 건 관리",
-    desc: "제품 판매·대여 건을 견적부터 수주·거래명세서·입금·출하(대여는 회수까지) 한 건씩 리스트로 관리합니다. 기록을 남기면 단계가 바뀝니다.",
-    icon: "file-spreadsheet",
-    steps: ["견적", "수주", "거래명세서·입금", "출하"],
-    tone: {
-      band: "from-amber-600 to-orange-500",
-      icon: "bg-white/20 text-white",
-      chip: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
-      cta: "text-amber-700 dark:text-amber-300",
-      ring: "hover:ring-amber-500/40",
-    },
-  },
-  {
     href: "/proposals/recommend?tab=rentals",   // [대여 제품 목록] 탭(사용자 2026-11-10) — 대여 건 단위, 펼치면 제품·S/N
     title: "대여 제품 목록",
     desc: "유상·무상 대여 건을 한 줄씩 보고 언제 반납되는지·지금 어떤 상태인지 확인합니다. 무상 대여 건 등록, 제품별 S/N 불러오기·입력도 여기서 합니다.",
     icon: "refresh",
     steps: ["대여 예정", "대여 중", "회수 중", "회수 완료"],
+    group: "bottom",
     tone: {
       band: "from-sky-600 to-cyan-500",
       icon: "bg-white/20 text-white",
@@ -172,6 +194,7 @@ const FEATURES: {
     desc: "S/N으로 고객사·출하일·무상 기간·A/S 이력을 찾고, 접수한 A/S 를 원인·무상/유상·진행 상태와 함께 기록합니다.",
     icon: "bug",
     steps: ["S/N 조회", "A/S 접수", "진행", "완료"],
+    group: "bottom",
     tone: {
       band: "from-rose-600 to-pink-500",
       icon: "bg-white/20 text-white",
@@ -195,8 +218,9 @@ export function SalesHome({ disabled, examples, onPickExample, onRunBody, onRunC
   onOpenChat: () => void;
 }) {
   return (
-    // 입력창은 [AI와 채팅 시작]을 눌러야 앞에 떠오른다(사용자 2026-10-22) — 그 자리만큼 카드 6개가 한 화면에 보이게 여백을 줄였다
-    // 대표 기능 6개 — 윗줄 만들기(제안서·추천·견적서), 아랫줄 관리(판매·대여·A/S)로 3열 두 줄(사용자 2026-10-22), 좁으면 2열
+    // 입력창은 [AI와 채팅 시작]을 눌러야 앞에 떠오른다(사용자 2026-10-22) — 그 자리만큼 카드가 한 화면에 보이게 여백을 줄였다
+    // 대표 기능 7개 — 윗줄 3개(영업 건·구매 건 관리·견적서 수기 작성), 아랫줄 4개(제안서·제품 추천·대여·A/S)(사용자 2026-11-11),
+    // 좁으면 2열
     <div className="mt-4 flex w-full max-w-6xl flex-col gap-6 pb-6 text-left">
       <section aria-labelledby="sales-main">
         <div className="mb-3 flex items-center justify-between gap-3">
@@ -213,8 +237,9 @@ export function SalesHome({ disabled, examples, onPickExample, onRunBody, onRunC
             AI와 채팅 시작
           </button>
         </div>
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {FEATURES.map((f) => (
+        {(["top", "bottom"] as const).map((g) => (
+        <div key={g} className={cn("grid gap-4 md:grid-cols-2", g === "top" ? "lg:grid-cols-3" : "mt-4 lg:grid-cols-4")}>
+          {FEATURES.filter((f) => f.group === g).map((f) => (
             <Link
               key={f.href}
               href={f.href}
@@ -248,6 +273,7 @@ export function SalesHome({ disabled, examples, onPickExample, onRunBody, onRunC
             </Link>
           ))}
         </div>
+        ))}
       </section>
 
       <section aria-labelledby="sales-tools">

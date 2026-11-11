@@ -2,7 +2,7 @@
 // 왼쪽 = 진행(거래명세서 초안 바로 고치기·발급 → 결제 조건 → 회차별 입금 확인 → 출하), 오른쪽 = AI 와 대화(생각 과정·실제로 한 일·답).
 // 절차·검증은 backend(sales_deals/flow.py · order_agent.py). 발급·입금 확인·출하 저장은 담당자가 버튼으로 확정한다.
 // 결제 조건(사용자 2026-10-08): 선금·중도금·잔금 % 수기 + 시점 + 예정 입금일. 입금은 회사가 따로 확인하고 [입금 확인] 버튼으로 확정.
-// 금액은 모두 공급가액(부가세는 거래명세서에서만). 입금 확인 취소는 관리자만.
+// 금액은 모두 공급가액(부가세는 거래명세서에서만). 입금 확인 취소는 누구나(사용자 2026-11-11 — 견적이 바뀌며 금액이 바뀔 수 있어서).
 "use client";
 
 import { useEffect, useRef, useState } from "react";
@@ -399,7 +399,6 @@ export function OrderWorkspace({ id, onBack, openShip = false }: { id: number; o
   const [finished, setFinished] = useState<DealRow | null>(null);
   const stageRef = useRef<string | null>(null);
   const chatEnd = useRef<HTMLDivElement>(null);
-  const [admin, setAdmin] = useState(false);
   const [payDate, setPayDate] = useState(todayIso());
   const split = useSplit("und_cortex_order_split", 50);
 
@@ -413,7 +412,7 @@ export function OrderWorkspace({ id, onBack, openShip = false }: { id: number; o
   }
   useEffect(() => {
     let alive = true;
-    getJson<Order>(`/api/sales-deals/${id}/order`).then((x) => { if (alive) { setAdmin(!!x.admin); load(x); } }).catch((e: Error) => { if (alive) setErr(e.message); });
+    getJson<Order>(`/api/sales-deals/${id}/order`).then((x) => { if (alive) load(x); }).catch((e: Error) => { if (alive) setErr(e.message); });
     return () => { alive = false; };
   }, [id]);
   useEffect(() => { scrollChatToEnd(chatEnd.current); }, [o?.state.chat.length, live?.answer, live?.think]);
@@ -450,7 +449,7 @@ export function OrderWorkspace({ id, onBack, openShip = false }: { id: number; o
   const act: Act = (path, body) => confirm(path, body, path === "shipments" || path === "shipment-edit" ? "ship" : path === "confirm-term" ? "payment" : "case");
   /** 회차 입금 확인 — 회사가 따로 확인한 뒤 버튼으로(사용자 2026-10-08). 금액 = 그 회차 공급가액. */
   const confirmTerm = (t: PayTerm) => confirm("confirm-term", { index: t.index, date: payDate || todayIso(), expect: termExpect(t) }, "payment");
-  /** 입금 확인 취소 — 관리자만. 대화에는 남기지 않고 화면만 다시 받는다. */
+  /** 입금 확인 취소 — 누구나(이력에 남음). 대화에는 남기지 않고 화면만 다시 받는다. */
   const unconfirmTerm = (t: PayTerm) => run("저장 중", async () => {
     await dealRequest(`/${id}/unconfirm-term`, { index: t.index, expect: termExpect(t) });
     load(await getJson<Order>(`/api/sales-deals/${id}/order`));
@@ -663,8 +662,9 @@ export function OrderWorkspace({ id, onBack, openShip = false }: { id: number; o
                         {t.confirmed ? (
                           <>
                             <span className="text-emerald-700 dark:text-emerald-300">✓ 입금 확인 {shortDate(t.paid_date)}</span>
-                            {admin && <button type="button" disabled={!!busy} onClick={() => void unconfirmTerm(t)}
-                                              className="text-[11.5px] text-foreground-subtle hover:text-red-600 hover:underline">확인 취소</button>}
+                            <button type="button" disabled={!!busy}
+                                    onClick={() => { if (window.confirm(`${t.label} 입금 확인을 취소할까요? 금액이 바뀌었으면 취소한 뒤 다시 확인하세요(완납이었으면 함께 풀립니다).`)) void unconfirmTerm(t); }}
+                                    className="text-[11.5px] text-foreground-subtle hover:text-red-600 hover:underline">확인 취소</button>
                           </>
                         ) : (
                           <button type="button" disabled={!!busy || !now && !late.has(t.index)}

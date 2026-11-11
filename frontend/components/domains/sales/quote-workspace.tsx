@@ -120,8 +120,10 @@ async function saveAs(url: string, name: string, fmt: Fmt): Promise<boolean> {
 }
 
 /** 내려받기 창 — PDF·엑셀 고르기 + 파일 이름 바꾸기(견적서·거래명세서 같이 씀). urlFor: 형식별 받을 주소. */
-export function DownloadDialog({ urlFor, fileName, title, onClose }: {
+export function DownloadDialog({ urlFor, fileName, title, onClose, formats }: {
   urlFor: (fmt: Fmt) => string; fileName: string; title: string; onClose: () => void;
+  /** 고를 수 있는 형식(기본 PDF·엑셀) — PDF 로만 남은 문서(올린 PDF 로 발행한 발주서)는 ["pdf"] */
+  formats?: Fmt[];
 }) {
   const [fmt, setFmt] = useState<Fmt>("pdf");
   const [name, setName] = useState(fileName.replace(/\.(xlsx|pdf)$/i, ""));
@@ -151,7 +153,7 @@ export function DownloadDialog({ urlFor, fileName, title, onClose }: {
           <p className="text-[12px] text-foreground-subtle">형식을 고르고, 필요하면 파일 이름을 바꿔 저장하세요.</p>
         </div>
         <div className="flex gap-2">
-          {(Object.keys(FMT) as Fmt[]).map((k) => (
+          {(formats ?? (Object.keys(FMT) as Fmt[])).map((k) => (
             <button key={k} type="button" onClick={() => setFmt(k)} aria-pressed={fmt === k}
                     className={cn("flex-1 rounded-lg border px-3 py-2 text-[13px] font-semibold",
                       fmt === k ? "border-accent bg-accent/10 text-accent" : "border-border text-foreground-muted hover:bg-foreground/[0.04]")}>

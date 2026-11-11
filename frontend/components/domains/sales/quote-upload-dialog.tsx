@@ -6,9 +6,12 @@
 //    발행번호는 견적서에 적힌 번호를 따른다(담당자가 고치면서 정한 번호). 적힌 번호가 없을 때만 새 번호 QT-이니셜+오늘-NN.
 // ③ 발행하면 작성 상태도 올린 파일 내용으로 맞춘다(사용자 2026-10-15) — [견적서 고치기]·미리보기·AI 대화가 이어진다(끌 수 있음).
 // ④ 대여 견적서는 대여 시작일을 한 번 더 확인해야 발행된다(사용자 2026-10-27) — 날짜를 고르거나 [확인]에 체크.
+// ⑤ AI 판독이 실패하거나 이상하면 [버그 신고 후 넘어가기](사용자 2026-11-11) — 버그를 신고하고 발행 버튼을 연다.
+//    품목이 덜 채워져도 이 파일 그대로 발행(빈 품명은 '품목 미확인', 수량 1, 단가 0) — 금액은 나중에 [견적서 고치기]·다시 올려 맞춘다.
 import { useEffect, useState } from "react";
 
 import { Icon } from "@/components/shared/ui/icon";
+import { fileBugReport, readFailureContent } from "@/lib/shared/bug-report";
 import { cn } from "@/lib/shared/utils";
 
 type Item = { name: string; spec: string; qty: number | null; unit_price: number | null };
@@ -55,6 +58,8 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
   // 완납한 건에 발행 — [그래도 발행]을 누르면 이번 창에서는 다시 묻지 않는다
   const [paidAsk, setPaidAsk] = useState(false);
   const [paidOk, setPaidOk] = useState(false);
+  // [버그 신고 후 넘어가기] 접수 번호 — 있으면 품목이 덜 채워져도 발행 버튼이 열린다
+  const [forced, setForced] = useState<string | null>(null);
   // 파일을 끌어다 놓는 중(사용자 2026-10-16) — 끌어 놓으면 accept 가 안 걸러서 확장자를 직접 본다
   const [over, setOver] = useState(false);
   const pick = (f: File | undefined) => {
@@ -128,7 +133,7 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
         body: JSON.stringify({ upload, doc_no: docNo.trim(), initials: initials.trim().toUpperCase(),
                                // 무상 대여 — 비운 단가는 0(무상)으로(사용자 2026-11-09)
                                items: free ? items.map((x) => ({ ...x, unit_price: x.unit_price ?? 0 })) : items, overwrite,
-                               sync: doSync, rental_start: rentStart || null, rental_checked: rentOk }),
+                               sync: doSync, rental_start: rentStart || null, rental_checked: rentOk, forced: !!forced }),
       });
       const d = await r.json().catch(() => ({}));
       if (r.status === 409) {
@@ -146,13 +151,31 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
     }
   }
 
+  async function reportAndSkip() {
+    if (!upload) return;
+    setBusy("버그 신고 중…");
+    setError(null);
+    try {
+      const no = await fileBugReport(`[자동] 고친 견적서 파일 AI 판독 실패 — ${upload.filename}`, readFailureContent({
+        where: `${title} (${confirmUrl.replace(/^\/api\//, "")})`, filename: upload.filename, storageKey: upload.key,
+        status: read?.status, summary: read?.summary,
+        lines: (read?.items ?? []).map((x) => [x.name, x.spec, `수량 ${x.qty ?? "?"}`, `단가 ${x.unit_price ?? "?"}`].filter(Boolean).join(" · ")),
+      }));
+      setForced(no || "신고됨");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "버그를 신고하지 못했습니다.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   const setItem = (i: number, patch: Partial<Item>) => setItems((xs) => xs.map((x, j) => (j === i ? { ...x, ...patch } : x)));
   const num = (s: string) => (s.trim() === "" ? null : Number(s.replace(/,/g, "")));
   const total = items.reduce((a, x) => a + (x.qty ?? 0) * (x.unit_price ?? 0), 0);
   const rental = sync?.rental ?? null;
   const free = !!rental?.free;
   const filled = items.length > 0 && items.every((x) => x.name.trim() && x.qty && x.qty > 0 && (free || x.unit_price != null));
-  const why = sync?.blocked ? sync.blocked : !filled ? "품명·수량·단가를 모두 채워 주세요"
+  const why = sync?.blocked ? sync.blocked : !filled && !forced ? "품명·수량·단가를 모두 채워 주세요"
     : rental && !rentOk ? "대여 시작일을 확인해 주세요(날짜를 고르거나 확인에 체크)" : "";
   const SHOWN = 8;
   const today = new Date();
@@ -331,11 +354,26 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
               올리고 읽기
             </button>
           ) : (
-            <button type="button" disabled={!!why || !!busy} onClick={() => void issue()}
-                    title={why}
-                    className="h-9 rounded-lg bg-accent px-5 text-[13px] font-semibold text-white hover:brightness-105 disabled:opacity-50">
-              {docNo.trim() ? `${docNo.trim()} 로 발행` : "이 내용으로 발행 (새 번호)"}
-            </button>
+            <>
+              {forced && !busy && (
+                <span className="mr-auto text-[12px] text-amber-700 dark:text-amber-300">
+                  버그 신고 {forced} 접수 — 품목이 덜 채워져도 이 파일 그대로 발행할 수 있습니다(빈 품명은 &lsquo;품목 미확인&rsquo;, 금액은 나중에 맞춤).
+                </span>
+              )}
+              {/* AI 판독이 실패하거나 이상할 때 — 버그를 신고하고 발행 버튼을 연다(사용자 2026-11-11) */}
+              {!forced && (
+                <button type="button" disabled={!!busy} onClick={() => void reportAndSkip()}
+                        title="AI 가 품목을 잘못 읽었거나 못 읽었으면 — 버그를 신고하고, 품목이 덜 채워져도 이 파일 그대로 발행할 수 있게 합니다"
+                        className="h-9 rounded-lg border border-amber-500/60 px-4 text-[13px] font-semibold text-amber-700 hover:bg-amber-500/10 disabled:opacity-50 dark:text-amber-300">
+                  버그 신고 후 넘어가기
+                </button>
+              )}
+              <button type="button" disabled={!!why || !!busy} onClick={() => void issue()}
+                      title={why}
+                      className="h-9 rounded-lg bg-accent px-5 text-[13px] font-semibold text-white hover:brightness-105 disabled:opacity-50">
+                {docNo.trim() ? `${docNo.trim()} 로 발행` : "이 내용으로 발행 (새 번호)"}
+              </button>
+            </>
           )}
         </div>
       </div>

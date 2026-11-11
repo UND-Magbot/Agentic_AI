@@ -15,8 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 QUOTE = "QT"
 STATEMENT = "TS"
+PURCHASE = "PO"            # 제품 구매 발주서(purchases/) — 기록 종류는 PO, 번호 앞머리는 UND(아래 PREFIX)
+# 발주서 번호는 회사 발주서 표기 UND-VT20261102-01(사용자 2026-11-11, 에이딘로보틱스 발주서 예시)
+PREFIX = {PURCHASE: "UND"}
 INITIALS_RE = re.compile(r"[A-Z]{2}")
-DOC_NO_RE = re.compile(r"^(QT|TS)-([A-Z]{2,4})(\d{8})-(\d{2,})$")
+DOC_NO_RE = re.compile(r"^(QT|TS|PO|UND)-([A-Z]{2,4})(\d{8})-(\d{2,})$")
 
 
 def clean_initials(v: str | None) -> str | None:
@@ -26,7 +29,7 @@ def clean_initials(v: str | None) -> str | None:
 
 
 def format_no(doc_type: str, issuer: str, day: dt.date, seq: int) -> str:
-    return f"{doc_type}-{issuer}{day:%Y%m%d}-{seq:02d}"
+    return f"{PREFIX.get(doc_type, doc_type)}-{issuer}{day:%Y%m%d}-{seq:02d}"
 
 
 async def allocate(db: AsyncSession, doc_type: str, issuer: str, day: dt.date, *, deal_id: int | None = None,
@@ -34,7 +37,7 @@ async def allocate(db: AsyncSession, doc_type: str, issuer: str, day: dt.date, *
     """다음 발행번호를 잡아 기록한다(커밋은 부르는 쪽 — 발행 저장과 한 트랜잭션, 실패해 되돌리면 번호도 안 나간 것).
     같은 발행자·날짜·종류는 잠가 두 사람이 동시에 내도 번호가 겹치지 않는다."""
     ini = clean_initials(issuer)
-    if not ini or doc_type not in (QUOTE, STATEMENT):
+    if not ini or doc_type not in (QUOTE, STATEMENT, PURCHASE):
         raise ValueError("발행자 이니셜은 영문 2자로 적어 주세요(예: LU).")
     await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": f"doc_no:{doc_type}:{ini}:{day:%Y%m%d}"})
     seq = (await db.execute(text("SELECT COALESCE(MAX(seq), 0) + 1 FROM doc_numbers "
@@ -95,6 +98,7 @@ async def register(db: AsyncSession, doc_no: str, *, deal_id: int | None = None,
     if not m:
         return
     t, ini, ymd, seq = m.group(1), m.group(2), m.group(3), int(m.group(4))
+    t = {v: k for k, v in PREFIX.items()}.get(t, t)       # UND-… 발주서 번호는 PO 기록으로
     try:
         day = dt.date(int(ymd[:4]), int(ymd[4:6]), int(ymd[6:]))
     except ValueError:

@@ -550,7 +550,7 @@ async def quote_deal(db: AsyncSession, user_id: int | None, proposal_id: int | N
     return r.id, deal_no
 
 
-PAID_QUOTE_LOCKED = "완납한 건은 견적(품목·금액)을 바꿀 수 없습니다. 바꿔야 하면 관리자가 완납을 먼저 풀어 주세요."
+PAID_QUOTE_LOCKED = "완납한 건은 견적(품목·금액)을 바꿀 수 없습니다. 바꿔야 하면 입금 확인을 먼저 취소해 주세요(완납도 함께 풀립니다)."
 
 
 async def quote_replaced(db: AsyncSession, deal_id: int, user_id: int | None, p: dict, *, latest: bool) -> None:
@@ -929,7 +929,8 @@ async def confirm_term(db: AsyncSession, deal_id: int, user_id: int | None, inde
 
 
 async def unconfirm_term(db: AsyncSession, deal_id: int, user_id: int | None, index: int) -> None:
-    """회차 입금 확인 취소(관리자) — 그 회차의 입금 기록을 지운다."""
+    """회차 입금 확인 취소(누구나 — 사용자 2026-11-11, 견적이 바뀌며 금액이 바뀔 수 있어서) — 그 회차의 입금 기록을 지운다.
+    완납이었으면 함께 풀린다. 이력에 남는다(remove_payment)."""
     d = await _lock(db, deal_id)
     keep = [p for p in d["payments"] if p.get("term") != index]
     if len(keep) == len(d["payments"]):

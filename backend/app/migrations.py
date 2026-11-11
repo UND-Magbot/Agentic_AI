@@ -1101,6 +1101,53 @@ _SALES_DEALS_STMTS = [
          "ELSE (warranty_start + INTERVAL '1 year' - INTERVAL '1 day')::date END WHERE warranty_months IS DISTINCT FROM 12"),
 ]
 
+# 제품 구매 관리(purchases/, 사용자 2026-11-02 승인) — 견적 → 재가 → 발주 → (입금·입고·거래명세서·세금계산서, 순서 자유).
+# 한 행 = 한 구매 건(공급사 하나). 파일 기록·회차·입금 등은 건 하나를 통째로 보고 고치는 화면이라 JSONB.
+# 되돌리기: DROP TABLE purchase_events; DROP TABLE purchases;
+_PURCHASES_STMTS = [
+    text(
+        """
+        CREATE TABLE IF NOT EXISTS purchases (
+            id           BIGSERIAL PRIMARY KEY,
+            supplier     VARCHAR(200) NOT NULL,
+            title        VARCHAR(300) NOT NULL DEFAULT '',
+            owner        VARCHAR(100) NOT NULL DEFAULT '',
+            region       VARCHAR(10)  NOT NULL DEFAULT 'domestic',
+            quote_files  JSONB        NOT NULL DEFAULT '[]'::jsonb,
+            approval     JSONB        NOT NULL DEFAULT '{}'::jsonb,
+            po           JSONB        NOT NULL DEFAULT '{}'::jsonb,
+            pay_terms    JSONB        NOT NULL DEFAULT '[]'::jsonb,
+            payments     JSONB        NOT NULL DEFAULT '[]'::jsonb,
+            receipt      JSONB        NOT NULL DEFAULT '{}'::jsonb,
+            statement    JSONB        NOT NULL DEFAULT '{}'::jsonb,
+            tax_invoice  JSONB        NOT NULL DEFAULT '{}'::jsonb,
+            note         TEXT         NOT NULL DEFAULT '',
+            dropped      BOOLEAN      NOT NULL DEFAULT FALSE,
+            drop_reason  TEXT         NOT NULL DEFAULT '',
+            created_by   BIGINT       REFERENCES users(id) ON DELETE SET NULL,
+            created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            updated_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+        );
+        """
+    ),
+    text("CREATE INDEX IF NOT EXISTS ix_purchases_updated ON purchases(updated_at DESC, id DESC)"),
+    text(
+        """
+        CREATE TABLE IF NOT EXISTS purchase_events (
+            id          BIGSERIAL PRIMARY KEY,
+            purchase_id BIGINT      NOT NULL REFERENCES purchases(id) ON DELETE CASCADE,
+            user_id     BIGINT      REFERENCES users(id) ON DELETE SET NULL,
+            action      VARCHAR(40) NOT NULL,
+            detail      JSONB       NOT NULL DEFAULT '{}'::jsonb,
+            created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        """
+    ),
+    text("CREATE INDEX IF NOT EXISTS ix_purchase_events_purchase ON purchase_events(purchase_id, id)"),
+    # 해외 구매 통관(사용자 2026-11-02 승인) — 원산지 증명서 첨부·통관 완료 기록. 되돌리기: ALTER TABLE purchases DROP COLUMN customs;
+    text("ALTER TABLE purchases ADD COLUMN IF NOT EXISTS customs JSONB NOT NULL DEFAULT '{}'::jsonb"),
+]
+
 async def run_migrations(db: AsyncSession) -> None:
     """런타임 멱등 마이그레이션 일괄 실행."""
     await db.execute(_RENAME_USERS_FULL_NAME_TO_ALIAS)
@@ -1139,6 +1186,8 @@ async def run_migrations(db: AsyncSession) -> None:
     for stmt in _PROPOSAL_PROJECT_STMTS:
         await db.execute(stmt)
     for stmt in _SALES_DEALS_STMTS:
+        await db.execute(stmt)
+    for stmt in _PURCHASES_STMTS:
         await db.execute(stmt)
     await db.commit()
 

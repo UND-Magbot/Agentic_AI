@@ -1514,7 +1514,7 @@ async def _replace_issue(db, target: dict[str, Any], *, deal_id: int, user_id: i
 async def quote_issue_upload(*, qid: int | None, deal_id: int | None, user_id: int | None, owner_check: bool,
                              upload: dict[str, Any], items: list[dict[str, Any]], initials: str,
                              doc_no: str = "", overwrite: bool = False, sync: bool = True,
-                             rental_start: Any = None, rental_checked: bool = False) -> dict[str, Any]:
+                             rental_start: Any = None, rental_checked: bool = False, forced: bool = False) -> dict[str, Any]:
     """밖에서 고친 견적서 파일로 발행(사용자 2026-10-12) — 견적서 발행 한 번으로 본다: 새 발행번호(QT-이니셜+발행일-NN)·판 +1·
     영업 건 견적(담당자가 확인한 품목·금액) 갱신, 발행 이력에 올린 파일을 남긴다(다시 받으면 그 파일 그대로).
     발행번호는 견적서에 적힌 번호(doc_no)를 따른다 — 담당자가 고치면서 정한 번호. 비어 있을 때만 이니셜로 새 번호.
@@ -1545,7 +1545,8 @@ async def quote_issue_upload(*, qid: int | None, deal_id: int | None, user_id: i
     if not given and not ini:
         raise RecommendError("견적서에 발행번호가 없으면 발행자 이니셜을 영문 2자로 적어 주세요(예: LU) — 새 번호 QT-LU20261012-01 을 매깁니다.")
     try:
-        lines = qu.clean_items(items, check_total=False)     # 0원 검사는 대여 × 개월 뒤에(아래)
+        # forced = [버그 신고 후 넘어가기](사용자 2026-11-11 — AI 판독이 실패하거나 이상해도 [버그 신고 후 넘어가기]로 이 파일 그대로 발행하고 다음 단계로)
+        lines = qu.clean_items(items, check_total=False, lenient=forced)     # 0원 검사는 대여 × 개월 뒤에(아래)
     except ValueError as e:
         raise RecommendError(str(e)) from e
     ext = qu.ext_of(str(upload.get("filename") or ""))
@@ -1598,7 +1599,7 @@ async def quote_issue_upload(*, qid: int | None, deal_id: int | None, user_id: i
         if f.get("purpose") == "rental":     # 대여 — 파일의 단가는 월 납입금, 영업 건엔 × 개월(사용자 2026-10-22)
             lines = [{**x, "unit_price": x["unit_price"] * qs.month_factor(f, {"commodity": str(x["name"]).split("\n")[0], "name": x["name"],
                                                                                 "unit": x.get("unit") or ""})} for x in lines]
-        if not free and sum(x["qty"] * x["unit_price"] for x in lines) <= 0:     # 0원 견적 발행 막음(검증 QT-066) — 대여는 × 개월 뒤 합계로
+        if not free and not forced and sum(x["qty"] * x["unit_price"] for x in lines) <= 0:     # 0원 견적 발행 막음(검증 QT-066) — 대여는 × 개월 뒤 합계로
             raise RecommendError("합계가 0원 이하입니다 — 품목 단가·NEGO 를 확인해 주세요.")
         day = deals.kst_today()
         cur = (await db.execute(text("SELECT revision, quote_no FROM product_quotes WHERE id = :i FOR UPDATE"),

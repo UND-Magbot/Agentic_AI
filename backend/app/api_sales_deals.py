@@ -726,9 +726,9 @@ async def confirm_term(deal_id: int, body: TermConfirmIn, user: User = Depends(r
 
 
 @router.post("/{deal_id}/unconfirm-term")
-async def unconfirm_term(deal_id: int, body: TermConfirmIn, user: User = Depends(require_admin),
+async def unconfirm_term(deal_id: int, body: TermConfirmIn, user: User = Depends(require_sales),
                          db: AsyncSession = Depends(get_db)) -> dict:
-    """회차 입금 확인 취소 — 관리자만."""
+    """회차 입금 확인 취소 — 누구나(사용자 2026-11-11 — 견적서·발주서가 바뀌며 금액이 바뀔 수 있어 담당자가 직접 취소). 완납이었으면 함께 풀린다."""
     return await _act(db, deal_id, _checked(db, deal_id, "pay_terms", body.index, body.expect,
                                             svc.unconfirm_term(db, deal_id, user.id, body.index)))
 
@@ -1072,7 +1072,7 @@ async def quote_upload_confirm(deal_id: int, body: "QuoteUploadConfirm", user: U
         await pr.quote_issue_upload(qid=None, deal_id=deal_id, user_id=user.id, owner_check=False,
                                     upload=body.upload.model_dump(), items=[x.model_dump() for x in body.items],
                                     initials=body.initials, doc_no=body.doc_no, overwrite=body.overwrite, sync=body.sync,
-                                    rental_start=body.rental_start, rental_checked=body.rental_checked)
+                                    rental_start=body.rental_start, rental_checked=body.rental_checked, forced=body.forced)
     except svc.DealError as e:
         raise _fail(e) from e
     except pr.OverwriteNeeded as e:                       # 같은 건의 같은 번호 — 화면이 덮어쓸지 묻는다

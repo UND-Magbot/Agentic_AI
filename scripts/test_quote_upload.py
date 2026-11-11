@@ -304,6 +304,22 @@ async def run() -> None:
     n2, got2 = await pr.quote_file(d2["quotes"][0]["id"], user_id=None, fmt="xlsx")
     check(got2 == pdf and n2.endswith(".pdf"), "올린 PDF 는 엑셀로 달라도 PDF 그대로", n2)
 
+    # ── AI 판독 실패 → [버그 신고 후 넘어가기](사용자 2026-11-11): 품목이 비어도 이 파일 그대로 발행 ──
+    up3 = store(f"sales-deals/{manual_id}/quote/", pdf, ".pdf")
+    try:
+        await pr.quote_issue_upload(qid=None, deal_id=manual_id, user_id=uid, owner_check=False, upload=up3, initials="VT",
+                                    doc_no="", items=[{"name": "", "spec": "", "qty": None, "unit_price": None}])
+        check(False, "판독 실패 그대로(빈 품목)는 거절")
+    except pr.RecommendError:
+        check(True, "판독 실패 그대로(빈 품목)는 거절")
+    res3 = await pr.quote_issue_upload(qid=None, deal_id=manual_id, user_id=uid, owner_check=False, upload=up3, initials="VT",
+                                       doc_no="", items=[{"name": "", "spec": "", "qty": None, "unit_price": None}], forced=True)
+    async with SessionLocal() as db:
+        d3 = await svc.get_deal(db, manual_id, TODAY)
+    check(res3["quote_no"] != res2["quote_no"] and d3["display_no"] == res3["quote_no"] and d3["quote"]["amount"] == 0
+          and d3["quotes"][0]["issues"][-1]["uploaded"],
+          "버그 신고 후 넘어가기 — 빈 품목이어도 파일 그대로 발행(새 번호, 금액은 나중에 맞춤)", str((res3["quote_no"], d3["quote"])))
+
     await free_rental_upload(uid, head)
     await cleanup()
     for k in KEYS:
