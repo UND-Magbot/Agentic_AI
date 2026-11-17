@@ -8,6 +8,7 @@ const TABS: RecommendTab[] = ["recommend", "quote", "order", "deals", "purchases
 // ?tab=quote&new=manual — 첫 화면 '견적서 수기 작성' 카드 → 빈 견적서를 만들어 바로 연다
 // ?tab=memory&sub=approvals — 승인 요청 알림 팝업 → [검토·승인 > 승인 요청]
 // 채팅 답의 이동 버튼(사용자 2026-10-28) — ?tab=deals&deal=건 · ?tab=quote&quote=견적서 · ?tab=order&deal=건(&focus=ship 출하 칸)
+// ?tab=deals&deal=건&focus=pay — 견적서 발행이 입금 확인 때문에 막혔을 때 그 건의 결제 조건 칸으로(사용자 2026-11-17)
 export default async function ProductRecommendPage({ searchParams }: { searchParams: Promise<{ tab?: string; new?: string; sub?: string; deal?: string; quote?: string; focus?: string }> }) {
   const { tab, new: start, sub, deal, quote, focus } = await searchParams;
   const num = (v?: string) => (v && /^\d+$/.test(v) ? Number(v) : undefined);
@@ -18,7 +19,7 @@ export default async function ProductRecommendPage({ searchParams }: { searchPar
                       initialTab={TABS.includes(tab as RecommendTab) ? (tab as RecommendTab) : undefined}
                       startManual={start === "manual"}
                       initialSub={sub === "approvals" ? "approvals" : undefined}
-                      initialDeal={num(deal)} initialQuote={num(quote)} initialFocus={focus === "ship" ? "ship" : undefined}
+                      initialDeal={num(deal)} initialQuote={num(quote)} initialFocus={focus === "ship" || focus === "pay" ? focus : undefined}
                       writer={user ? displayName(user) : ""} />
   );
 }

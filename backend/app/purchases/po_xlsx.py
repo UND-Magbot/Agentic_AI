@@ -25,6 +25,7 @@ from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
 from openpyxl.drawing.xdr import XDRPositiveSize2D
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils.units import pixels_to_EMU
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 
 QUOTE_ASSETS = Path(__file__).resolve().parent.parent / "company_knowledge" / "data" / "quote"
 TITLE_IMG = Path(__file__).with_name("data") / "po_title.png"
@@ -131,6 +132,8 @@ def _cell(ws, ref: str, value: Any = None, *, size: float = 10, bold: bool = Tru
         for c in cells:
             c.fill = fill
     c = ws[ref]
+    # 엑셀이 받지 않는 보이지 않는 제어문자(복사·붙여넣기·AI 판독에서 섞임)는 뺀다 — 그대로 쓰면 파일을 못 만들어 미리보기·다운로드가 500(QA 2026-11-16)
+    value = ILLEGAL_CHARACTERS_RE.sub("", value) if isinstance(value, str) else value
     c.value = value
     c.font = Font(name=FONT, size=size, bold=bold, italic=italic, color=color)
     c.alignment = Alignment(horizontal=h, vertical=v, wrap_text=wrap)
@@ -198,7 +201,7 @@ def _build_ko(header: dict[str, Any], items: list[dict[str, Any]]) -> bytes:
 
     # 11~17행 — 발주처(우리) · Comments. 첫 줄(회사·담당자)만 크게 — 양식 PDF 표기
     _cell(ws, "A11", "Issued the order by", size=11, h="left", border=False)
-    lines = issuer_lines(header)
+    lines = [ILLEGAL_CHARACTERS_RE.sub("", x) for x in issuer_lines(header)]      # 제어문자 빼기(위 _cell 과 같게)
     rich = CellRichText([TextBlock(InlineFont(rFont=FONT, sz=13, b=True), lines[0])]
                         + [TextBlock(InlineFont(rFont=FONT, sz=10, b=True), "\n" + x) for x in lines[1:]])
     _cell(ws, "A12", None, size=11, wrap=True, merge="C17")

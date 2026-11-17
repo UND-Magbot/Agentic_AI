@@ -80,6 +80,8 @@ class ReviewIn(BaseModel):
 
 
 def _bad(e: pr.RecommendError) -> HTTPException:
+    if getattr(e, "code", None) == "PAY_LOCKED":   # 화면이 따로 처리하는 오류(입금 확인 잠금 → 팝업·입금 확인 칸으로 이동)
+        return HTTPException(status.HTTP_409_CONFLICT, detail={"message": str(e), "code": e.code, "deal_id": e.deal_id})
     return HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
@@ -398,7 +400,11 @@ async def quote_edit(qid: int, body: QuoteEditIn, current_user: User = Depends(g
 
 
 class QuoteIssueIn(BaseModel):
-    """(본문 없음) 덮어쓰기는 없앴다(사용자 2026-10-12) — 예전 화면이 보내는 overwrite 는 무시."""
+    """덮어쓰기는 없앴다(사용자 2026-10-12) — 예전 화면이 보내는 overwrite 는 무시.
+    replace_won = 수주한 견적서를 이 내용으로 고치기(같은 번호·판, 사용자 2026-11-16). 아니면 새 발행번호."""
+    replace_won: bool = False
+    # 수주한 견적서를 고칠 때 발급한 거래명세서도 — same 같은 번호로 교체 · new 새 번호 · None 그대로(사용자 2026-11-17)
+    statement: Literal["same", "new"] | None = None
 
 
 @router.post("/quotes/{qid}/issue")
@@ -406,7 +412,17 @@ async def quote_issue(qid: int, body: QuoteIssueIn | None = None, current_user: 
     """[견적서 발행] — 발행·재발행마다 새 발행번호 QT-{이니셜}{발행일}-NN. 미정 값이 있으면 400(이유).
     발행은 영업 건을 만들므로 영업부만(검증 QT-036, 2026-10-15) — 작성·미리보기는 그대로."""
     try:
-        return await pr.quote_issue(qid, user_id=current_user.id)
+        return await pr.quote_issue(qid, user_id=current_user.id, replace_won=bool(body and body.replace_won),
+                                    statement=body.statement if body else None)
+    except pr.RecommendError as e:
+        raise _bad(e) from e
+
+
+@router.post("/quotes/{qid}/load-won")
+async def quote_load_won(qid: int, current_user: User = Depends(require_sales)):
+    """[수주한 견적서 불러오기] — 수주한 판의 발행본으로 작성 상태를 맞춘다(사용자 2026-11-16)."""
+    try:
+        return await pr.quote_load_won(qid, user_id=current_user.id)
     except pr.RecommendError as e:
         raise _bad(e) from e
 
@@ -461,7 +477,7 @@ async def quote_upload_confirm(qid: int, body: QuoteUploadConfirm, current_user:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(e)) from e
     except pr.RecommendError as e:
         raise _bad(e) from e
-    return res["quote"]
+    return {**res["quote"], "sn_note": res.get("sn_note") or ""}
 
 
 @router.post("/quotes/{qid}/lines/{line_id}/photo")

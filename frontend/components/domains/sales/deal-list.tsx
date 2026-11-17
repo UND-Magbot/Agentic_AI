@@ -8,9 +8,9 @@
 
 import { useRouter } from "next/navigation";
 import { Fragment, useMemo, useState } from "react";
-import { DealDetail } from "@/components/domains/sales/deal-detail";
+import { DealDetail, type DealFocus } from "@/components/domains/sales/deal-detail";
 import { DealMeetingDialog, hasMeeting } from "@/components/domains/sales/deal-meeting";
-import { Muted, RegionBadge, STAGE_TONE, StageChip, eventDetail, eventLabel, quoteVer, shortDate, stamp, won } from "@/components/domains/sales/deal-format";
+import { Muted, RegionBadge, StageChip, eventDetail, eventLabel, quoteVer, shortDate, stamp, won } from "@/components/domains/sales/deal-format";
 import { DealNewForm } from "@/components/domains/sales/deal-new-form";
 import type { DealBiz, DealKpi, DealListData, DealRental, DealRow, DealStage } from "@/lib/shared/sales-deals";
 import { cn } from "@/lib/shared/utils";
@@ -32,12 +32,26 @@ const supplyOf = (r: DealRow) => r.flow?.total ?? (r.quote?.amount == null ? nul
 
 type Filter = { q: string; owner: string; stage: string; year: string; unpaid: boolean; review: boolean; overdue: boolean; as: boolean;
   /** 판매·대여 거르기('' = 둘 다) */
-  kind: string };
+  kind: string;
+  /** 큰 묶음 칩(사용자 2026-11-17 — 단계 칩이 많아 지저분: 묶음 몇 개 + 세부 단계는 [단계 ▾]) */
+  group: Group;
+  /** 국내·해외('' = 둘 다) — 해외 = 달러 견적 */
+  region: "" | "domestic" | "overseas" };
 
-export function DealList({ data, biz, initialOpenId = null, onRefresh, onMeeting, onOrder, onQuote }: {
+type Group = "" | "before" | "progress" | "done";
+const GROUPS: [Exclude<Group, "">, string, DealStage[]][] = [
+  ["before", "수주 전", ["제품 추천 확정", "견적"]],
+  ["progress", "진행 중", ["수주", "출하 후 입금 대기"]],
+  ["done", "완료", [DONE_STAGE]],
+];
+const isOverseas = (r: DealRow) => (r.quote?.currency ?? "KRW") === "USD";
+
+export function DealList({ data, biz, initialOpenId = null, initialFocus, onRefresh, onMeeting, onOrder, onQuote }: {
   data: DealListData;
   /** 처음부터 열어 둘 건 — [제품·A/S] 탭의 [프로젝트 건 열기](사용자 2026-10-22) */
   initialOpenId?: number | null;
+  /** 처음 열어 둔 건 상세에서 강조할 칸(견적서 발행이 입금 확인 때문에 막혀 넘어온 경우) */
+  initialFocus?: DealFocus;
   /** 비우면 판매·대여 모두(제품 영업 건 관리, 사용자 2026-10-30) · sale = 판매만 · rental = 대여만 — 설명·단계 칩 */
   biz?: DealBiz;
   /** 상태 변경 뒤 리스트 다시 받기 — 탭(클라이언트)에서 쓰면 넘기고, 없으면 서버 컴포넌트 새로고침. */
@@ -51,7 +65,8 @@ export function DealList({ data, biz, initialOpenId = null, onRefresh, onMeeting
 }) {
   const router = useRouter();
   const refresh = onRefresh ?? (() => router.refresh());
-  const [f, setF] = useState<Filter>({ q: "", owner: "", stage: "", year: "", unpaid: false, review: false, overdue: false, as: false, kind: "" });
+  const [f, setF] = useState<Filter>({ q: "", owner: "", stage: "", year: "", unpaid: false, review: false, overdue: false, as: false, kind: "",
+                                       group: "", region: "" });
   const stages = STAGES;
   const admin = !!data.me?.admin;
   const overdueRows = useMemo(() => data.rows.filter(isOverdue), [data.rows]);
@@ -86,7 +101,7 @@ export function DealList({ data, biz, initialOpenId = null, onRefresh, onMeeting
   const set = (patch: Partial<Filter>) => setF((prev) => ({ ...prev, ...patch }));
   // 칩은 한 번에 하나만(사용자 2026-11-10 — 겹쳐 걸리면 '왜 안 뜨지' 하게 된다). 다른 칩을 누르면 앞의 칩은 풀린다.
   // 검색·담당자·판매·대여·연도는 칩과 같이 걸린다
-  const NO_CHIP = { stage: "", review: false, unpaid: false, as: false, overdue: false };
+  const NO_CHIP = { stage: "", group: "" as Group, review: false, unpaid: false, as: false, overdue: false };
   const chip = (patch: Partial<Filter>) => set({ ...NO_CHIP, ...patch });
 
   const toggle = (id: number) => setSelected((prev) => {
@@ -120,12 +135,15 @@ export function DealList({ data, biz, initialOpenId = null, onRefresh, onMeeting
   const owners = useMemo(() => uniq(data.rows.map((r) => normOwner(r.owner))), [data.rows]);
   const years = useMemo(() => uniq(data.rows.map((r) => r.base_date?.slice(0, 4) ?? "")).sort().reverse(), [data.rows]);
 
+  const inRegion = useMemo(() => data.rows.filter((r) => !f.region || (f.region === "overseas") === isOverseas(r)), [data.rows, f.region]);
   const rows = useMemo(() => {
     const q = f.q.trim().toLowerCase();
     return data.rows.filter((r) => {
       if (f.owner && normOwner(r.owner) !== f.owner) return false;
       if (f.kind && (f.kind === "대여") !== (r.biz === "rental")) return false;
-      if (f.stage ? r.stage !== f.stage : r.stage === DONE_STAGE) return false;
+      if (f.region && (f.region === "overseas") !== isOverseas(r)) return false;
+      const g = GROUPS.find(([k]) => k === f.group);
+      if (f.stage ? r.stage !== f.stage : g ? !g[2].includes(r.stage) : r.stage === DONE_STAGE) return false;
       if (f.year && !r.base_date?.startsWith(f.year)) return false;
       if (f.unpaid && !isUnpaid(r)) return false;
       if (f.review && !hasReview(r)) return false;
@@ -203,27 +221,49 @@ export function DealList({ data, biz, initialOpenId = null, onRefresh, onMeeting
 
       {data.kpi && <KpiBar kpi={data.kpi} />}
 
-      {/* 단계 요약 — 누르면 그 단계만 */}
-      <div className="mb-3 flex flex-wrap gap-2">
-        {/* 전체 = 칩 거르기를 푼다(검색·담당자·판매·대여·연도는 그대로). 완료 건은 [완료] 칩에서만 보인다 */}
-        <SummaryChip label="전체" count={data.counts.total - (data.summary[DONE_STAGE] ?? 0)}
-                     active={!f.stage && !f.review && !f.unpaid && !f.as && !f.overdue}
-                     tone="bg-foreground/8 text-foreground" onClick={() => chip({})} />
-        {stages.map((s) => (
-          <SummaryChip key={s} label={s} count={data.summary[s]} active={f.stage === s}
-                       tone={STAGE_TONE[s]} onClick={() => chip({ stage: f.stage === s ? "" : s })} />
-        ))}
-        <SummaryChip label="⚠ 확인 필요" count={data.summary["확인 필요"]} active={f.review}
-                     tone="bg-sky-500/12 text-sky-700 dark:text-sky-300" onClick={() => chip({ review: !f.review })} />
-        <SummaryChip label="💰 미수" count={data.summary["미수"] ?? 0} active={f.unpaid}
+      {/* 거르기 한 줄(사용자 2026-11-17) — 큰 묶음 칩 · 미수·확인 필요·A/S 진행 중(늘 보임) · 입금 예정일 지남(있을 때)
+          | 국내/해외 · [단계 ▾]. 칩은 한 번에 하나만(2026-11-10), 국내/해외·검색·담당자·판매·대여·연도는 같이 걸린다. 건수는 국내/해외 기준 */}
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        {([["", "전체", inRegion.filter((r) => r.stage !== DONE_STAGE).length] as const,
+           ...GROUPS.map(([k, label, ss]) => [k, label, inRegion.filter((r) => ss.includes(r.stage)).length] as const)]).map(([k, label, n]) => {
+          const on = !f.stage && f.group === k && !f.review && !f.unpaid && !f.as && !f.overdue;
+          return (
+            <button key={label} type="button" aria-pressed={on} onClick={() => chip({ group: k })}
+                    className={cn("rounded-full px-3.5 py-1.5 text-[13px] font-semibold transition-colors",
+                      k === "done"   // 완료만 초록(사용자 2026-11-17)
+                        ? on ? "bg-emerald-600 text-white" : "bg-emerald-500/12 text-emerald-700 hover:bg-emerald-500/20 dark:text-emerald-300"
+                        : on ? "bg-accent text-white" : "bg-foreground/[0.06] text-foreground hover:bg-foreground/10")}>
+              {label} <span className={cn("tabular-nums", on ? "opacity-90" : "opacity-60")}>{n}</span>
+            </button>
+          );
+        })}
+        <span aria-hidden className="mx-1 h-5 w-px bg-border" />
+        <SummaryChip label="💰 미수" count={inRegion.filter(isUnpaid).length} active={f.unpaid}
                      tone="bg-orange-500/12 text-orange-700 dark:text-orange-300" onClick={() => chip({ unpaid: !f.unpaid })} />
-        {/* A/S 진행 중 — 0건이어도 늘 보이는 칩(사용자 2026-11-10, 체크 상자 대신) */}
-        <SummaryChip label="🔧 A/S 진행 중" count={data.summary["A/S 진행 중"] ?? 0} active={f.as}
+        <SummaryChip label="⚠ 확인 필요" count={inRegion.filter((r) => hasReview(r) && r.stage !== DONE_STAGE).length} active={f.review}
+                     tone="bg-sky-500/12 text-sky-700 dark:text-sky-300" onClick={() => chip({ review: !f.review })} />
+        <SummaryChip label="🔧 A/S 진행 중" count={inRegion.filter((r) => r.as_active && r.stage !== DONE_STAGE).length} active={f.as}
                      tone="bg-amber-500/12 text-amber-700 dark:text-amber-300" onClick={() => chip({ as: !f.as })} />
-        {overdueRows.length > 0 && (
-          <SummaryChip label="⏰ 입금 예정일 지남" count={overdueRows.length} active={f.overdue}
+        {(overdueRows.length > 0 || f.overdue) && (
+          <SummaryChip label="⏰ 입금 예정일 지남" count={inRegion.filter(isOverdue).length} active={f.overdue}
                        tone="bg-red-500/12 text-red-700 dark:text-red-300" onClick={() => chip({ overdue: !f.overdue })} />
         )}
+        <span className="ml-auto flex items-center gap-2">
+          <span className="inline-flex rounded-lg border border-border p-0.5 text-[12.5px]" role="group" aria-label="국내·해외">
+            {([["", "전체"], ["domestic", "국내"], ["overseas", "해외"]] as const).map(([k, label]) => (
+              <button key={label} type="button" aria-pressed={f.region === k} onClick={() => set({ region: k })}
+                      className={cn("rounded-md px-2.5 py-1 font-semibold", f.region === k ? "bg-foreground/10 text-foreground" : "text-foreground-muted hover:text-foreground")}>
+                {label}
+              </button>
+            ))}
+          </span>
+          <select value={f.stage} onChange={(e) => chip({ stage: e.target.value })} aria-label="세부 단계"
+                  className={cn("h-8 rounded-lg border bg-surface px-2 text-[12.5px] outline-none focus:border-accent",
+                    f.stage ? "border-accent font-semibold text-accent" : "border-border text-foreground-muted")}>
+            <option value="">단계: 전체</option>
+            {stages.map((st) => <option key={st} value={st}>{st} ({inRegion.filter((r) => r.stage === st).length})</option>)}
+          </select>
+        </span>
       </div>
 
       {/* 필터 */}
@@ -231,7 +271,6 @@ export function DealList({ data, biz, initialOpenId = null, onRefresh, onMeeting
         <input value={f.q} onChange={(e) => set({ q: e.target.value })} placeholder="고객사·품목·건번호 검색"
                className="h-9 w-64 rounded-lg border border-border bg-surface px-3 outline-none focus:border-accent" />
         <Select value={f.owner} onChange={(v) => set({ owner: v })} label="담당자" options={owners} />
-        <Select value={f.stage} onChange={(v) => chip({ stage: v })} label="단계" options={stages} />
         {!biz && <Select value={f.kind} onChange={(v) => set({ kind: v })} label="판매·대여" options={["판매", "대여"]} />}
         <Select value={f.year} onChange={(v) => set({ year: v })} label="연도" options={years} />
         {/* 미수·확인 필요·A/S 진행 중은 위 칩으로만(사용자 2026-11-10 — 같은 거르기가 두 군데 있던 체크 상자 뺌) */}
@@ -348,7 +387,7 @@ export function DealList({ data, biz, initialOpenId = null, onRefresh, onMeeting
         </table>
       </div>
 
-      {open && <DealDetail key={open.id} row={open} admin={admin} onClose={() => setOpenId(null)} onChanged={refresh} onMeeting={onMeeting} onOrder={onOrder} onQuote={onQuote} />}
+      {open && <DealDetail key={open.id} row={open} admin={admin} focus={open.id === initialOpenId ? initialFocus : undefined} onClose={() => setOpenId(null)} onChanged={refresh} onMeeting={onMeeting} onOrder={onOrder} onQuote={onQuote} />}
       {confirming && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-4" onClick={() => !deleting && setConfirming(false)}>
           <div role="alertdialog" aria-label="영업 건 삭제 확인" onClick={(e) => e.stopPropagation()}

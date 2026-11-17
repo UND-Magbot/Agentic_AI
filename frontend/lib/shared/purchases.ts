@@ -67,6 +67,16 @@ export interface PoUploadFile {
   mime: string;
 }
 
+/** 같은 번호로 교체하기 전 발주서(사용자 2026-11-16) — upload 가 없으면 회사 양식으로 발행했던 내용 */
+export interface PoReplaced {
+  upload: PoUploadFile | null;
+  file_name: string | null;
+  total: number | null;
+  currency: PurchaseCurrency | null;
+  replaced_at: string | null;
+  replaced_by: string | null;
+}
+
 /** 고친 발주서 파일을 올린 뒤 읽은 값(/po/upload) — 확인 창에 채운다 */
 export interface PoUploadRead {
   upload: Record<string, unknown> & { filename: string };
@@ -163,8 +173,10 @@ export interface PurchaseRow {
   currency: PurchaseCurrency;
   /** 입고 예정일(YYYY-MM-DD) — 리스트·상세 표시, 지나면 알림 */
   expected_date: string | null;
-  expected_history: { date: string; before: string | null; at: string; by: string; reason: string }[];
+  expected_history: { date: string | null; before: string | null; at: string; by: string; reason: string }[];
   note: string;
+  /** 구매 사유(사용자 2026-11-17) — 목록 '구매 사유' 칸, 없으면 [등록] 팝업 */
+  reason: string;
   dropped: boolean;
   drop_reason: string;
   created_at: string;
@@ -178,9 +190,11 @@ export interface PurchaseRow {
     upload: PoUploadFile | null;
     /** AI 판독 실패로 [버그 신고 후 넘어가기] 해 파일만 발행(사용자 2026-11-11) — 품목은 [발주서 고치기]에서 채움 */
     forced?: { bug_report: string; at: string; by: string } | null;
+    /** 같은 번호로 고친 파일을 올려 교체하기 전 내용(사용자 2026-11-16 — 번호 하나 = 발주서 하나, 교체 전 파일은 보관) */
+    replaced: PoReplaced[];
     /** 예전 판(다시 발행하기 전) — 판마다 보기·다시 다운로드(사용자 2026-11-11, 견적서와 같게) */
     history: { no: string; date: string; total: number; issued_at: string; issued_by: string; revision: number; file_name: string | null;
-               upload: PoUploadFile | null }[];
+               upload: PoUploadFile | null; replaced: PoReplaced[] }[];
   };
   pay_terms: { label: string; pct: number; when: string; expected_date: string | null }[];
   terms: PurchaseTerm[];
@@ -249,10 +263,32 @@ export const DOC_SKIP_HELP: Record<keyof typeof DOC_SKIP_MODES, string> = {
 /** 통관 기타 서류 이름 예시 */
 export const CUSTOMS_DOC_EXAMPLES = ["CI", "Packing List", "B/L", "수입신고필증"];
 
+/** 입고를 마친 건을 다시 발행하면 다시 열리는 품목(사용자 2026-11-16) — 발행 전 확인 팝업 */
+export interface ReopenLine { name: string; got: number; ordered: number; kind: "추가" | "수량 늘어남" }
+
+/** 서버 오류 — detail 이 {message, ...} 이면 data 에 나머지(예: reopen) */
+export class PurchaseApiError extends Error {
+  /** code — 막힘 종류(RECEIPT_LOCK·PAID_LOCK, 화면이 팝업·이동에 씀, 사용자 2026-11-17) */
+  data: { reopen?: ReopenLine[]; code?: string } | null;
+  constructor(message: string, data: { reopen?: ReopenLine[]; code?: string } | null) {
+    super(message);
+    this.data = data;
+  }
+}
+
 async function parse(r: Response, fallback: string) {
   const d = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(typeof d?.detail === "string" ? d.detail : fallback);
+  if (!r.ok) {
+    const det = d?.detail;
+    if (det && typeof det === "object" && typeof det.message === "string") throw new PurchaseApiError(det.message, det);
+    throw new Error(typeof det === "string" ? det : fallback);
+  }
   return d;
+}
+
+/** 재발행으로 입고가 다시 열리면(409 + reopen) 그 목록, 아니면 null */
+export function reopenOf(e: unknown): ReopenLine[] | null {
+  return e instanceof PurchaseApiError && e.data?.reopen?.length ? e.data.reopen : null;
 }
 
 /** JSON 요청(본문이 없으면 GET) — 실패하면 서버 문장으로 Error. */

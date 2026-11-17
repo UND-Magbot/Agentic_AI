@@ -947,7 +947,7 @@ const TAB_HEAD: Record<RecommendTab, { title: string; desc: string }> = {
 export function ProductRecommend({ initial, initialTab, startManual, writer = "", initialSub, initialDeal, initialQuote, initialFocus }: {
   initial: CorrectionList; initialTab?: RecommendTab; startManual?: boolean; initialSub?: "approvals";
   /** 채팅 답의 이동 버튼(사용자 2026-10-28) — 열 건(판매·대여 관리 탭이면 건 상세, 수주 진행 탭이면 작업 화면) · 열 견적서 · 출하 칸 */
-  initialDeal?: number; initialQuote?: number; initialFocus?: "ship";
+  initialDeal?: number; initialQuote?: number; initialFocus?: "ship" | "pay";
   /** 로그인 계정의 영문 이름 — 질문지 고객 정보의 작성자(영업 담당) 기본값 */
   writer?: string;
 }) {
@@ -985,7 +985,9 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
   const [meetingId, setMeetingId] = useState<number | null>(null);
   const [orderId, setOrderId] = useState<number | null>(initialTab === "order" ? initialDeal ?? null : null);
   // 출하 칸을 펼쳐 여는 건 처음 연 건 하나만 — 다른 건을 열면 평소처럼
-  const [orderFocus, setOrderFocus] = useState(initialFocus);
+  const [orderFocus, setOrderFocus] = useState(initialFocus === "ship" ? "ship" as const : undefined);
+  // 영업 건 상세에서 강조할 칸(입금 확인 — 견적서 발행이 막혀 넘어온 경우)
+  const dealFocus = initialTab === "deals" && initialFocus === "pay" ? { what: "pay" as const, quoteId: initialQuote ?? null } : undefined;
   // 제품 종류 탭 — 종류마다 질문지가 다르다(ATC 는 영업부 질문지, 그 외는 임시 질문)
   const [product, setProduct] = useState<"atc" | "other">("atc");
   const [phase, setPhase] = useState<"form" | "session">("form");
@@ -2236,7 +2238,7 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
 
       {tab === "quote" && <QuoteTab openId={quoteId} onOpen={(id) => { setAskManual(false); setQuoteId(id); }} askManual={askManual} />}
       {tab === "order" && <OrderTab openId={orderId} focus={orderFocus} onOpen={(id) => { setOrderFocus(undefined); setOrderId(id); }} />}
-      {tab === "deals" && <DealsTab openDealId={dealOpen} onMeeting={setMeetingId} onOrder={(id) => { setOrderId(id); setTab("order"); }}
+      {tab === "deals" && <DealsTab openDealId={dealOpen} openFocus={dealOpen === initialDeal ? dealFocus : undefined} onMeeting={setMeetingId} onOrder={(id) => { setOrderId(id); setTab("order"); }}
                                      onQuote={(id) => { setQuoteId(id); setTab("quote"); }} />}
       {tab === "purchases" && <PurchasesTab />}
       {/* 대여 제품 목록(사용자 2026-11-10) — 대여 제품(유상·무상)을 품목마다 한 줄씩, 누르면 S/N·고객사·대여 건. 무상 대여 건은 여기서만 */}

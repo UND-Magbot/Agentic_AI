@@ -20,7 +20,7 @@ from . import flow
 from . import po_xlsx as px
 
 COLS = ("id, supplier, title, owner, region, quote_files, approval, po, pay_terms, payments, receipt, statement, tax_invoice, "
-        "customs, note, dropped, drop_reason, created_by, created_at, updated_at")
+        "customs, note, reason, dropped, drop_reason, created_by, created_at, updated_at")
 JSON_COLS = ("quote_files", "approval", "po", "pay_terms", "payments", "receipt", "statement", "tax_invoice", "customs")
 REGIONS = {"domestic": "국내", "overseas": "해외"}
 CURRENCY = {"domestic": "KRW", "overseas": "USD"}
@@ -34,7 +34,7 @@ OVERSEAS_KINDS = ("customs", "remit", "customs_etc", "broker")
 SERIAL_MAX = 80
 FILE_KEYS = ("key", "filename", "mime", "size", "uploaded_at", "uploaded_by")
 CHAT_MAX = 40                                         # 발주서 AI 대화 저장 줄 수
-ACTION_LABEL = {"create": "구매 건 등록", "info": "기본 정보 수정", "file_quote": "견적서 첨부", "file_approval": "재가 서류 첨부",
+ACTION_LABEL = {"create": "구매 건 등록", "info": "기본 정보 수정", "reason": "구매 사유", "file_quote": "견적서 첨부", "file_approval": "재가 서류 첨부",
                 "file_statement": "거래명세서 첨부", "file_tax": "세금계산서 첨부", "remove_file": "첨부 삭제",
                 "approve": "재가 완료", "unapprove": "재가 취소", "po_issue": "발주서 발행", "terms": "결제 조건",
                 "pay_check": "지출내역 대조", "pay_confirm": "송금 확인", "pay_unconfirm": "송금 확인 취소",
@@ -49,11 +49,12 @@ ACTION_LABEL = {"create": "구매 건 등록", "info": "기본 정보 수정", "
 
 
 class PurchaseError(Exception):
-    """사용자에게 그대로 보여줄 업무 오류."""
+    """사용자에게 그대로 보여줄 업무 오류. data = 화면이 묻는 데 쓰는 값(있으면 detail 에 같이 — api._fail)."""
 
-    def __init__(self, message: str, status: int = 400) -> None:
+    def __init__(self, message: str, status: int = 400, data: dict | None = None) -> None:
         super().__init__(message)
         self.status = status
+        self.data = data
 
 
 def _iso(v: Any) -> Any:
@@ -65,6 +66,10 @@ def _row(r: Any) -> dict:
     for k in JSON_COLS:
         if isinstance(d.get(k), str):
             d[k] = json.loads(d[k])
+    # 입고 기록은 한 건 — 예전에 나눠 남긴 기록은 읽을 때 하나로(다음 저장 때 한 건으로 남는다, 사용자 2026-11-17)
+    rc = d.get("receipt")
+    if isinstance(rc, dict) and len(rc.get("records") or []) > 1:
+        d["receipt"] = {**rc, "records": flow.merge_receipts(rc["records"])}
     for k in ("created_at", "updated_at"):
         d[k] = _iso(d[k])
     return d
@@ -78,6 +83,13 @@ def _upload_view(f: dict | None) -> dict | None:
     return {"filename": f.get("filename"), "mime": f.get("mime")} if f else None
 
 
+def _replaced_view(v: dict) -> list[dict]:
+    """같은 번호로 교체하기 전 내용 목록(사용자 2026-11-16) — 화면의 [교체 전 파일 받기]."""
+    return [{"upload": _upload_view(r.get("upload")), "file_name": r.get("file_name"), "total": r.get("total"),
+             "currency": r.get("currency"), "replaced_at": r.get("replaced_at"), "replaced_by": r.get("replaced_by")}
+            for r in v.get("replaced") or []]
+
+
 def view(d: dict, today: dt.date) -> dict:
     """저장된 건 → 화면 행(단계·상태·알림·회차 금액). 저장소 키는 내보내지 않는다."""
     po = d.get("po") or {}
@@ -89,7 +101,7 @@ def view(d: dict, today: dt.date) -> dict:
         "currency": po.get("currency") or CURRENCY.get(d["region"], "KRW"),
         # 입고 예정일 — 발주 단계에서 꼭 적는다(사용자 2026-11-02), 리스트·상세 표시
         "expected_date": flow.expected_date(d), "expected_history": po.get("expected_history") or [],
-        "note": d["note"], "dropped": d["dropped"], "drop_reason": d["drop_reason"],
+        "note": d["note"], "reason": d.get("reason") or "", "dropped": d["dropped"], "drop_reason": d["drop_reason"],
         "created_at": d["created_at"], "updated_at": d["updated_at"],
         "quote_files": [_file_view(f) for f in d.get("quote_files") or []],
         "approval": {**{k: v for k, v in (d.get("approval") or {}).items() if k != "files"},
@@ -100,8 +112,9 @@ def view(d: dict, today: dt.date) -> dict:
                "items": po.get("items") or [], "has_draft": bool(po.get("draft")), "currency": po.get("currency"),
                # 고친 발주서 파일로 발행했으면 그 파일(사용자 2026-11-11) — 내려받기는 그 파일 그대로
                "upload": _upload_view(po.get("upload")),
+               "replaced": _replaced_view(po),
                "history": [{**{k: h.get(k) for k in ("no", "date", "total", "issued_at", "issued_by", "revision", "file_name")},
-                            "upload": _upload_view(h.get("upload"))} for h in po.get("history") or []]},
+                            "upload": _upload_view(h.get("upload")), "replaced": _replaced_view(h)} for h in po.get("history") or []]},
         "pay_terms": [{k: v for k, v in t.items() if k != "check"} for t in d.get("pay_terms") or []],   # 대조 결과는 terms 에
         "terms": flow.terms(d),
         "receipt": {"done": flow.receipt_done(d),
@@ -128,12 +141,14 @@ def view(d: dict, today: dt.date) -> dict:
     }
 
 
-async def _hist(db: AsyncSession, pid: int) -> list[dict]:
+async def _hist(db: AsyncSession, pid: int, overseas: bool = False) -> list[dict]:
+    """변경 이력 — 해외 건의 예정일은 '납기일'로 보인다(QA 2026-11-16)."""
+    labels = {**ACTION_LABEL, "expected_date": "납기일"} if overseas else ACTION_LABEL
     rs = (await db.execute(text(
         "SELECT e.id, e.action, e.detail, e.created_at, COALESCE(u.alias, u.username) AS user_name "
         "FROM purchase_events e LEFT JOIN users u ON u.id = e.user_id WHERE e.purchase_id = :p ORDER BY e.id DESC"),
         {"p": pid})).mappings().all()
-    return [{"id": e["id"], "action": e["action"], "label": ACTION_LABEL.get(e["action"], e["action"]),
+    return [{"id": e["id"], "action": e["action"], "label": labels.get(e["action"], e["action"]),
              "detail": json.loads(e["detail"]) if isinstance(e["detail"], str) else e["detail"],
              "created_at": _iso(e["created_at"]), "user_name": e["user_name"]} for e in rs]
 
@@ -151,7 +166,8 @@ async def get(db: AsyncSession, pid: int, today: dt.date) -> dict:
     r = (await db.execute(text(f"SELECT {COLS} FROM purchases WHERE id = :i"), {"i": pid})).mappings().first()
     if not r:
         raise PurchaseError("구매 건을 찾을 수 없습니다.", 404)
-    return {**view(_row(r), today), "history": await _hist(db, pid)}
+    d = _row(r)
+    return {**view(d, today), "history": await _hist(db, pid, flow.overseas(d))}
 
 
 async def raw(db: AsyncSession, pid: int) -> dict:
@@ -189,6 +205,21 @@ def _clean(v: Any, n: int) -> str:
     return re.sub(r"\s+", " ", str(v or "")).strip()[:n]
 
 
+STALE_ENTRY = "다른 사람이 이 건을 먼저 고쳐 목록이 바뀌었습니다. 화면을 새로 고친 뒤 다시 해 주세요."
+
+
+def _same_entry(items: list, index: int, expect: dict | None) -> None:
+    """순번(index)으로 지우거나 고치는 요청 — 그 자리의 기록이 화면에서 본 것(expect)과 같을 때만(QA 2026-11-16, 영업 건 check_entry 와 같게).
+    다른 사람이 앞 기록을 먼저 지우면 순번이 당겨져 엉뚱한 파일·입고 기록이 지워지거나 덮어써지던 문제. expect 에 있는 칸 중
+    저장된 칸만 비교하고, expect 가 없으면(예전 화면) 그냥 둔다. 호출 전에 건을 잠가 두어야 한다."""
+    if expect is None:
+        return
+    cur = items[index] if 0 <= index < len(items) else None
+    keys = [k for k in expect if isinstance(cur, dict) and k in cur]
+    if not keys or any(cur[k] != expect[k] for k in keys):
+        raise PurchaseError(STALE_ENTRY, 409)
+
+
 def _alive(d: dict) -> None:
     if d.get("dropped"):
         raise PurchaseError("취소한 구매 건입니다. 되살린 뒤 진행해 주세요.")
@@ -201,6 +232,14 @@ def _need_order(d: dict, what: str) -> None:
         raise PurchaseError(f"{what}은(는) 발주서를 발행한 뒤에 기록합니다.")
     if not po.get("expected_date") and not flow.overseas(d):
         raise PurchaseError("입고 예정일을 먼저 적어 주세요 — 발주 단계에서 꼭 기록해야 다음 단계로 넘어갑니다.")
+
+
+def _need_items(d: dict, what: str) -> None:
+    """판독 실패로 품목 없이(덜 채워) 발행한 발주서는 품목·금액을 채운 뒤에 송금·입고를 기록한다(QA 2026-11-16) — 금액 0 으로
+    송금 확인하면 그 뒤 [발주서 고치기]가 '송금 확인한 건이라 금액을 못 바꿈'에 막히고, 입고는 품목 줄이 없어 수량·S/N 을 못 적는다."""
+    if ((d.get("po") or {}).get("forced")):
+        raise PurchaseError(f"품목이 확인되지 않은 발주서입니다(판독 실패로 파일만 발행). [발주서 고치기]에서 품목·금액을 채워 다시 발행한 뒤 "
+                            f"{what}을(를) 기록해 주세요.", 409)
 
 
 def _check_kind(d: dict, kind: str) -> None:
@@ -221,13 +260,33 @@ async def create(db: AsyncSession, user_id: int | None, p: dict) -> int:
     region = p.get("region") or "domestic"
     if region not in REGIONS:
         raise PurchaseError("국내·해외 중에서 골라 주세요.")
-    pid = (await db.execute(text("INSERT INTO purchases (supplier, title, owner, note, region, created_by) "
-                                 "VALUES (:s, :t, :o, :n, :r, :u) RETURNING id"),
+    pid = (await db.execute(text("INSERT INTO purchases (supplier, title, owner, note, reason, region, created_by) "
+                                 "VALUES (:s, :t, :o, :n, :why, :r, :u) RETURNING id"),
                             {"s": supplier, "t": _clean(p.get("title"), 300), "o": _clean(p.get("owner"), 100),
-                             "n": str(p.get("note") or "").strip()[:2000], "r": region, "u": user_id})).scalar_one()
+                             "n": str(p.get("note") or "").strip()[:2000], "why": _reason(p.get("reason")),
+                             "r": region, "u": user_id})).scalar_one()
     await _log(db, pid, user_id, "create", {"supplier": supplier, "title": _clean(p.get("title"), 300), "region": REGIONS[region]})
     await db.commit()
     return pid
+
+
+REASON_MAX = 1000
+
+
+def _reason(v: Any) -> str:
+    """구매 사유 — 줄바꿈은 살리고 앞뒤 빈칸만 정리."""
+    return str(v or "").strip()[:REASON_MAX]
+
+
+async def set_reason(db: AsyncSession, pid: int, user_id: int | None, reason: str) -> None:
+    """구매 사유 등록·고치기(사용자 2026-11-17 — 목록 [등록] 팝업). 영업팀 누구나, 이력에 남는다. 취소한 건도 적을 수 있다."""
+    d = await _lock(db, pid)
+    new = _reason(reason)
+    if (d.get("reason") or "") == new:
+        return
+    await _save(db, pid, reason=new)
+    await _log(db, pid, user_id, "reason", {"reason": new, "before": d.get("reason") or ""})
+    await db.commit()
 
 
 async def set_info(db: AsyncSession, pid: int, user_id: int | None, p: dict) -> None:
@@ -318,12 +377,16 @@ async def get_file(db: AsyncSession, pid: int, kind: str, index: int) -> dict:
     return files[index]
 
 
-async def remove_file(db: AsyncSession, pid: int, user_id: int | None, kind: str, index: int, *, admin: bool) -> dict:
-    """잘못 올린 첨부 한 개 지우기. 끝난 단계(재가 완료·확인 끝)의 파일과 견적서(교체만 — 지우기는 관리자)는 관리자만."""
+async def remove_file(db: AsyncSession, pid: int, user_id: int | None, kind: str, index: int, *, admin: bool,
+                      expect: dict | None = None) -> dict:
+    """잘못 올린 첨부 한 개 지우기. 끝난 단계(재가 완료·확인 끝)의 파일과 견적서(교체만 — 지우기는 관리자)는 관리자만.
+    expect = 화면에서 본 그 파일(filename·uploaded_at) — 다르면 409(_same_entry)."""
     d = await _lock(db, pid)
+    _alive(d)                                         # 취소한 건은 되살린 뒤에(QA 2026-11-16)
     files = files_of(d, kind)
     if not 0 <= index < len(files):
         raise PurchaseError("이미 지워졌거나 없는 파일입니다.", 404)
+    _same_entry(files, index, expect)
     # 끝난 단계의 첨부 — 재가 완료·통관 서류 제출 완료·제조사 송금 확인 뒤(명세서·계산서는 선택 서류라 누구나 고칠 수 있다)
     done = (kind == "quote" or (kind == "approval" and bool((d.get("approval") or {}).get("done_at")))
             or (kind in ("customs", "customs_etc") and bool((d.get("customs") or {}).get("done_at")))
@@ -376,6 +439,7 @@ async def skip_quote(db: AsyncSession, pid: int, user_id: int | None, user_name:
 async def unapprove(db: AsyncSession, pid: int, user_id: int | None) -> None:
     """관리자 — 재가 취소(발주서를 발행했으면 안 됨)."""
     d = await _lock(db, pid)
+    _alive(d)                                         # 취소한 건은 되살린 뒤에(QA 2026-11-16)
     if (d.get("po") or {}).get("no"):
         raise PurchaseError("발주서를 발행한 건은 재가를 취소할 수 없습니다.", 409)
     ap = {k: v for k, v in (d.get("approval") or {}).items() if k not in ("date", "done_at", "done_by", "no_file")}
@@ -507,6 +571,87 @@ async def save_po_draft(db: AsyncSession, pid: int, user_id: int | None, p: dict
     await db.commit()
 
 
+def _name_key(v: Any) -> str:
+    return re.sub(r"\s+", " ", str(v or "")).strip().upper()
+
+
+def _reopen_check(d: dict, rc: dict, items: list[dict], ok: bool) -> list[str]:
+    """입고를 마친 건을 이 품목으로 다시 발행하면 입고가 다시 열리는 줄(품목 추가·수량 늘림, 사용자 2026-11-16) — 담당자 확인(ok) 없이는
+    409 + reopen 목록(화면 팝업). 단가·설명만 바뀌면 입고는 그대로. 돌려주는 값은 변경 이력 문구.
+    rc = 새 품목 줄로 다시 짝지은 입고 기록(_keep_received_lines)."""
+    if not flow.receipt_done(d):
+        return []
+    po = d.get("po") or {}
+    nd = {**d, "receipt": rc, "po": {**po, "items": items}}
+    got = flow.received(nd)
+    olds = {_name_key(px.item_name(x)) for x in po.get("items") or []}
+    # 예전 발주서에 없던 품목이면 '추가', 있던 품목이면 '수량 늘어남'
+    rows = [{"name": px.item_name(items[i]), "got": got.get(i, 0), "ordered": float(items[i].get("qty") or 0),
+             "kind": "수량 늘어남" if _name_key(px.item_name(items[i])) in olds else "추가"} for i in flow.receipt_open(nd)]
+    if rows and not ok:
+        raise PurchaseError("이 발주서로 발행하면 입고가 다시 진행됩니다: "
+                            + ", ".join(f"{r['name']} {r['got']:g}/{r['ordered']:g}개({r['kind']})" for r in rows), 409, {"reopen": rows})
+    return [f"{r['name']} {r['got']:g}/{r['ordered']:g}개({r['kind']})" for r in rows]
+
+
+def _keep_received_lines(d: dict, items: list[dict]) -> dict:
+    """입고 기록은 발주 품목을 '몇 번째 줄'(line_no)로 가리킨다 — 다시 발행할 때 줄 순서·구성이 바뀌면 입고 수량이 엉뚱한 품목에
+    붙었다(QA 2026-11-16). 품목 이름(대소문자·띄어쓰기 무시)으로 새 줄에 다시 짝지은 입고 기록을 돌려준다(같은 이름이 여러 줄이면
+    앞에서부터) — 안 받은 품목은 어디에 있든 빼거나 순서를 바꿀 수 있다(사용자 2026-11-16). [입고 완료]로 닫은 줄의 기억도 옮긴다.
+    받은 품목을 빼거나 이름을 바꾸는 것, 받은 수량보다 적게 발주하는 것은 막는다(입고 기록을 먼저 고치면 된다)."""
+    rc = dict(d.get("receipt") or {})
+    recs = rc.get("records") or []
+    if not recs:
+        return rc
+    free: dict[str, list[int]] = {}
+    for i, it in enumerate(items):
+        free.setdefault(_name_key(px.item_name(it)), []).append(i)
+    mapping: dict[int, int] = {}
+    missing: list[str] = []
+    for r in recs:
+        for ln in r.get("lines") or []:
+            i = ln.get("line_no")
+            if not isinstance(i, int) or i in mapping:
+                continue
+            name = str(ln.get("name") or "").strip()
+            cand = free.get(_name_key(name)) or []
+            if cand:
+                mapping[i] = cand.pop(0)
+            elif name not in missing:
+                missing.append(name or f"{i + 1}번째 줄")
+    if missing:
+        raise PurchaseError(f"입고 기록이 있는 품목({', '.join(missing)})은 빼거나 이름을 바꿀 수 없습니다. 이름은 그대로 두고 고쳐 주세요"
+                            "(꼭 빼야 하면 그 품목의 입고 기록을 먼저 고치거나 지움).", 409,
+                            {"code": "RECEIPT_LOCK"})    # 화면: 팝업 → [입고 칸으로 가기](사용자 2026-11-17)
+    names = {i: _name_key(px.item_name(it)) for i, it in enumerate(items)}
+    out = []
+    for r in recs:
+        new = {**r, "lines": [{**ln, "line_no": mapping.get(ln.get("line_no"), ln.get("line_no"))} for ln in r.get("lines") or []]}
+        if isinstance(r.get("closed"), dict):            # [입고 완료]로 닫은 줄 — 이름이 같은 새 줄로(빠진 품목은 버림, 이름 없는 예전 꼴은 그대로)
+            closed: dict[str, Any] = {}
+            for k, v in r["closed"].items():
+                if not isinstance(v, dict):
+                    closed[k] = v
+                    continue
+                j = mapping.get(int(k))
+                if j is None or names.get(j) != _name_key(v.get("name")):
+                    j = next((x for x, nm in names.items() if nm == _name_key(v.get("name")) and str(x) not in closed), None)
+                if j is not None:
+                    closed[str(j)] = v
+            new["closed"] = closed
+        out.append(new)
+    rc["records"] = out
+    # 받은 수량보다 적게 발주하면 기록이 실제와 어긋난다(반품한 S/N 이 입고품으로 남음) — 입고 기록부터 고치게 한다(사용자 2026-11-16)
+    short = [f"{px.item_name(items[i])}: 입고 {got:g}개 → 발주 {float(items[i].get('qty') or 0):g}개"
+             for i, got in sorted(flow.received({"receipt": rc}).items())
+             if 0 <= i < len(items) and float(items[i].get("qty") or 0) < got]
+    if short:
+        raise PurchaseError(f"이미 입고한 수량보다 적게 발주할 수 없습니다({', '.join(short)}). "
+                            "반품했거나 잘못 적었다면 입고 기록의 수량(S/N 포함)을 먼저 고친 뒤 발행해 주세요.", 409,
+                            {"code": "RECEIPT_LOCK"})
+    return rc
+
+
 async def issue_po(db: AsyncSession, pid: int, user_id: int | None, user_name: str, p: dict) -> dict:
     """발주서 발행 — 새 번호 PO-{이니셜}{발주일}-NN(발행·재발행마다 새 번호). 다시 발행하면 예전 판은 history 로.
     입고 예정일은 국내만 꼭(사용자 2026-11-02), 해외는 납기일로 선택(2026-11-11)."""
@@ -523,11 +668,14 @@ async def issue_po(db: AsyncSession, pid: int, user_id: int | None, user_name: s
         raise PurchaseError("발주서에 꼭 필요한 값이 비어 있습니다: " + ", ".join(miss))
     if not (d.get("approval") or {}).get("done_at"):
         raise PurchaseError("재가를 마친 뒤 발주서를 발행합니다.")
+    rc = _keep_received_lines(d, items)
+    reopen = _reopen_check(d, rc, items, bool(p.get("reopen_ok")))
     old = d.get("po") or {}
     cur = CURRENCY[d["region"]]
     paid = any(t["confirmed"] for t in flow.terms(d)) or any(x.get("simple") for x in d.get("payments") or [])
     if old.get("no") and paid and abs(px.total(items, cur) - float(old.get("total") or 0)) > 0.005:
-        raise PurchaseError("송금 확인을 한 건이라 발주 금액을 바꿀 수 없습니다. 송금 칸의 [확인 취소]로 송금 확인을 먼저 취소해 주세요.", 409)
+        raise PurchaseError("송금 확인을 한 건이라 발주 금액을 바꿀 수 없습니다. 송금 칸의 [확인 취소]로 송금 확인을 먼저 취소해 주세요.", 409,
+                            {"code": "PAID_LOCK"})       # 화면: 팝업 → [송금 칸으로 가기]
     day = dt.date.fromisoformat(header["date"])
     no = await dn.allocate(db, dn.PURCHASE, ini, day, user_id=user_id)
     header["no"] = no
@@ -536,7 +684,7 @@ async def issue_po(db: AsyncSession, pid: int, user_id: int | None, user_name: s
     if old.get("no"):
         # 올린 파일로 발행한 판이면 그 파일도 같이 남긴다 — 예전 판 [다시 다운로드]가 올린 파일 그대로 나오게(2026-11-11 발견)
         hist.append({k: old.get(k) for k in ("no", "date", "total", "issued_at", "issued_by", "revision", "header", "items",
-                                              "file_name", "currency", "upload")})
+                                              "file_name", "currency", "upload", "replaced")})
     exp_hist = list(old.get("expected_history") or [])
     if exp and old.get("expected_date") != exp:
         exp_hist.append({"date": exp, "before": old.get("expected_date"), "at": _now(), "by": user_name, "reason": "발주서 발행"})
@@ -544,9 +692,10 @@ async def issue_po(db: AsyncSession, pid: int, user_id: int | None, user_name: s
           "revision": rev, "issued_at": _now(), "issued_by": user_name, "initials": ini, "history": hist,
           "expected_date": exp, "expected_history": exp_hist, "chat": old.get("chat") or [],
           "file_name": px.file_name(header["supplier"]["name"], no, lang)}
-    await _save(db, pid, po=po)
+    await _save(db, pid, po=po, **({"receipt": rc} if rc.get("records") else {}))   # 새 품목 줄로 짝지은 입고 기록
     await _log(db, pid, user_id, "po_issue", {"no": no, "total": po["total"], "currency": cur, "revision": rev,
-                                              **({"납기일" if flow.overseas(d) else "입고 예정일": exp} if exp else {})})
+                                              **({"납기일" if flow.overseas(d) else "입고 예정일": exp} if exp else {}),
+                                              **({"입고 다시 진행": reopen} if reopen else {})})
     await db.commit()
     return po
 
@@ -570,7 +719,9 @@ def _expected(d: dict, raw_v: Any, order_day: str) -> str:
             return (d.get("po") or {}).get("expected_date") or ""
         raise PurchaseError("입고 예정일을 적어 주세요 — 발주 단계에서 꼭 기록해야 다음 단계로 넘어갑니다.")
     exp = _date(raw_v, what)
-    if exp < order_day:
+    # 다시 발행할 때 예전 예정일을 그대로 두면 발주일(보통 오늘)보다 앞이어도 받는다(QA 2026-11-16 — 이미 입고한 건의 단가만 고쳐
+    # 다시 내려 해도 막혔음). 새로 적거나 바꾼 예정일만 발주일과 비교한다(영업 건 '그대로 둔 지난 예정일'과 같게)
+    if exp < order_day and exp != (d.get("po") or {}).get("expected_date"):
         raise PurchaseError(f"{what}이 발주일보다 앞입니다.")
     return exp
 
@@ -592,8 +743,10 @@ async def _po_no_used(db: AsyncSession, pid: int, no: str) -> str | None:
 async def upload_po(db: AsyncSession, pid: int, user_id: int | None, user_name: str, entry: dict, p: dict, base: dict) -> dict:
     """고친 발주서 파일로 발행(사용자 2026-11-11 — 견적서 '고친 파일로 발행'과 같게). 회사에 내기 전에 엑셀에서 고친 발주서를
     그대로 남긴다: 내려받기는 그 파일, 품목·금액은 담당자가 확인한 값(송금 대조·입고 수량에 쓰임).
-    발주번호는 파일의 Order No. 를 따르고(담당자가 고칠 수 있음), 비우면 새 번호(이니셜). 지금 발주서와 같은 번호면 그 판을 고친 파일로
-    바꾼다(판 그대로), 다른 번호면 새 판(예전 판은 history). 다른 곳에서 쓴 번호는 받지 않는다. base = 발주서 머리 기본값(po_draft)."""
+    발주번호는 파일의 Order No. 를 따르고(담당자가 고칠 수 있음), 비우면 새 번호(이니셜). 다른 번호면 새 판(예전 판은 history).
+    지금 발주서와 같은 번호면 교체 확인(same_no="replace")을 받고 지금 판을 이 파일로 바꾼다 — 번호 하나 = 발주서 하나(사용자 2026-11-16,
+    같은 번호의 판을 둘 만들지 않음). 판·발행 시각은 그대로, 교체 전 파일·품목·금액은 replaced 에 보관(다시 받을 수 있음, 견적서와 같게).
+    따로 남기려면 번호를 바꿔 올린다(새 판). 다른 곳에서 쓴 번호는 받지 않는다. base = 발주서 머리 기본값(po_draft)."""
     d = await _lock(db, pid)
     _alive(d)
     if not (d.get("approval") or {}).get("done_at"):
@@ -605,18 +758,24 @@ async def upload_po(db: AsyncSession, pid: int, user_id: int | None, user_name: 
     miss = [] if forced else px.check_items(items)
     if miss:
         raise PurchaseError("발주서 품목에 꼭 필요한 값이 비어 있습니다: " + ", ".join(miss))
+    rc = _keep_received_lines(d, items)               # 판독 실패로 품목이 비어도 — 입고 기록이 있으면 품목 줄을 지킨다
+    reopen = _reopen_check(d, rc, items, bool(p.get("reopen_ok")))
     day = _date(p.get("date") or kst_today().isoformat(), "발주일")
     exp = _expected(d, p.get("expected_date"), day)
     old = d.get("po") or {}
     cur = CURRENCY[d["region"]]
     paid = any(t["confirmed"] for t in flow.terms(d)) or any(x.get("simple") for x in d.get("payments") or [])
     if old.get("no") and paid and abs(px.total(items, cur) - float(old.get("total") or 0)) > 0.005:
-        raise PurchaseError("송금 확인을 한 건이라 발주 금액을 바꿀 수 없습니다. 송금 칸의 [확인 취소]로 송금 확인을 먼저 취소해 주세요.", 409)
+        raise PurchaseError("송금 확인을 한 건이라 발주 금액을 바꿀 수 없습니다. 송금 칸의 [확인 취소]로 송금 확인을 먼저 취소해 주세요.", 409,
+                            {"code": "PAID_LOCK"})       # 화면: 팝업 → [송금 칸으로 가기]
     given = str(p.get("doc_no") or "").strip()
     no = dn.clean_doc_no(given)
     if given and not no:
         raise PurchaseError("발주번호는 영문·숫자·-_.() 로 40자까지 적어 주세요.")
     same = bool(no and old.get("no") and no.upper() == str(old["no"]).upper())
+    if same and p.get("same_no") != "replace":
+        raise PurchaseError("지금 발주서와 같은 발주번호입니다. 지금 발주서를 이 파일로 교체할지 확인해 주세요"
+                            "(따로 남기려면 발주번호를 바꿔 올려 주세요).", 409)
     if no and not same:
         used = await _po_no_used(db, pid, no)
         if used:
@@ -637,7 +796,7 @@ async def upload_po(db: AsyncSession, pid: int, user_id: int | None, user_name: 
     rev = int(old.get("revision") or 0) + (0 if same else 1)
     if old.get("no") and not same:
         hist.append({k: old.get(k) for k in ("no", "date", "total", "issued_at", "issued_by", "revision", "header", "items",
-                                              "file_name", "currency", "upload")})
+                                              "file_name", "currency", "upload", "replaced")})
     exp_hist = list(old.get("expected_history") or [])
     if exp and old.get("expected_date") != exp:
         exp_hist.append({"date": exp, "before": old.get("expected_date"), "at": _now(), "by": user_name, "reason": "고친 발주서 파일로 발행"})
@@ -648,16 +807,25 @@ async def upload_po(db: AsyncSession, pid: int, user_id: int | None, user_name: 
           "file_name": stem or px.file_name(d["supplier"], no, lang), "upload": {k: entry.get(k) for k in FILE_KEYS},
           # 판독 실패로 파일만 발행 — 화면에 '품목은 [발주서 고치기]에서' 안내, 버그 접수 번호
           **({"forced": {"bug_report": _clean(p.get("bug_report"), 20), "at": _now(), "by": user_name}} if forced else {})}
-    await _save(db, pid, po=po)
+    if same:                                              # 교체 — 판·발행 시각은 그대로, 교체 전 내용은 보관
+        keep = {k: old.get(k) for k in ("date", "header", "items", "total", "currency", "file_name", "upload", "issued_at", "issued_by")}
+        po.update(issued_at=old.get("issued_at"), issued_by=old.get("issued_by"), replaced_at=_now(), replaced_by=user_name,
+                  replaced=[*(old.get("replaced") or []), {**keep, "replaced_at": _now(), "replaced_by": user_name}])
+    await _save(db, pid, po=po, **({"receipt": rc} if rc.get("records") else {}))   # 새 품목 줄로 짝지은 입고 기록
     await _log(db, pid, user_id, "po_upload", {"no": no, "filename": entry.get("filename"), "total": po["total"], "currency": cur,
-                                               "revision": po["revision"], **({"같은 번호": "지금 판을 고친 파일로 바꿈"} if same else {}),
+                                               "revision": po["revision"],
+                                               **({"같은 번호": "지금 판을 이 파일로 교체(교체 전 파일 보관)",
+                                                   "교체 전": f"{(old.get('upload') or {}).get('filename') or '회사 양식 발주서'} · "
+                                                              f"{float(old.get('total') or 0):,.2f} {old.get('currency') or cur}".replace(".00 ", " ")}
+                                                  if same else {}),
                                                **({"판독 실패로 파일만 발행": po["forced"]["bug_report"] or "버그 신고"} if forced else {}),
+                                               **({"입고 다시 진행": reopen} if reopen else {}),
                                                **({"납기일" if flow.overseas(d) else "입고 예정일": exp} if exp else {})})
     await db.commit()
     return po
 
 
-async def po_source(db: AsyncSession, pid: int, revision: int | None = None) -> dict:
+async def po_source(db: AsyncSession, pid: int, revision: int | None = None, replaced: int | None = None) -> dict:
     """발행한 발주서(지금 판 또는 예전 판)의 기록 — upload 가 있으면 그 파일을, 없으면 머리·품목으로 다시 만든다(api)."""
     po = (await raw(db, pid)).get("po") or {}
     if not po.get("no"):
@@ -665,32 +833,42 @@ async def po_source(db: AsyncSession, pid: int, revision: int | None = None) -> 
     src = po if revision in (None, po.get("revision")) else next((h for h in po.get("history") or [] if h.get("revision") == revision), None)
     if not src:
         raise PurchaseError("그 판의 발주서를 찾을 수 없습니다.", 404)
+    if replaced is not None:                              # 같은 번호로 교체하기 전 파일(사용자 2026-11-16)
+        rs = src.get("replaced") or []
+        if not 0 <= replaced < len(rs):
+            raise PurchaseError("교체 전 발주서를 찾을 수 없습니다.", 404)
+        return {"no": src.get("no"), **rs[replaced]}
     return src
 
 
-async def set_expected_date(db: AsyncSession, pid: int, user_id: int | None, user_name: str, day: dt.date, reason: str) -> None:
-    """입고 예정일 바꾸기(발주서 발행 뒤). 바뀐 기록은 남긴다 — 리스트·상세의 예정일과 지남 알림이 이 값을 따른다."""
+async def set_expected_date(db: AsyncSession, pid: int, user_id: int | None, user_name: str, day: dt.date | None, reason: str) -> None:
+    """입고 예정일(해외 = 납기일) 바꾸기(발주서 발행 뒤). 바뀐 기록은 남긴다 — 리스트·상세의 예정일과 지남 알림이 이 값을 따른다.
+    해외 납기일은 선택이라 비울 수 있다(day=None, QA 2026-11-16), 국내 입고 예정일은 꼭."""
     d = await _lock(db, pid)
     _alive(d)
     po = d.get("po") or {}
+    over = flow.overseas(d)
+    what = "납기일" if over else "입고 예정일"
     if not po.get("no"):
-        raise PurchaseError("입고 예정일(납기일)은 발주서를 발행한 뒤에 적습니다.")
-    new, old = day.isoformat(), po.get("expected_date")
+        raise PurchaseError(f"{what}은 발주서를 발행한 뒤에 적습니다.")
+    if day is None and not over:
+        raise PurchaseError("국내 구매의 입고 예정일은 비울 수 없습니다 — 다음 단계로 넘어가려면 꼭 있어야 합니다.")
+    new, old = (day.isoformat() if day else None), po.get("expected_date") or None
     if new == old:
         return
-    if new < str(po.get("date") or new):
-        raise PurchaseError("입고 예정일이 발주일보다 앞입니다.")
+    if new and new < str(po.get("date") or new):
+        raise PurchaseError(f"{what}이 발주일보다 앞입니다.")
     hist = list(po.get("expected_history") or []) + [{"date": new, "before": old, "at": _now(), "by": user_name,
                                                        "reason": _clean(reason, 200)}]
     await _save(db, pid, po={**po, "expected_date": new, "expected_history": hist})
-    await _log(db, pid, user_id, "expected_date", {"입고 예정일": new, **({"before": old} if old else {}),
+    await _log(db, pid, user_id, "expected_date", {what: new or "비움", **({"before": old} if old else {}),
                                                    **({"reason": _clean(reason, 200)} if reason.strip() else {})})
     await db.commit()
 
 
-async def po_file(db: AsyncSession, pid: int, revision: int | None = None) -> tuple[str, bytes]:
-    """발행한 발주서(지금 판 또는 예전 판) → (파일 이름, 엑셀 바이트). 저장한 머리·품목으로 같은 파일을 다시 만든다."""
-    src = await po_source(db, pid, revision)
+async def po_file(db: AsyncSession, pid: int, revision: int | None = None, replaced: int | None = None) -> tuple[str, bytes]:
+    """발행한 발주서(지금 판·예전 판·교체 전) → (파일 이름, 엑셀 바이트). 저장한 머리·품목으로 같은 파일을 다시 만든다."""
+    src = await po_source(db, pid, revision, replaced)
     lang = (src.get("header") or {}).get("lang", "ko")
     return (src.get("file_name") or px.file_name(src["header"]["supplier"]["name"], src["no"], lang),
             px.build_xlsx(src["header"], src["items"]))
@@ -704,9 +882,19 @@ async def set_terms(db: AsyncSession, pid: int, user_id: int | None, raw_terms: 
     _alive(d)
     _check_kind(d, "terms")
     _need_order(d, "결제 조건")
-    if d.get("payments") and not admin:
-        raise PurchaseError("송금 확인한 회차가 있어 결제 조건을 바꿀 수 없습니다. 확인한 회차를 먼저 [확인 취소]해 주세요.", 409)
     old = d.get("pay_terms") or []
+    # 송금 확인한 회차의 구분·비율·금액은 누구도 못 바꾼다(QA 2026-11-16 — 관리자가 바꾸면 확인 84 인데 화면엔 140 이 '확인'으로 보였음).
+    # 확인 안 한 회차·[확인 취소]로 되돌린 회차는 누구나 바꾼다(사용자 2026-11-16), 예정일은 확인한 회차도 바꿀 수 있다.
+    # 영업 건 결제 조건과 같은 규칙 + 금액 비교. admin 은 API 호환으로 받기만 한다(예전: 직원은 확인 회차가 하나라도 있으면 전부 막음)
+    new_amt = {t["index"]: t["amount"] for t in flow.terms({**d, "pay_terms": terms})}
+    for p in d.get("payments") or []:
+        i = p.get("term")
+        if i is None:
+            continue
+        o = old[i] if i < len(old) else {}
+        if i >= len(terms) or terms[i]["pct"] != o.get("pct") or terms[i]["label"] != o.get("label") or new_amt[i] != p.get("amount"):
+            raise PurchaseError(f"송금 확인한 회차({o.get('label') or f'{i + 1}회차'} {float(p.get('amount') or 0):,.0f}원)의 구분·비율·금액이 "
+                                "바뀌는 변경입니다. 그 회차의 [확인 취소]를 먼저 해 주세요(예정일은 바꿀 수 있음).", 409)
     # 대조 결과는 같은 자리·같은 비율일 때만 이어 둔다(금액이 바뀌면 다시 대조)
     for i, t in enumerate(terms):
         if i < len(old) and old[i].get("pct") == t["pct"] and old[i].get("check"):
@@ -727,6 +915,7 @@ def term_at(d: dict, index: int) -> dict:
 async def set_check(db: AsyncSession, pid: int, user_id: int | None, index: int, result: dict, file_entry: dict) -> None:
     """지출내역 대조 결과를 회차에 저장(대조하는 동안 결제 조건이 바뀌었으면 저장하지 않는다)."""
     d = await _lock(db, pid)
+    _alive(d)                                         # 취소한 건은 되살린 뒤에(QA 2026-11-16)
     ts = d.get("pay_terms") or []
     if not 0 <= index < len(ts):
         raise PurchaseError("대조하는 동안 결제 조건이 바뀌었습니다. 다시 해 주세요.", 409)
@@ -747,6 +936,7 @@ async def confirm_term(db: AsyncSession, pid: int, user_id: int | None, user_nam
     d = await _lock(db, pid)
     _alive(d)
     _need_order(d, "송금")
+    _need_items(d, "송금 확인")
     t = term_at(d, index)
     if t["confirmed"]:
         raise PurchaseError("이미 송금 확인한 회차입니다.", 409)
@@ -769,6 +959,7 @@ async def confirm_term(db: AsyncSession, pid: int, user_id: int | None, user_nam
 async def unconfirm_term(db: AsyncSession, pid: int, user_id: int | None, index: int) -> None:
     """회차 송금 확인 취소(누구나 — 사용자 2026-11-11, 금액이 바뀔 수 있어서). 이력에 남는다."""
     d = await _lock(db, pid)
+    _alive(d)                                         # 취소한 건은 되살린 뒤에(QA 2026-11-16)
     t = term_at(d, index)
     if not t["confirmed"]:
         raise PurchaseError("송금 확인하지 않은 회차입니다.", 404)
@@ -786,6 +977,7 @@ async def confirm_paid(db: AsyncSession, pid: int, user_id: int | None, user_nam
     _alive(d)
     _check_kind(d, "paid")
     _need_order(d, "송금")
+    _need_items(d, "송금 확인")
     if flow.done_map(d)["pay"]:
         raise PurchaseError("이미 송금을 확인했습니다.", 409)
     entry = {"simple": True, "date": day.isoformat(), "amount": flow.po_total(d), "by": user_name, "at": _now(),
@@ -798,6 +990,7 @@ async def confirm_paid(db: AsyncSession, pid: int, user_id: int | None, user_nam
 async def unconfirm_paid(db: AsyncSession, pid: int, user_id: int | None) -> None:
     """송금 확인(해외 제조사 송금) 취소 — 누구나(사용자 2026-11-11)."""
     d = await _lock(db, pid)
+    _alive(d)                                         # 취소한 건은 되살린 뒤에(QA 2026-11-16)
     await _save(db, pid, payments=[p for p in d.get("payments") or [] if not p.get("simple")])
     await _log(db, pid, user_id, "pay_unconfirm", {"term": "송금 완료"})
     await db.commit()
@@ -848,6 +1041,7 @@ async def confirm_broker(db: AsyncSession, pid: int, user_id: int | None, user_n
 async def undo_broker(db: AsyncSession, pid: int, user_id: int | None) -> None:
     """관세사 송금 확인 취소 — 누구나(사용자 2026-11-11)."""
     d = await _lock(db, pid)
+    _alive(d)                                         # 취소한 건은 되살린 뒤에(QA 2026-11-16)
     cu = {k: v for k, v in (d.get("customs") or {}).items() if k != "broker"}
     await _save(db, pid, customs=cu)
     await _log(db, pid, user_id, "broker_undo", {})
@@ -873,9 +1067,12 @@ async def start_shipping(db: AsyncSession, pid: int, user_id: int | None, user_n
     await db.commit()
 
 
-async def undo_shipping(db: AsyncSession, pid: int, user_id: int | None) -> None:
-    """관리자 — 배송 시작 취소."""
+async def undo_shipping(db: AsyncSession, pid: int, user_id: int | None, *, admin: bool = True) -> None:
+    """배송 시작 취소 — 잘못 누른 [배송 시작]을 되돌린다. 배송 중이면 누구나(사용자 2026-11-17), 입고한 뒤에는 관리자만."""
     d = await _lock(db, pid)
+    _alive(d)                                         # 취소한 건은 되살린 뒤에(QA 2026-11-16)
+    if not admin and (d.get("receipt") or {}).get("records"):
+        raise PurchaseError("입고 기록이 있어 배송 시작을 취소할 수 없습니다 — 관리자에게 요청해 주세요.", 403)
     rc = {k: v for k, v in (d.get("receipt") or {}).items() if k != "shipping"}
     await _save(db, pid, receipt=rc)
     await _log(db, pid, user_id, "ship_undo", {})
@@ -929,37 +1126,52 @@ def _receipt_entry(d: dict, p: dict, others: list[dict], user_name: str) -> dict
     final = bool(p.get("final"))
     if not any(ln["qty"] for ln in lines) and not final:
         raise PurchaseError("입고한 품목 수량을 적어 주세요.")
-    return {"date": p["date"].isoformat(), "carrier": _clean(p.get("carrier"), 50),
+    # [입고 완료]는 지금 발주 수량까지만 닫는다 — 뒤에 품목을 더하거나 수량을 늘리면 늘어난 만큼 다시 입고 대기(사용자 2026-11-16).
+    # 품목 이름도 같이 — 그 자리에 다른 품목이 들어오면 새로 열린 줄로(flow.receipt_open, QA 2026-11-16)
+    closed = {"closed": {str(i): {"qty": float(it.get("qty") or 0), "name": px.item_name(it)} for i, it in enumerate(items)}} if final else {}
+    return {**closed, "date": p["date"].isoformat(), "carrier": _clean(p.get("carrier"), 50),
             "tracking": [t for t in re.split(r"[,\s]+", str(p.get("tracking") or "")) if t][:10],
             "receiver": _clean(p.get("receiver"), 100), "location": _clean(p.get("location"), 100),
             "note": str(p.get("note") or "").strip()[:500], "lines": lines, "final": final, "by": user_name, "at": _now()}
 
 
 async def add_receipt(db: AsyncSession, pid: int, user_id: int | None, user_name: str, p: dict) -> None:
-    """입고 기록 추가 — 부분 입고는 여러 번. 발주 수량을 모두 받거나 '입고 완료'로 남기면 입고 단계가 끝난다."""
+    """입고 기록 추가 — 입고 기록은 한 건(사용자 2026-11-17): 이미 있으면 그 기록에 합친다(화면은 [남은 품목 받기]로 기록 고치기).
+    발주 수량을 모두 받거나 '입고 완료'로 남기면 입고 단계가 끝난다."""
     d = await _lock(db, pid)
     _alive(d)
     _need_order(d, "입고")
+    _need_items(d, "입고")
     rc = d.get("receipt") or {}
     recs = rc.get("records") or []
     if flow.receipt_done(d):
         raise PurchaseError("이미 입고를 마쳤습니다. 기록을 고치려면 그 입고 기록의 [수정]을 눌러 주세요.", 409)
     entry = _receipt_entry(d, p, recs, user_name)
-    await _save(db, pid, receipt={**rc, "records": recs + [entry]})
+    await _save(db, pid, receipt={**rc, "records": flow.merge_receipts(recs + [entry])})
     await _log(db, pid, user_id, "receipt", {"date": entry["date"], "items": ", ".join(f"{ln['name']} {ln['qty']:g}" for ln in entry["lines"]),
                                              **({"입고 완료": True} if entry["final"] else {})})
     await db.commit()
 
 
 async def update_receipt(db: AsyncSession, pid: int, user_id: int | None, user_name: str, index: int, p: dict) -> None:
-    """입고 기록 고치기(출하 기록 수정과 같게 — 새 줄을 늘리지 않음)."""
+    """입고 기록 고치기(출하 기록 수정과 같게 — 새 기록을 늘리지 않음, 품목 줄은 지금 발주서 기준으로 채울 수 있음).
+    p["expect"] = 화면에서 본 그 기록(at) — 다르면 409. p["reclose"] = [남은 품목 받기](입고 기록 한 건 관리, 사용자 2026-11-17)
+    — 이때는 [입고 완료]를 지금 발주 수량 기준으로 다시 닫는다(덜 받고 끝낼 때)."""
     d = await _lock(db, pid)
     _alive(d)
     rc = d.get("receipt") or {}
     recs = list(rc.get("records") or [])
     if not 0 <= index < len(recs):
         raise PurchaseError("고칠 입고 기록이 없습니다.", 404)
+    _same_entry(recs, index, p.get("expect"))
     entry = _receipt_entry(d, p, recs[:index] + recs[index + 1:], user_name)
+    # 이미 [입고 완료]였던 기록을 고칠 때(메모·받은 사람 오타 등)는 그때 닫은 범위를 그대로 — 지금 발주 수량으로 다시 닫으면
+    # 다시 열린 입고(품목 추가·수량 늘림)가 조용히 닫혔다(QA 2026-11-16). 새로 닫으려면 새 입고 기록에서 [입고 완료]
+    old = recs[index]
+    if old.get("final") and entry.get("final") and not p.get("reclose"):
+        entry.pop("closed", None)
+        if "closed" in old:
+            entry["closed"] = old["closed"]
     recs[index] = {**entry, "by": recs[index].get("by"), "at": recs[index].get("at"), "edited_by": user_name, "edited_at": _now()}
     await _save(db, pid, receipt={**rc, "records": recs})
     await _log(db, pid, user_id, "receipt_edit", {"index": index + 1, "date": entry["date"],
@@ -967,13 +1179,16 @@ async def update_receipt(db: AsyncSession, pid: int, user_id: int | None, user_n
     await db.commit()
 
 
-async def set_receipt_serials(db: AsyncSession, pid: int, user_id: int | None, index: int, lines: list[dict]) -> None:
+async def set_receipt_serials(db: AsyncSession, pid: int, user_id: int | None, index: int, lines: list[dict],
+                              expect: dict | None = None) -> None:
     """입고 기록을 남긴 뒤 S/N 만 따로 등록·고치기(사용자 2026-11-11 — 입고 완료 뒤에도). lines = [{line_no, serials}]."""
     d = await _lock(db, pid)
+    _alive(d)                                         # 취소한 건은 되살린 뒤에(QA 2026-11-16)
     rc = d.get("receipt") or {}
     recs = list(rc.get("records") or [])
     if not 0 <= index < len(recs):
         raise PurchaseError("S/N 을 적을 입고 기록이 없습니다. 화면을 새로 고쳐 주세요.", 404)
+    _same_entry(recs, index, expect)
     rec = dict(recs[index])
     by_no = {ln.get("line_no"): ln for ln in lines}
     new_lines, changed = [], []
@@ -992,13 +1207,15 @@ async def set_receipt_serials(db: AsyncSession, pid: int, user_id: int | None, i
     await db.commit()
 
 
-async def remove_receipt(db: AsyncSession, pid: int, user_id: int | None, index: int) -> None:
+async def remove_receipt(db: AsyncSession, pid: int, user_id: int | None, index: int, expect: dict | None = None) -> None:
     """관리자 — 잘못 남긴 입고 기록 한 줄 지우기(이력에 지운 내용을 남긴다)."""
     d = await _lock(db, pid)
+    _alive(d)                                         # 취소한 건은 되살린 뒤에(QA 2026-11-16)
     rc = d.get("receipt") or {}
     recs = list(rc.get("records") or [])
     if not 0 <= index < len(recs):
         raise PurchaseError("이미 지워졌거나 없는 입고 기록입니다.", 404)
+    _same_entry(recs, index, expect)
     removed = recs.pop(index)
     await _save(db, pid, receipt={**rc, "records": recs})
     await _log(db, pid, user_id, "receipt_undo", {"date": removed.get("date"),
@@ -1030,6 +1247,7 @@ async def undo_step(db: AsyncSession, pid: int, user_id: int | None, kind: str) 
     입고는 기록 한 줄씩 지운다(remove_receipt)."""
     col = {"customs": "customs", "statement": "statement", "tax": "tax_invoice"}[kind]
     d = await _lock(db, pid)
+    _alive(d)                                         # 취소한 건은 되살린 뒤에(QA 2026-11-16)
     obj = d.get(col) or {}
     keep = {k: v for k, v in obj.items() if k not in ("mode", "date", "note", "done_at", "done_by", "no_file")}
     await _save(db, pid, **{col: keep})

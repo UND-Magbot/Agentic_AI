@@ -1036,8 +1036,11 @@ _SALES_DEALS_STMTS = [
     ),
     text("CREATE INDEX IF NOT EXISTS ix_product_units_deal ON product_units(deal_id, quote_id, quote_revision)"),
     text("CREATE INDEX IF NOT EXISTS ix_product_units_serial ON product_units(lower(serial))"),
-    text("CREATE UNIQUE INDEX IF NOT EXISTS ux_product_units_maker_serial ON product_units(lower(maker), lower(serial)) "
-         "WHERE NOT no_serial"),
+    # 같은 S/N 은 동시에 한 건에서만(사용자 2026-11-16 — 회수한 대여 로봇을 다음 대여·판매 건에 다시 등록할 수 있게).
+    # 예전: 대장 전체에 한 줄만(ux_product_units_maker_serial) → 회수가 끝난 줄('회수')은 빼고 겹치지 않게. 건마다 한 줄씩 기록이 남는다.
+    text("DROP INDEX IF EXISTS ux_product_units_maker_serial"),
+    text("CREATE UNIQUE INDEX IF NOT EXISTS ux_product_units_active_serial ON product_units(lower(maker), lower(serial)) "
+         "WHERE NOT no_serial AND status <> '회수'"),
     # 상태 = 영문 이니셜(사용자 2026-10-19) — S 판매·R 대여·D 데모·A A/S 중·E A/S 교체품·O 기타(units.UNIT_STATES).
     # 이니셜 도입 전 한글로 저장한 값을 코드로 바꾼다.
     text("ALTER TABLE product_units ALTER COLUMN purpose SET DEFAULT 'S'"),
@@ -1146,6 +1149,8 @@ _PURCHASES_STMTS = [
     text("CREATE INDEX IF NOT EXISTS ix_purchase_events_purchase ON purchase_events(purchase_id, id)"),
     # 해외 구매 통관(사용자 2026-11-02 승인) — 원산지 증명서 첨부·통관 완료 기록. 되돌리기: ALTER TABLE purchases DROP COLUMN customs;
     text("ALTER TABLE purchases ADD COLUMN IF NOT EXISTS customs JSONB NOT NULL DEFAULT '{}'::jsonb"),
+    # 구매 사유(사용자 2026-11-17 승인 — 목록 '서류' 칸 자리에 보이고, 없으면 [등록] 팝업). 되돌리기: ALTER TABLE purchases DROP COLUMN reason;
+    text("ALTER TABLE purchases ADD COLUMN IF NOT EXISTS reason TEXT NOT NULL DEFAULT ''"),
 ]
 
 async def run_migrations(db: AsyncSession) -> None:

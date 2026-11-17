@@ -37,6 +37,38 @@ def supply_total(d: dict) -> float | None:
     return float(sum(ships)) if ships else None
 
 
+def statement_lines(d: dict) -> list[dict]:
+    """지금 견적으로 만든 명세서 품목 값 [{item, qty, unit_price}] — 기본 품목 묶음의 제품 줄만(statement=False 는 빼고),
+    부가세 포함 단가로 등록한 건은 공급가(÷1.1, 원 단위). 명세서 초안(service._statement_draft)·견적과 어긋남 알림이 같이 쓴다."""
+    q = d.get("quote") or {}
+    vat = bool(q.get("vat_included"))
+    out = []
+    for it in q.get("items") or []:
+        if it.get("statement") is False:
+            continue
+        up = it.get("unit_price")
+        if vat and isinstance(up, (int, float)):
+            up = round(up / (1 + VAT_RATE))
+        out.append({"item": it, "qty": it.get("qty"), "unit_price": up})
+    return out
+
+
+def items_supply(items: list[dict]) -> float:
+    """명세서 품목 줄의 공급가 합계."""
+    return round(sum(float(x.get("qty") or 0) * float(x.get("unit_price") or 0) for x in items or []), 2)
+
+
+def statement_stale(d: dict, st: dict | None) -> tuple[float, float] | None:
+    """발급한 명세서(또는 저장한 초안) 공급가가 지금 견적 기준과 다르면 (명세서, 지금 견적) — 같으면 None(QA 2026-11-16 영업 4:
+    출하·명세서 발급 뒤 견적이 바뀌어도 명세서가 예전 금액 그대로였고 알림도 없었다). 견적 품목이 없는 예전 건은 비교하지 않는다."""
+    q = d.get("quote") or {}
+    if not st or not q.get("items") or (q.get("currency") or "KRW") != "KRW":   # 명세서는 원화 양식 — 달러 견적과는 비교하지 않음
+        return None
+    now = items_supply(statement_lines(d))
+    have = items_supply(st.get("items") or [])
+    return (have, now) if abs(have - now) > 1 else None
+
+
 def expected_total(d: dict) -> float | None:
     """받을 금액 — 공급가액 기준(사용자 2026-10-08: 부가세는 거래명세서에서만)."""
     return supply_total(d)

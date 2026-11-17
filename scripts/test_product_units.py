@@ -326,6 +326,12 @@ async def flow(db, deal_id: int, qid: int) -> None:
     await expect_error(units.save_units(db, deal_id, None, qid, 0, []), "출하·A/S 기록이 있으면 통째 지우기 막음", "지울 수 없습니다")
     await db.rollback()
 
+    # A/S 기록이 있는 시리얼이 묶인 출하는 지울 수 없음(QA 2026-11-16 — 무상 기간 기준이 사라져 A/S 무상·유상과 어긋남)
+    await expect_error(svc.remove_entry(db, deal_id, None, "shipments", 0), "A/S 있는 시리얼이 묶인 출하 기록 삭제 막음", "A/S 기록")
+    await db.rollback()
+    ids = [r["id"] for r in rs.values()]
+    await db.execute(text("DELETE FROM as_cases WHERE unit_id = ANY(:i)"), {"i": ids})   # 시험용 A/S 정리
+    await db.commit()
     # 출하 기록을 지우면 묶인 시리얼은 출하 전으로
     await svc.remove_entry(db, deal_id, None, "shipments", 0)
     rs = {r["serial"]: r for r in await units.deal_units(db, deal_id)}

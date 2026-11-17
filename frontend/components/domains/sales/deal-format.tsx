@@ -2,6 +2,7 @@
 import type { DealEvent, DealRow, DealStage } from "@/lib/shared/sales-deals";
 import { rentalPhase, UNIT_STATE_TONE, unitStateText } from "@/lib/shared/unit-states";
 import { cn } from "@/lib/shared/utils";
+import { REQ_SCOPE, reqField } from "@/components/domains/sales/required";
 
 /** 제품 상태 코드 배지 — 코드와 뜻을 색으로(S · 판매 / R · 대여 / A · A/S 중 …, 사용자 2026-10-22). 시리얼 찾기·출하에서 같이 쓴다.
  *  status(S/N 진행)를 주면 대여 단계도 붙인다(사용자 2026-10-27): R · 대여 전 / 대여 중 / 대여 완료, 대여 건의 A/S 중이면 'A/S 중 · 대여 중'. */
@@ -74,7 +75,7 @@ export const ACTION_LABEL: Record<string, string> = {
   remove_payment: "입금 기록 삭제", remove_shipment: "출하 기록 삭제", review_done: "확인 완료", review_reopen: "확인 되돌리기",
   po_upload: "발주서 첨부", remove_po_file: "발주서 삭제", po_compare: "발주서 품목 대조", shipment_edit: "출하 기록 수정",
   reset_to_quote: "견적 상태로 되돌림(테스트)",
-  statement: "거래명세서 발급", pay_case: "결제 방식 선택", pay_terms: "결제 조건 저장", drop: "드랍", undrop: "드랍 되살리기", recommend: "제품 추천 확정", recommend_new: "제품 추천 확정", quote: "견적서 발행", quote_revision: "견적서 재발행", quote_upload: "견적서 첨부(외부 수정본)", quote_replace: "견적서 파일 교체",
+  statement: "거래명세서 발급", pay_case: "결제 방식 선택", pay_terms: "결제 조건 저장", drop: "드랍", undrop: "드랍 되살리기", recommend: "제품 추천 확정", recommend_new: "제품 추천 확정", quote: "견적서 발행", quote_revision: "견적서 재발행", quote_upload: "견적서 첨부(외부 수정본)", quote_replace: "견적서 파일 교체", sn_rebind: "S/N 품목 다시 짝짓기",
   meeting: "미팅 정보 입력",
   due_extend: "입금기한 연장", due_request: "입금기한 연장 요청", due_reject: "입금기한 연장 거절",
 };
@@ -106,7 +107,7 @@ export function eventDetail(e: DealEvent): string {
   if (e.action === "paid_full") return d.to ? "→ 완납" : "→ 완납 해제";
   if (e.action === "import" && d.legacy_no) return `옛 번호 ${d.legacy_no}`;
   if (e.action === "po_upload" || e.action === "remove_po_file") return String(d.filename ?? "");
-  if (e.action === "statement") return `합계 ${won(d.total as number)}원${d.again ? " · 다시 발급" : ""}`;
+  if (e.action === "statement") return `합계 ${won(d.total as number)}원${d.same_no ? " · 같은 번호로 교체" : d.again ? " · 다시 발급" : ""}${d.from_quote ? " (견적서 고치기)" : ""}`;
   if (e.action === "pay_case") return `→ ${PAY_CASE_KO[String(d.to)] ?? d.to}`;
   if (e.action === "pay_terms") return Array.isArray(d.terms) ? d.terms.join(" · ") : "";
   if (e.action === "drop") return d.reason ? String(d.reason) : "";
@@ -134,9 +135,15 @@ export async function dealRequest(path: string, body?: unknown): Promise<DealRow
   }
   if (!r.ok) {
     const d = data?.detail;
-    throw new Error(typeof d === "string" ? d : Array.isArray(d) ? "입력값을 확인해 주세요." : "저장하지 못했습니다.");
+    const msg = typeof d === "string" ? d : Array.isArray(d) ? "입력값을 확인해 주세요." : "저장하지 못했습니다.";
+    throw new DealRequestError(msg, typeof data?.code === "string" ? data.code : undefined);
   }
   return data as DealRow;
+}
+
+/** 화면이 따로 처리하는 막힘 — code(SHIP_HAS_AS 등)를 보고 팝업으로 알리고 해결할 곳으로 이어 준다(사용자 2026-11-17) */
+export class DealRequestError extends Error {
+  constructor(message: string, readonly code?: string) { super(message); }
 }
 
 export const INPUT = "h-9 w-full rounded-lg border border-border bg-surface px-3 outline-none focus:border-accent";
@@ -144,10 +151,12 @@ export const INPUT = "h-9 w-full rounded-lg border border-border bg-surface px-3
 export function Field({ label, children, wide, className }: {
   label: string; children: React.ReactNode; wide?: boolean; className?: string;
 }) {
+  const [lab, child, on] = reqField(label, children);
   return (
-    <label className={cn("flex flex-col gap-1", wide && "md:col-span-2", className)}>
-      <span className="text-[12px] text-foreground-muted">{label}</span>
-      {children}
+    // 이름 끝이 ' *' 이면 필수 — 굵은 이름·'필수' 알약 + 칸이 비면 빨간 테두리(required.tsx, 사용자 2026-11-16)
+    <label className={cn("flex flex-col gap-1", wide && "md:col-span-2", on && REQ_SCOPE, className)}>
+      <span className={cn("text-[12px]", !on && "text-foreground-muted")}>{lab}</span>
+      {child}
     </label>
   );
 }

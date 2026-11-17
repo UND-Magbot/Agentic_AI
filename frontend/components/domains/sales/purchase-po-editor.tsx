@@ -3,17 +3,18 @@
 // 합계 막대 · [변경 저장]/[미리보기]/[고친 파일로 발행]/[발주서 발행] 버튼 줄, 오른쪽은 AI 대화(폭 조절 막대), 미리보기는 창으로.
 // AI 대화 = 말로 품목·머리 칸을 고친다(숫자는 말한 것만 — 서버 po_chat). 화면의 저장 안 한 내용도 같이 보내 반영·저장한다.
 // [견적서에서 불러오기] 버튼은 뺐다(사용자 2026-11-11). 품목은 직접 적거나 오른쪽 AI 대화로.
-// [변경 저장]은 번호 없이 초안만, [발행]은 새 발주번호(UND-이니셜날짜-NN)를 붙여 확정한다. 금액은 VAT 별도.
+// [변경 저장]은 번호 없이 초안만, [발행]은 새 발주번호(PO-이니셜날짜-NN, 2026-11-17부터)를 붙여 확정한다. 금액은 VAT 별도.
 // [고친 파일로 발행] = 엑셀에서 고친 발주서를 올려 그 파일로 발행(번호는 파일의 Order No., 견적서 '고친 파일로 발행'과 같은 창 모양).
 "use client";
 
 import { useEffect, useRef, useState } from "react";
 import { RichText } from "@/components/domains/sales/agent-chat";
 import { won } from "@/components/domains/sales/deal-format";
-import { ConfirmDialog } from "@/components/shared/ui/confirm-dialog";
+import { ConfirmDialog, POPUP_BTN_HOVER } from "@/components/shared/ui/confirm-dialog";
 import { Icon } from "@/components/shared/ui/icon";
 import {
-  purchaseRequest, purchaseUpload, type PoDraft, type PoHeader, type PoItem, type PoUploadRead, type PurchaseCurrency, type PurchaseRow,
+  PurchaseApiError, purchaseRequest, purchaseUpload, reopenOf, type PoDraft, type PoHeader, type PoItem, type PoUploadRead, type PurchaseCurrency,
+  type PurchaseRow, type ReopenLine,
 } from "@/lib/shared/purchases";
 import { fileBugReport, readFailureContent } from "@/lib/shared/bug-report";
 import { cn, scrollChatToEnd } from "@/lib/shared/utils";
@@ -21,6 +22,7 @@ import { ITEM_BTN, primaryBtn, secondaryBtn } from "./proposal-actions";
 import { AutoTextarea, LineArea } from "./quote-blocks";
 import { AMOUNT_BOX, HEAD_AREA, HEAD_FIELD, ROW_CARD, ROW_FIELD, ROW_ICON_BTN, ROW_LABEL } from "./quote-styles";
 import { SPLIT_GRID, SplitBar, splitStyle, useSplit } from "./split-pane";
+import { req, REQ, REQ_SCOPE, ReqLabel, ReqMark, reqOr } from "@/components/domains/sales/required";
 
 // 견적서 작성 화면과 같은 카드·칸 모양(quote-workspace 의 HEAD_CARD·HEAD_LABEL)
 const HEAD_CARD = "flex flex-col gap-4 rounded-2xl border border-border bg-surface-raised p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04),0_16px_36px_-24px_rgba(15,30,70,0.30)]";
@@ -35,8 +37,10 @@ const kstToday = () => new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/
 const lineAmount = (it: PoItem, usd: boolean) => (usd ? Math.round((it.qty ?? 0) * (it.price ?? 0) * 100) / 100 : Math.round((it.qty ?? 0) * (it.price ?? 0)));
 const itemName = (it: PoItem) => (it.commodity ?? "").trim() || it.description.trim();
 
-export function PurchasePoEditor({ id, reissue = false, currentNo = null, currentExpected = null, onClose, onIssued }: {
+export function PurchasePoEditor({ id, reissue = false, currentNo = null, currentExpected = null, onClose, onIssued, onGoto }: {
   id: number; onClose: () => void; onIssued: (row: PurchaseRow) => void;
+  /** 막힌 팝업의 [○○ 칸으로 가기] — 작성 창을 닫고 상세의 그 단계로(사용자 2026-11-17). receipt·pay */
+  onGoto?: (step: "receipt" | "pay") => void;
   /** 이미 발행한 발주서를 고쳐 다시 발행 */
   reissue?: boolean;
   /** 지금 발주서 번호·입고 예정일 — 고친 파일로 발행할 때 같은 번호인지 보고, 예정일을 채운다 */
@@ -53,6 +57,17 @@ export function PurchasePoEditor({ id, reissue = false, currentNo = null, curren
   const [issueAsk, setIssueAsk] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [text, setText] = useState("");
+  // 입고를 마친 건을 다시 발행할 때 다시 열리는 품목(팝업) — 훅은 아래 '불러오는 중' 반환보다 위에(훅 순서 오류 수정 2026-11-16)
+  const [reopen, setReopen] = useState<ReopenLine[] | null>(null);
+  // 발행이 막힌 이유(팝업) — code 가 있으면 해결할 칸으로 안내(입고 기록·송금 확인)
+  const [blocked, setBlocked] = useState<{ message: string; code?: string } | null>(null);
+  const blockedGo = blocked?.code === "RECEIPT_LOCK"
+    ? { step: "receipt" as const, ask: "입고 칸으로 안내해 드릴까요?", label: "입고 칸으로 가기",
+        sub: "작성 창을 닫고 구매 건의 입고 칸으로 갑니다. 고친 발주서 내용은 [변경 저장]해 두면 그대로 남습니다." }
+    : blocked?.code === "PAID_LOCK"
+    ? { step: "pay" as const, ask: "송금 칸으로 안내해 드릴까요?", label: "송금 칸으로 가기",
+        sub: "작성 창을 닫고 구매 건의 송금 칸으로 갑니다. [확인 취소] 뒤 다시 발행하면 됩니다." }
+    : null;
   const chatEnd = useRef<HTMLDivElement>(null);
   const split = useSplit("und_cortex_po_split", 62);
 
@@ -151,15 +166,24 @@ export function PurchasePoEditor({ id, reissue = false, currentNo = null, curren
     setMsg({ ok: true, text: "작성 중인 발주서를 저장했습니다(번호는 발행할 때 붙습니다)." });
   });
 
-  const issue = () => run("발행 중", async () => {
-    onIssued(await purchaseRequest(`/${id}/po/issue`, body()));
+  // 입고를 마친 건에 품목을 더하거나 수량을 늘리면 입고가 다시 열린다 — 서버가 묻고(409 + reopen) 팝업 확인 뒤 다시 보낸다(사용자 2026-11-16)
+  const issue = (reopenOk = false) => run("발행 중", async () => {
+    try {
+      onIssued(await purchaseRequest(`/${id}/po/issue`, { ...body(), reopen_ok: reopenOk }));
+    } catch (e) {
+      const r = reopenOf(e);
+      if (r) { setReopen(r); return; }
+      // 막힘은 팝업으로(사용자 2026-11-17 — 안내가 화면 맨 위에 떠서 [재발행] 누른 자리에서 안 보였음)
+      const code = e instanceof PurchaseApiError ? e.data?.code : undefined;
+      setBlocked({ message: e instanceof Error ? e.message : "발행하지 못했습니다.", code });
+    }
   });
 
   // 머리 묶음 — 견적서 화면처럼 번호·색·남은 칸. 공급사 계좌는 평소 접어 둔다
   const field = (label: string, value: string, onChange: (v: string) => void, opt: { req?: boolean; ph?: string; type?: string; max?: number; wide?: boolean } = {}) => (
-    <label className={cn(HEAD_LABEL, opt.wide && "sm:col-span-full")}>
-      <span>{label}{opt.req && <span className="text-red-600"> *</span>}</span>
-      <input className={cn(HEAD_FIELD, opt.req && !value.trim() && "border-amber-500/70")} type={opt.type ?? "text"} value={value} maxLength={opt.max}
+    <label className={cn(HEAD_LABEL, opt.wide && "sm:col-span-full", opt.req && REQ_SCOPE)}>
+      {opt.req ? <ReqLabel>{label}</ReqLabel> : <span>{label}</span>}
+      <input {...req(!!opt.req)} className={HEAD_FIELD} type={opt.type ?? "text"} value={value} maxLength={opt.max}
              placeholder={opt.ph} disabled={!!busy} onChange={(e) => onChange(e.target.value)} />
     </label>
   );
@@ -173,11 +197,13 @@ export function PurchasePoEditor({ id, reissue = false, currentNo = null, curren
       body: (<>
         {field("Order Date", h.date, (v) => setH({ date: v }), { type: "date" })}
         {field("발행자 이니셜(영문 2자)", d.initials, (v) => setD({ ...d, initials: v.toUpperCase() }), { req: true, ph: "LU", max: 2 })}
-        <label className={HEAD_LABEL}>
+        <label className={cn(HEAD_LABEL, !en && REQ_SCOPE)}>
           {/* 해외는 '납기일'(선택 — 사용자 2026-11-11: 안 적어도 발행·다음 단계로) */}
-          <span>{en ? "납기일" : "입고 예정일"}{en ? <span className="font-normal text-foreground-subtle"> (선택)</span> : <span className="text-red-600"> *</span>}
-            {" "}<span className="font-normal text-foreground-subtle">· 발주서엔 안 찍힘</span></span>
-          <input type="date" className={cn(HEAD_FIELD, !d.expected_date && !en && "border-amber-500/70")} value={d.expected_date} disabled={!!busy}
+          <span className="flex flex-wrap items-center gap-1">
+            {en ? <>납기일<span className="font-normal text-foreground-subtle"> (선택)</span></> : <ReqLabel>입고 예정일</ReqLabel>}
+            <span className="font-normal text-foreground-subtle">· 발주서엔 안 찍힘</span>
+          </span>
+          <input type="date" {...req(!en)} className={HEAD_FIELD} value={d.expected_date} disabled={!!busy}
                  onChange={(e) => setD({ ...d, expected_date: e.target.value })} />
         </label>
       </>) },
@@ -297,8 +323,8 @@ export function PurchasePoEditor({ id, reissue = false, currentNo = null, curren
                 <li key={i} className={ROW_CARD}>
                   <div className="grid gap-2.5 sm:grid-cols-[190px_minmax(0,1fr)]">
                     <div className={ROW_LABEL}>
-                      <span>Commodity</span>
-                      <LineArea className={HEAD_AREA} value={it.commodity ?? ""} aria-label="Commodity" placeholder="예: AFT2000-D80-C" disabled={!!busy}
+                      <span><ReqMark>Commodity</ReqMark></span>
+                      <LineArea className={HEAD_AREA} value={it.commodity ?? ""} aria-label="Commodity" placeholder="예: AFT2000-D80-C" {...reqOr(!!itemName(it), false)} disabled={!!busy}
                                 onChange={(e) => setItem(i, { commodity: e.target.value })} />
                     </div>
                     <div className={ROW_LABEL}>
@@ -309,8 +335,8 @@ export function PurchasePoEditor({ id, reissue = false, currentNo = null, curren
                   </div>
                   <div className="mt-2.5 flex flex-wrap items-end gap-2.5">
                     <div className={ROW_LABEL}>
-                      <span>Q&apos;ty (pcs)</span>
-                      <input className={cn(ROW_FIELD, "w-[90px] text-right", it.qty == null && itemName(it) && "border-amber-500")} inputMode="numeric"
+                      <span><ReqMark>Q&apos;ty (pcs)</ReqMark></span>
+                      <input className={cn(ROW_FIELD, "w-[90px] text-right")} {...req(!!itemName(it))} inputMode="numeric"
                              value={it.qty ?? ""} aria-label="수량" disabled={!!busy} onChange={(e) => setItem(i, { qty: num(e.target.value) })} />
                     </div>
                     {/* 국내 = MOQ 칸, 해외 = Remark 칸(양식마다 다름) */}
@@ -328,8 +354,8 @@ export function PurchasePoEditor({ id, reissue = false, currentNo = null, curren
                       </div>
                     )}
                     <div className={ROW_LABEL}>
-                      <span>{en ? "Price (US$)" : "Price"}</span>
-                      <input className={cn(ROW_FIELD, "w-[140px] text-right", it.price == null && itemName(it) && "border-amber-500")} inputMode="decimal"
+                      <span><ReqMark>{en ? "Price (US$)" : "Price"}</ReqMark></span>
+                      <input className={cn(ROW_FIELD, "w-[140px] text-right")} {...req(!!itemName(it))} inputMode="decimal"
                              value={it.price ?? ""} aria-label="단가" placeholder="단가" disabled={!!busy} onChange={(e) => setItem(i, { price: num(e.target.value) })} />
                     </div>
                     <div className={cn(ROW_LABEL, "ml-auto flex-1 items-end")}>
@@ -380,7 +406,7 @@ export function PurchasePoEditor({ id, reissue = false, currentNo = null, curren
               </button>
             </div>
             {reissue && !dirty && (
-              <p className="text-[11.5px] text-foreground-subtle">고쳐서 [재발행]하면 새 발주번호(UND-이니셜+오늘 날짜-순번)가 붙고, 예전 판은 상세의 이전 발주서에 남습니다.</p>
+              <p className="text-[11.5px] text-foreground-subtle">고쳐서 [재발행]하면 새 발주번호(PO-이니셜+오늘 날짜-순번)가 붙고, 예전 판은 상세의 이전 발주서에 남습니다.</p>
             )}
             <p className={cn("min-h-[17px] text-[11.5px]", dirty ? "text-amber-700 dark:text-amber-300" : "invisible")} aria-hidden={!dirty}>
               고친 내용이 있습니다 — [변경 저장]으로 작성 중 저장하거나 바로 [발주서 발행]할 수 있습니다.
@@ -462,6 +488,18 @@ export function PurchasePoEditor({ id, reissue = false, currentNo = null, curren
                      description={`새 발주번호가 붙고 합계 ${won(total, cur)}${en ? "" : "(VAT 별도)"}, ${d.expected_date ? `${en ? "납기일" : "입고 예정일"} ${d.expected_date}로` : "납기일 없이"} 확정됩니다.`}
                      confirmLabel={reissue ? "재발행" : "발행"} onClose={() => setIssueAsk(false)}
                      onConfirm={() => { setIssueAsk(false); void issue(); }} />
+      <ConfirmDialog open={!!blocked} icon="help" variant="default" title="발주서를 발행할 수 없습니다"
+                     description={<>
+                       <span className="block rounded-lg bg-foreground/[0.04] px-3 py-2 text-foreground">{blocked?.message}</span>
+                       {blockedGo && onGoto && <>
+                         <b className="mt-3 block text-foreground">{blockedGo.ask}</b>
+                         <span className="mt-0.5 block">{blockedGo.sub}</span>
+                       </>}
+                     </>}
+                     confirmLabel={blockedGo && onGoto ? blockedGo.label : "확인"} cancelLabel="닫기" hideCancel={!(blockedGo && onGoto)}
+                     onClose={() => setBlocked(null)}
+                     onConfirm={() => { setBlocked(null); if (blockedGo && onGoto) onGoto(blockedGo.step); }} />
+      {reopen && <ReopenConfirm lines={reopen} onOk={() => { setReopen(null); void issue(true); }} onCancel={() => setReopen(null)} />}
       {uploading && <PoUploadDialog id={id} currentNo={currentNo} currentExpected={currentExpected ?? d.expected_date ?? null} currency={cur}
                                     initials={d.initials}
                                     onClose={() => setUploading(false)} onIssued={(row) => { setUploading(false); onIssued(row); }} />}
@@ -481,7 +519,8 @@ function Shell({ children }: { children: React.ReactNode }) {
 
 // 고친 발주서 파일로 발행 — 견적서 '고친 견적서 파일로 발행' 창과 같은 모양(사용자 2026-11-11).
 // ① 파일(엑셀·PDF)을 고르거나 끌어 놓고 [올리고 읽기] → ② Order No.·발주일·품목을 확인·수정 → [이 내용으로 발행].
-// 발주번호는 파일의 Order No.(고칠 수 있음), 지금 발주서와 같은 번호면 지금 판을 이 파일로 바꾼다. 비우면 이니셜로 새 번호.
+// 발주번호는 파일의 Order No.(고칠 수 있음), 비우면 이니셜로 새 번호. 지금 발주서와 같은 번호면 교체를 확인받는다(사용자 2026-11-16 —
+// 번호 하나 = 발주서 하나): 판 그대로 이 파일로 바꾸고, 교체 전 파일은 보관(다시 받을 수 있음). 따로 남기려면 번호를 바꿔 올린다.
 function PoUploadDialog({ id, currentNo, currentExpected, currency, initials: myInitials, onClose, onIssued }: {
   id: number; currentNo: string | null; currentExpected: string | null; currency: PurchaseCurrency;
   /** 발행자 이니셜 기본값(작성 창 값) — 번호를 비우면 이 이니셜로 새 번호 */
@@ -500,6 +539,7 @@ function PoUploadDialog({ id, currentNo, currentExpected, currency, initials: my
   const [items, setItems] = useState<PoItem[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [askSame, setAskSame] = useState(false);
   const usd = currency === "USD";
   const total = Math.round(items.reduce((s, it) => s + lineAmount(it, usd), 0) * 100) / 100;
   const same = !!docNo.trim() && docNo.trim().toUpperCase() === (currentNo ?? "").toUpperCase();
@@ -549,14 +589,22 @@ function PoUploadDialog({ id, currentNo, currentExpected, currency, initials: my
       setBusy(null);
     }
   };
-  const confirm = async () => {
+  const [reopen, setReopen] = useState<ReopenLine[] | null>(null);
+  const [sameNoOk, setSameNoOk] = useState<"" | "replace">("");
+  const confirm = async (sameNo: "" | "replace" = "", reopenOk = false) => {
     if (!read) return;
+    setAskSame(false);
+    setReopen(null);
+    setSameNoOk(sameNo);
     setBusy("발행 중…");
     setError(null);
     try {
       onIssued(await purchaseRequest(`/${id}/po/upload/confirm`, { upload: read.upload, doc_no: docNo.trim(), initials, date, expected_date: expected, items, header: read.header ?? {},
-                                                                       forced: !!forced, bug_report: forced ?? "" }));
+                                                                       forced: !!forced, bug_report: forced ?? "", same_no: sameNo,
+                                                                       reopen_ok: reopenOk }));
     } catch (e) {
+      const r = reopenOf(e);
+      if (r) { setReopen(r); setBusy(null); return; }
       setError(e instanceof Error ? e.message : "발행하지 못했습니다.");
       setBusy(null);
     }
@@ -617,21 +665,22 @@ function PoUploadDialog({ id, currentNo, currentExpected, currency, initials: my
               <table className="w-full min-w-[620px] text-[12.5px]">
                 <thead>
                   <tr className="text-left text-[11.5px] text-foreground-subtle">
-                    <th className="w-[150px] px-1 py-1 font-medium">Commodity *</th><th className="px-1 py-1 font-medium">Description</th>
-                    <th className="w-[80px] px-1 py-1 font-medium">수량 *</th><th className="w-[120px] px-1 py-1 font-medium">단가{usd ? "(US$)" : "(공급가)"} *</th>
+                    <th className="w-[150px] px-1 py-1 font-medium"><ReqMark>Commodity</ReqMark></th><th className="px-1 py-1 font-medium">Description</th>
+                    <th className="w-[80px] px-1 py-1 font-medium"><ReqMark>수량</ReqMark></th>
+                    <th className="w-[120px] px-1 py-1 font-medium"><ReqMark>단가{usd ? "(US$)" : "(공급가)"}</ReqMark></th>
                     <th className="w-[110px] px-1 py-1 text-right font-medium">금액</th><th className="w-6" />
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
                   {items.map((x, i) => (
                     <tr key={i}>
-                      <td className="px-1 py-1"><input className={cn(inputCls, !itemName(x) && "border-amber-500")} value={x.commodity ?? ""} aria-label={`${i + 1}번 Commodity`}
+                      <td className="px-1 py-1"><input className={inputCls} {...REQ} value={x.commodity ?? ""} aria-label={`${i + 1}번 Commodity`}
                                                        placeholder="예: AFT2000-D80-C" onChange={(e) => setItem(i, { commodity: e.target.value })} /></td>
                       <td className="px-1 py-1"><input className={inputCls} value={x.description} aria-label={`${i + 1}번 Description`}
                                                        placeholder="예: 200N 15Nm, CAN Protocol" onChange={(e) => setItem(i, { description: e.target.value })} /></td>
-                      <td className="px-1 py-1"><input className={cn(inputCls, x.qty == null && "border-amber-500")} inputMode="decimal" value={x.qty ?? ""}
+                      <td className="px-1 py-1"><input className={inputCls} {...REQ} inputMode="decimal" value={x.qty ?? ""}
                                                        aria-label={`${i + 1}번 수량`} onChange={(e) => setItem(i, { qty: num(e.target.value) })} /></td>
-                      <td className="px-1 py-1"><input className={cn(inputCls, x.price == null && "border-amber-500")} inputMode="decimal" value={x.price ?? ""}
+                      <td className="px-1 py-1"><input className={inputCls} {...REQ} inputMode="decimal" value={x.price ?? ""}
                                                        aria-label={`${i + 1}번 단가`} onChange={(e) => setItem(i, { price: num(e.target.value) })} /></td>
                       <td className="whitespace-nowrap px-1 py-1 text-right tabular-nums">{won(lineAmount(x, usd), currency)}</td>
                       <td className="px-1 py-1">
@@ -654,18 +703,18 @@ function PoUploadDialog({ id, currentNo, currentExpected, currency, initials: my
               <label className="flex flex-wrap items-center gap-2">
                 <span className="font-medium">발주번호</span>
                 <input value={docNo} maxLength={40} disabled={!!busy} onChange={(e) => setDocNo(e.target.value)}
-                       placeholder="발주서에 적힌 Order No.(예: UND-VT20261102-01)" className={cn(inputCls, "w-64 font-mono")} aria-label="발주번호" />
+                       placeholder="발주서에 적힌 Order No.(예: PO-VT20261117-01)" className={cn(inputCls, "w-64 font-mono")} aria-label="발주번호" />
                 <span className="text-[11.5px] text-foreground-subtle">
-                  {same ? "지금 발주서와 같은 번호 — 지금 발주서를 이 파일로 바꿉니다"
+                  {same ? "지금 발주서와 같은 번호 — 지금 발주서를 이 파일로 교체합니다(따로 남기려면 번호를 바꿔 주세요)"
                     : read.doc_no ? "발주서에서 읽은 번호 — 다르면 고쳐 주세요" : "발주서에서 번호를 찾지 못했습니다 — 적거나 비워 두면 새 번호"}
                 </span>
               </label>
               {!docNo.trim() && (
-                <label className="flex flex-wrap items-center gap-2">
-                  <span className="font-medium">발행자 이니셜 *</span>
-                  <input value={initials} maxLength={2} disabled={!!busy} onChange={(e) => setInitials(e.target.value.toUpperCase())}
+                <label className={cn("flex flex-wrap items-center gap-2", REQ_SCOPE)}>
+                  <ReqLabel>발행자 이니셜</ReqLabel>
+                  <input {...REQ} value={initials} maxLength={2} disabled={!!busy} onChange={(e) => setInitials(e.target.value.toUpperCase())}
                          className={cn(inputCls, "w-24 uppercase")} aria-label="발행자 이니셜" />
-                  <span className="text-[11.5px] text-foreground-subtle">→ 새 번호 UND-{(initials || "??").toUpperCase()}{ymd}-NN</span>
+                  <span className="text-[11.5px] text-foreground-subtle">→ 새 번호 PO-{(initials || "??").toUpperCase()}{ymd}-NN</span>
                 </label>
               )}
               <div className="flex flex-wrap items-center gap-4">
@@ -673,10 +722,10 @@ function PoUploadDialog({ id, currentNo, currentExpected, currency, initials: my
                   <span className="font-medium">Order Date</span>
                   <input type="date" value={date} disabled={!!busy} onChange={(e) => setDate(e.target.value)} className={cn(inputCls, "w-40")} />
                 </label>
-                <label className="flex items-center gap-2">
-                  <span className="font-medium">{usd ? "납기일 (선택)" : "입고 예정일 *"}</span>
-                  <input type="date" value={expected} disabled={!!busy} onChange={(e) => setExpected(e.target.value)}
-                         className={cn(inputCls, "w-40", !expected && !usd && "border-amber-500")} />
+                <label className={cn("flex items-center gap-2", !usd && REQ_SCOPE)}>
+                  {usd ? <span className="font-medium">납기일 (선택)</span> : <ReqLabel>입고 예정일</ReqLabel>}
+                  <input type="date" {...req(!usd)} value={expected} disabled={!!busy} onChange={(e) => setExpected(e.target.value)}
+                         className={cn(inputCls, "w-40")} />
                 </label>
               </div>
             </div>
@@ -708,12 +757,67 @@ function PoUploadDialog({ id, currentNo, currentExpected, currency, initials: my
                   버그 신고 후 넘어가기
                 </button>
               )}
-              <button type="button" disabled={!!busy || !!why} onClick={() => void confirm()}
+              <button type="button" disabled={!!busy || !!why} onClick={() => (same ? setAskSame(true) : void confirm())}
                       className="h-9 rounded-lg bg-accent px-5 text-[13px] font-semibold text-white hover:brightness-105 disabled:opacity-50">
-                {same ? "지금 발주서를 이 파일로 바꾸기" : "이 내용으로 발행"}
+                이 내용으로 발행
               </button>
             </>
           )}
+        </div>
+      </div>
+      {askSame && (
+        <SameNoConfirm no={docNo.trim()} onReplace={() => void confirm("replace")} onCancel={() => setAskSame(false)} />
+      )}
+      {reopen && <ReopenConfirm lines={reopen} onOk={() => void confirm(sameNoOk, true)} onCancel={() => setReopen(null)} />}
+    </div>
+  );
+}
+
+/** 같은 발주번호로 올렸을 때 교체 확인(사용자 2026-11-16) — 번호 하나 = 발주서 하나. 견적서 '덮어쓰기' 확인과 같은 뜻. */
+function SameNoConfirm({ no, onReplace, onCancel }: { no: string; onReplace: () => void; onCancel: () => void }) {
+  return (
+    <div role="alertdialog" aria-modal="true" aria-labelledby="sameno-title" className="fixed inset-0 z-[70] grid place-items-center bg-black/30 px-4"
+         onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
+      <div className="anim-fade-in-up w-full max-w-[440px] rounded-2xl border border-border bg-surface-raised p-5 text-[13px] shadow-[0_30px_70px_-30px_rgba(15,30,70,0.55)]">
+        <h3 id="sameno-title" className="text-[15px] font-semibold text-amber-700 dark:text-amber-300">같은 발주번호의 발주서가 있습니다</h3>
+        <p className="mt-2 text-[13px] leading-relaxed text-foreground">
+          <span className="font-mono">{no}</span> 는 지금 발주서의 번호입니다. 지금 발주서를 이 파일로 교체할까요?
+        </p>
+        <ul className="mt-2 list-disc space-y-0.5 pl-5 text-[12px] text-foreground-muted">
+          <li>번호·판은 그대로이고, 그 판을 받으면 올린 파일이 나가며 품목·금액도 올린 파일 기준으로 바뀝니다.</li>
+          <li>교체 전 파일은 보관되어 발주서 카드의 &lsquo;교체 전&rsquo;에서 다시 받을 수 있습니다.</li>
+          <li>따로 남기려면 [취소]를 누르고 발주번호를 바꿔 올려 주세요(새 판이 됩니다).</li>
+        </ul>
+        <div className="mt-4 flex justify-end gap-2">
+          <button type="button" onClick={onCancel} className={cn("h-9 rounded-lg border border-border px-4 text-[13px]", POPUP_BTN_HOVER)}>취소</button>
+          <button type="button" onClick={onReplace} autoFocus className="h-9 rounded-lg bg-amber-600 px-5 text-[13px] font-semibold text-white hover:bg-blue-700!">교체</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 입고를 마친 건을 다시 발행하면 입고가 다시 열리는 품목 알림(사용자 2026-11-16) — 품목 추가·수량 늘림만, 단가·설명만 바뀌면 묻지 않는다. */
+function ReopenConfirm({ lines, onOk, onCancel }: { lines: ReopenLine[]; onOk: () => void; onCancel: () => void }) {
+  return (
+    <div role="alertdialog" aria-modal="true" aria-labelledby="reopen-title" className="fixed inset-0 z-[70] grid place-items-center bg-black/30 px-4"
+         onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
+      <div className="anim-fade-in-up w-full max-w-[460px] rounded-2xl border border-border bg-surface-raised p-5 text-[13px] shadow-[0_30px_70px_-30px_rgba(15,30,70,0.55)]">
+        <h3 id="reopen-title" className="text-[15px] font-semibold text-amber-700 dark:text-amber-300">입고가 다시 진행됩니다</h3>
+        <p className="mt-2 text-[13px] leading-relaxed text-foreground">입고를 마친 건입니다. 이 발주서로 발행하면 아래 품목의 입고가 남아 입고 대기로 돌아갑니다.</p>
+        <ul className="mt-2 flex flex-col gap-1 rounded-lg border border-border bg-surface px-3 py-2 text-[12.5px]">
+          {lines.map((l, i) => (
+            <li key={i} className="flex flex-wrap items-center gap-2">
+              <b className="text-foreground">{l.name}</b>
+              <span className="tabular-nums text-foreground-muted">받음 {l.got.toLocaleString("ko-KR")} / 발주 {l.ordered.toLocaleString("ko-KR")}개</span>
+              <span className="rounded bg-amber-500/12 px-1.5 text-[11px] font-semibold text-amber-700 dark:text-amber-300">{l.kind}</span>
+            </li>
+          ))}
+        </ul>
+        <p className="mt-2 text-[12px] text-foreground-muted">추가로 받은 뒤 입고 칸에서 기록하면 다시 입고 완료가 됩니다. 따로 사는 물건이면 [취소] 후 새 구매 건으로 등록해 주세요.</p>
+        <div className="mt-4 flex justify-end gap-2">
+          <button type="button" onClick={onCancel} className={cn("h-9 rounded-lg border border-border px-4 text-[13px]", POPUP_BTN_HOVER)}>취소</button>
+          <button type="button" autoFocus onClick={onOk} className="h-9 rounded-lg bg-amber-600 px-5 text-[13px] font-semibold text-white hover:bg-blue-700!">발행</button>
         </div>
       </div>
     </div>

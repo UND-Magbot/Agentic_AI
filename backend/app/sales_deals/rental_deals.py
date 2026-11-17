@@ -244,7 +244,8 @@ async def load_serials(db: AsyncSession, deal_id: int, user_id: int | None, toda
     if want:
         dup = (await db.execute(text(
             "SELECT lower(u.serial) AS s, u.status, s.customer FROM product_units u LEFT JOIN sales_deals s ON s.id = u.deal_id "
-            "WHERE NOT u.no_serial AND lower(u.maker) = 'und' AND lower(u.serial) = ANY(:w)"),
+            # 회수가 끝난 줄은 빼고 — 회수한 대여 제품은 다시 불러올 수 있다(사용자 2026-11-16)
+            f"WHERE NOT u.no_serial AND lower(u.maker) = 'und' AND lower(u.serial) = ANY(:w) AND u.status <> '{units.RETURNED}'"),
             {"w": [s.lower() for s in want]})).mappings().all()
         busy = {r["s"]: (r["customer"] or "고객사 없음") + (" · 지운 건" if r["status"] == units.DELETED else "") for r in dup}
         for no, xs in list(picked.items()):

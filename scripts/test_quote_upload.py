@@ -178,8 +178,8 @@ async def run() -> None:
             return e
         return None
     e1 = await ask(typed)
-    check(bool(e1) and "덮어쓸까요" in str(e1) and e1.doc_no == typed and e1.revision == 1,
-          "같은 영업 건에서 쓴 번호 → 덮어쓸지 묻는다(어느 판인지 함께)", str(e1))
+    check(bool(e1) and "교체할까요" in str(e1) and e1.doc_no == typed and e1.revision == 1,
+          "같은 영업 건에서 쓴 번호 → 교체할지 묻는다(어느 판인지 함께)", str(e1))
     check(bool(await ask(typed.lower())), "대소문자만 달라도 같은 번호로 봄")
     check(bool(await ask(first_no)), "AI 견적서로 처음 발행한 번호(시스템이 매긴 번호)도 덮어쓰기 대상")
     old_no = f"S{TODAY:%y}-{uuid.uuid4().hex[:6].upper()}"          # 예전 형식 번호(doc_numbers 에 기록 안 됨)
@@ -224,6 +224,17 @@ async def run() -> None:
     iss = {x["issue_no"]: x for x in d3["quotes"][0]["issues"]}
     check(iss[typed]["replaced_at"] and iss[typed]["uploaded"] and len(d3["quotes"][0]["issues"]) == len(hist_before),
           "영업 건 상세 견적서 목록: 그 판에 교체 표시, 판 수 그대로", str(iss.get(typed)))
+    # 교체 전 파일 다시 받기(사용자 2026-11-16 — 번호 하나 = 견적서 하나, 교체 전 파일은 보관)
+    _, got_old = await pr.quote_file(q["id"], user_id=uid, revision=snap["revision"], fmt="xlsx", replaced=0)
+    check(got_old == pr._object_bytes(up["key"]), "교체 전 파일 받기 — 원래 올린 파일 그대로")
+    rr = iss[typed].get("replaced") or []
+    check(len(rr) == 1 and rr[0]["filename"] == up["filename"] and rr[0]["total"] == 2_200_000 and rr[0]["replaced_at"] == iss[typed]["replaced_at"],
+          "영업 건 상세: 그 판 아래 '교체 전' 파일·금액·교체 시각", str(rr))
+    try:
+        await pr.quote_file(q["id"], user_id=uid, revision=snap["revision"], fmt="xlsx", replaced=3)
+        check(False, "없는 교체 전 순번 거절")
+    except pr.RecommendError:
+        check(True, "없는 교체 전 순번 거절")
 
     # 최신 판(old_no)을 덮어쓰기 — 건의 견적 금액·품목도 바뀜
     up_new2 = store(f"product-quotes/{q['id']}/", new_data)
@@ -235,6 +246,20 @@ async def run() -> None:
     check(d4["quote"]["amount"] == 3_300_000 and d4["quote"]["items"][0]["name"] == "TCV3" and d4["display_no"] == old_no
           and d4["quote"].get("no") == old_no and d4["history"][0]["detail"]["latest"] is True,
           "최신 판을 바꾸면 건의 견적 금액·품목도 바뀜(번호 그대로)", str((d4["quote"]["amount"], d4["display_no"])))
+    # 부가세 포함 견적서를 같은 번호로 교체 — 영업 건엔 공급가(÷1.1), 새 번호 발행과 같게(QA 2026-11-16: 10% 부풀던 문제)
+    await pr.quote_edit(q["id"], user_id=uid, payload={"form": {"vat": "included"}})
+    up_vat = store(f"product-quotes/{q['id']}/", new_data)
+    await pr.quote_issue_upload(qid=q["id"], deal_id=None, user_id=uid, owner_check=True, upload=up_vat, initials="",
+                                doc_no=old_no, overwrite=True,
+                                items=[{"name": "TCV3", "spec": "", "qty": 1, "unit_price": 3_300_000}])
+    async with SessionLocal() as db:
+        d5 = await svc.get_deal(db, deal_id, TODAY)
+        h5 = (await db.execute(text("SELECT history FROM product_quotes WHERE id = :i"), {"i": q["id"]})).scalar()
+    vat_snap = next(h for h in h5 if h.get("quote_no") == old_no)
+    check(d5["quote"]["amount"] == 3_000_000 and vat_snap["lines"][0].get("supply_unit") == 3_000_000,
+          "부가세 포함 견적서 같은 번호 교체 → 영업 건은 공급가(330만 → 300만), 판 기록에도 공급가 단가",
+          str((d5["quote"]["amount"], vat_snap["lines"][0])))
+    await pr.quote_edit(q["id"], user_id=uid, payload={"form": {"vat": "excluded"}})
 
     # ── 품목 사진(사용자 2026-10-12) — 줄에 붙이고 견적서 Remark 칸에 ──
     from PIL import Image as _Img

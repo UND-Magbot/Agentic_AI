@@ -221,7 +221,18 @@ class DeleteIn(BaseModel):
     ids: list[int] = Field(min_length=1, max_length=svc.DELETE_MAX)
 
 
+class CodedHTTPException(HTTPException):
+    """막힘 문구(detail)에 code 를 같이 — 영업 건 상세가 팝업으로 알리고 해결할 곳으로 이어 준다(사용자 2026-11-17).
+    응답 = {"detail": 문구, "code": 코드}(main.py 처리기). detail 은 문자열 그대로라 문구만 읽는 다른 화면도 그대로 동작."""
+
+    def __init__(self, status_code: int, detail: str, code: str) -> None:
+        super().__init__(status_code=status_code, detail=detail)
+        self.code = code
+
+
 def _fail(e: svc.DealError) -> HTTPException:
+    if getattr(e, "code", None):
+        return CodedHTTPException(e.status, str(e), e.code)
     return HTTPException(status_code=e.status, detail=str(e))
 
 
@@ -626,10 +637,14 @@ async def _act(db: AsyncSession, deal_id: int, coro) -> dict:
 async def set_won(deal_id: int, body: WonIn, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
     if body.won is False:                                        # 실주는 없앴다 — 수주까지 못 간 건은 드랍(사용자 2026-10-08)
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="수주까지 못 간 건은 [드랍]으로 처리해 주세요.")
-    if body.won is None and not is_admin(user):                  # 수주를 미확인으로 되돌리기는 관리자만
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="미확인으로 되돌리기는 관리자만 할 수 있습니다.")
+    # 수주를 미확인으로 되돌리기 — 되돌리기·취소는 영업팀 누구나(사용자 2026-11-17 — 실수·수정이 잦음, 이력에 남음)
     pick = {"quote_id": body.quote_id, "revision": body.revision} if body.quote_id is not None else None
-    return await _act(db, deal_id, svc.set_won(db, deal_id, user.id, body.won, body.date, pick))
+    note: dict[str, str] = {}
+
+    async def run() -> None:
+        note["v"] = await svc.set_won(db, deal_id, user.id, body.won, body.date, pick)
+    # 다른 판으로 수주 바꾸며 S/N 을 옮겼으면 그 안내(sn_note) — 화면 위에 보인다(QA 2026-11-16)
+    return {**await _act(db, deal_id, run()), "sn_note": note.get("v") or ""}
 
 
 class TermIn(BaseModel):
@@ -714,7 +729,7 @@ async def rental_start(deal_id: int, body: RentalStartIn, user: User = Depends(r
 async def rental_return(deal_id: int, body: RentalReturnIn, user: User = Depends(require_sales),
                         db: AsyncSession = Depends(get_db)) -> dict:
     """대여 건 회수 단계(사용자 2026-10-22) — 대여 중 → 회수 중 → 회수 완료."""
-    return await _act(db, deal_id, svc.set_rental_return(db, deal_id, user.id, body.step, body.date, admin=is_admin(user)))
+    return await _act(db, deal_id, svc.set_rental_return(db, deal_id, user.id, body.step, body.date, admin=True))   # 회수 기록 취소도 영업팀 누구나(2026-11-17)
 
 
 @router.post("/{deal_id}/confirm-term")
@@ -742,9 +757,7 @@ async def set_meeting(deal_id: int, body: MeetingIn, user: User = Depends(requir
 
 @router.post("/{deal_id}/drop")
 async def set_drop(deal_id: int, body: DropIn, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
-    """드랍(진행을 접음)은 누구나 — 출하·입금 기록이 있는 건은 관리자만(사용자 2026-10-27), 되살리기는 관리자만."""
-    if not body.dropped and not is_admin(user):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="드랍한 건을 되살리기는 관리자만 할 수 있습니다.")
+    """드랍(진행을 접음)은 누구나 — 출하·입금 기록이 있는 건은 관리자만(사용자 2026-10-27). 되살리기는 되돌리기·취소는 영업팀 누구나(사용자 2026-11-17 — 실수·수정이 잦음, 이력에 남음)."""
     return await _act(db, deal_id, svc.set_dropped(db, deal_id, user.id, body.dropped, body.reason, admin=is_admin(user)))
 
 
@@ -763,8 +776,7 @@ async def add_payment(deal_id: int, body: PaymentIn, user: User = Depends(requir
 @router.post("/{deal_id}/paid-full")
 async def set_paid_full(deal_id: int, body: PaidFullIn, user: User = Depends(require_sales),
                         db: AsyncSession = Depends(get_db)) -> dict:
-    if not body.full and not is_admin(user):                     # 완납 해제는 관리자만
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="완납 해제는 관리자만 할 수 있습니다.")
+    # 완납 해제 — 되돌리기·취소는 영업팀 누구나(사용자 2026-11-17 — 실수·수정이 잦음, 이력에 남음)
     return await _act(db, deal_id, svc.set_paid_full(db, deal_id, user.id, body.full))
 
 
@@ -814,8 +826,9 @@ async def reset_to_quote(deal_id: int, user: User = Depends(require_admin), db: 
 
 
 @router.post("/{deal_id}/remove")
-async def remove_entry(deal_id: int, body: RemoveIn, user: User = Depends(require_admin),
+async def remove_entry(deal_id: int, body: RemoveIn, user: User = Depends(require_sales),
                        db: AsyncSession = Depends(get_db)) -> dict:
+    """[잘못 입력함] 한 줄 지우기(계산서·입금·출하·발주서) — 되돌리기·취소는 영업팀 누구나(사용자 2026-11-17 — 실수·수정이 잦음, 이력에 남음). 지운 내용은 이력에 남는다."""
     try:
         await svc.check_entry(db, deal_id, body.kind, body.index, body.expect)
         await svc.remove_entry(db, deal_id, user.id, body.kind, body.index)
@@ -947,14 +960,14 @@ async def set_statement(deal_id: int, body: StatementIn, user: User = Depends(re
 
 
 @router.get("/{deal_id}/statement/file")
-async def statement_file(deal_id: int, fmt: Literal["pdf", "xlsx"] = "pdf", _: User = Depends(require_sales),
-                         db: AsyncSession = Depends(get_db)):
+async def statement_file(deal_id: int, fmt: Literal["pdf", "xlsx"] = "pdf", prev: int | None = None,
+                         _: User = Depends(require_sales), db: AsyncSession = Depends(get_db)):
     from fastapi.responses import Response
 
     from .company_knowledge import quote_xlsx as qx
 
     try:
-        name, data = await svc.statement_file(db, deal_id)
+        name, data = await svc.statement_file(db, deal_id, prev)   # prev = 예전 발급본(사용자 2026-11-17)
     except svc.DealError as e:
         raise _fail(e) from e
     if fmt == "pdf":
@@ -1069,7 +1082,7 @@ async def quote_upload_confirm(deal_id: int, body: "QuoteUploadConfirm", user: U
     from .company_knowledge import product_recommend as pr
 
     try:
-        await pr.quote_issue_upload(qid=None, deal_id=deal_id, user_id=user.id, owner_check=False,
+        res = await pr.quote_issue_upload(qid=None, deal_id=deal_id, user_id=user.id, owner_check=False,
                                     upload=body.upload.model_dump(), items=[x.model_dump() for x in body.items],
                                     initials=body.initials, doc_no=body.doc_no, overwrite=body.overwrite, sync=body.sync,
                                     rental_start=body.rental_start, rental_checked=body.rental_checked, forced=body.forced)
@@ -1082,12 +1095,13 @@ async def quote_upload_confirm(deal_id: int, body: "QuoteUploadConfirm", user: U
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(e)) from e
     except pr.RecommendError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
-    return await svc.get_deal(db, deal_id, svc.kst_today())
+    # 같은 번호 교체로 S/N 을 다시 짝지었으면 그 안내(sn_note) — 올리기 창이 보여 준다(QA 2026-11-16)
+    return {**await svc.get_deal(db, deal_id, svc.kst_today()), "sn_note": res.get("sn_note") or ""}
 
 
 @router.get("/{deal_id}/quote-file")
 async def deal_quote_file(deal_id: int, quote: int, revision: int | None = None, fmt: Literal["pdf", "xlsx"] = "pdf",
-                          _: User = Depends(require_sales), db: AsyncSession = Depends(get_db)):
+                          replaced: int | None = None, _: User = Depends(require_sales), db: AsyncSession = Depends(get_db)):
     """이 건의 견적서 발행본 내려받기(영업부 누구나 — 발행·건 연결 견적서는 견적서 작업 화면도 영업부끼리 같이 쓴다, 2026-10-28). 이 건의 견적서가 아니면 404."""
     from fastapi.responses import Response
 
@@ -1100,7 +1114,7 @@ async def deal_quote_file(deal_id: int, quote: int, revision: int | None = None,
     if not any(q["id"] == quote for q in d.get("quotes") or []):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="이 건의 견적서가 아닙니다.")
     try:
-        name, data = await pr.quote_file(quote, user_id=None, revision=revision, fmt=fmt)
+        name, data = await pr.quote_file(quote, user_id=None, revision=revision, fmt=fmt, replaced=replaced)
     except pr.QuotePdfError as e:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e)) from e
     except pr.RecommendError as e:

@@ -24,6 +24,7 @@ from datetime import date
 from typing import Any
 
 from openpyxl import load_workbook
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 
 from . import quote_readback as rb
 from . import quote_xlsx as qx
@@ -197,6 +198,8 @@ def _set(ws, r: int, c: int, value: Any, fmt: str | None = None) -> None:
     cell = ws.cell(r, c)
     if type(cell).__name__ == "MergedCell":
         return
+    # 엑셀이 받지 않는 보이지 않는 제어문자(복사·붙여넣기·AI 판독에서 섞임)는 뺀다 — 그대로 쓰면 파일을 못 만들어 미리보기·다운로드가 500(QA 2026-11-16)
+    value = ILLEGAL_CHARACTERS_RE.sub("", value) if isinstance(value, str) else value
     cell.value = value
     if fmt:
         cell.number_format = fmt

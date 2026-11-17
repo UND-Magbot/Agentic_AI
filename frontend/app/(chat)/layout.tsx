@@ -1,5 +1,6 @@
 import { ApprovalAlert } from "@/components/domains/sales/approval-alert";
 import { Sidebar } from "@/components/shared/layout/sidebar";
+import { ConfirmHost } from "@/components/shared/ui/confirm-host";
 import { listDomainMetas } from "@/lib/agents/registry";
 import { displayName, getAllowedDomains, getCurrentUser } from "@/lib/shared/auth";
 import {
@@ -37,7 +38,9 @@ export default async function ChatLayout({ children }: { children: React.ReactNo
             : null
         }
       />
-      <main className="flex flex-1 flex-col bg-background">{children}</main>
+      <main className="flex min-w-0 flex-1 flex-col bg-background">{/* min-w-0: 넓은 표가 본문을 화면 밖으로 밀지 않고 표 안에서 가로 스크롤(2026-11-17) */}{children}</main>
+      {/* 확인 팝업(window.confirm 대신, 사용자 2026-11-17) — askConfirm(...) 으로 연다 */}
+      <ConfirmHost />
       {/* 승인 요청 알림(사용자 2026-10-13) — 최고 관리자·영업(전체) 관리자 */}
       {user && (user.role === "superadmin" || (user.role === "domain_admin" && (user.domain === "sales" || user.domain === "all"))) && <ApprovalAlert />}
     </div>

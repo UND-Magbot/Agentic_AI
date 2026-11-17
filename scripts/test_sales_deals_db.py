@@ -115,6 +115,17 @@ async def run() -> None:
         check(d2["deal_no"] == d["deal_no"] == f"VT{TODAY:%Y%m%d}", "같은 날 다른 프로젝트도 VT+날짜(B 안 붙음)",
               f"{d['deal_no']} / {d2['display_no']}")
         await svc.set_won(db, t_id, uid, True, TODAY)
+        # 부가세 포함 단가로 등록한 건 — 명세서 초안은 공급가(÷1.1)로(QA 2026-11-16: 부가세가 두 번 붙어 121만이 되던 문제)
+        tv = await svc.create_deal(db, uid, {
+            "customer": TEST_CUSTOMER, "contact": None, "owner": "Victor", "title": "부가세 포함", "quote_date": TODAY,
+            "vat_included": True, "currency": "KRW", "items": [{"name": "MG10", "unit_price": 1_100_000, "qty": 2}],
+            "pay_terms_text": None, "note": None})
+        await svc.set_won(db, tv, uid, True, TODAY)
+        dv = await svc.get_deal(db, tv, TODAY)
+        sv = await svc.statement_draft(db, tv)
+        check(dv["flow"]["total"] == 2_000_000 and [it["unit_price"] for it in sv["items"]] == [1_000_000],
+              "부가세 포함 단가 건 — 받을 금액·명세서 초안 단가 모두 공급가(110만 → 100만)",
+              str((dv["flow"]["total"], [it["unit_price"] for it in sv["items"]])))
         # 거래명세서 발급 전에도 결제 조건을 정할 수 있다(사용자 2026-10-23 — 수주 진행 칸은 순서 안내만)
         await svc.set_terms(db, t_id, uid, [{"label": "선금", "pct": 30}, {"label": "잔금", "pct": 70}])
         check(len((await svc.get_deal(db, t_id, TODAY))["flow"]["terms"]) == 2, "명세서 전에도 결제 조건 저장")

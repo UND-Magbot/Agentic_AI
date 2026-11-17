@@ -51,6 +51,8 @@ CHARGES = ("미정", "무상", "유상")
 AS_STATUS = ("접수", "진행 중", "완료")
 # 영업 건을 지운 S/N 의 상태(사용자 2026-10-26) — 기록은 남기고, 같은 번호 다시 등록은 막는다
 DELETED = "건 삭제"
+# 대여 회수를 마친 S/N 의 상태 — 이 줄은 그 건의 기록으로 남고, 같은 S/N 을 다른 건에 다시 등록할 수 있다(사용자 2026-11-16)
+RETURNED = "회수"
 SERIAL_MAX, PART_MAX, MAKER_MAX, NOTE_MAX = 80, 120, 40, 300
 AS_AMOUNT_MAX = 100_000_000_000   # A/S 금액 상한(원) — 잘못 친 자릿수 막기
 WARRANTY_MONTHS = 12          # 무상 기간 = 출하일부터 1년, 모든 제품 고정(사용자 2026-10-30 — 365일 FIX)
@@ -190,6 +192,99 @@ async def won_issue(db: AsyncSession, d: dict) -> tuple[int, int] | None:
     return None
 
 
+def _line_key(name: Any) -> str:
+    """품목 줄 비교 이름 — 첫 줄(품명), 대소문자·띄어쓰기 차이는 같게."""
+    return " ".join(str(name or "").splitlines()[0].split()).upper() if str(name or "").strip() else ""
+
+
+async def rebind_units(db: AsyncSession, src: tuple[int, int], dst: tuple[int, int, str | None], new_lines: list[dict]) -> str:
+    """S/N 을 새 품목 줄로 다시 짝짓기(QA 2026-11-16 영업 1·2·3, 사용자 결정) — S/N 은 판의 '몇 번째 줄'(line_no)에 붙어 있어,
+    같은 번호 교체(src = dst)나 다른 판으로 수주 바꾸기(src → dst) 때 줄 순서·구성이 바뀌면 다른 품목 밑에 보이거나 사라졌다.
+    품목 이름(첫 줄, 대소문자·띄어쓰기 무시)으로 새 줄에 짝짓는다 — 같은 이름이 여러 줄이면 앞에서부터, 수량이 줄었으면 출하한 S/N 먼저.
+    막지 않는다: 짝이 없는 S/N(품목이 빠짐·수량을 넘음) 중 출하했거나 A/S 기록이 있는 것은 지우지 않고 이전 기록으로 남기고
+    (다른 판이면 그 판에 그대로, 같은 판이면 품목 줄 없이 — 출하 카드·제품 검색에서 계속 보임), 출하 전 S/N 은 지운다(번호만 적어 둔 것).
+    반환 = 화면·이력에 남길 안내(없으면 ""). 커밋하지 않는다."""
+    rs = (await db.execute(text(
+        "SELECT u.id, u.line_no, u.line_name, u.serial, u.shipment_index, "
+        "  EXISTS (SELECT 1 FROM as_cases a WHERE a.unit_id = u.id) AS has_as "
+        "FROM product_units u WHERE u.quote_id = :q AND u.quote_revision = :r AND u.status <> :gone AND u.line_no IS NOT NULL "
+        "ORDER BY u.line_no, (u.shipment_index IS NULL), u.id"),
+        {"q": src[0], "r": src[1], "gone": DELETED})).mappings().all()
+    await _remap_shipments(db, src[0], new_lines)
+    if not rs:
+        return ""
+    same = (src[0], src[1]) == (dst[0], dst[1])
+    free: dict[str, list[dict]] = {}
+    for ln in target_lines(new_lines):
+        free.setdefault(_line_key(ln["name"]), []).append(ln)
+    moved: list[tuple[list[int], dict]] = []
+    left: list[dict] = []
+    for old in dict.fromkeys(r["line_no"] for r in rs):
+        mine = [r for r in rs if r["line_no"] == old]           # 출하한 것이 앞(ORDER BY)
+        cand = free.get(_line_key(mine[0]["line_name"])) or []
+        if not cand:
+            left += mine
+            continue
+        ln = cand.pop(0)
+        moved.append(([r["id"] for r in mine[:ln["qty"]]], ln))
+        left += mine[ln["qty"]:]
+    # 줄 번호가 서로 바뀌는 경우(A↔B)도 있어 S/N id 로 옮긴다
+    for ids, ln in moved:
+        await db.execute(text("UPDATE product_units SET quote_id = :q, quote_revision = :r, issue_no = COALESCE(:no, issue_no), "
+                              "line_no = :n, line_name = :nm, updated_at = NOW() WHERE id = ANY(:ids)"),
+                         {"q": dst[0], "r": dst[1], "no": dst[2], "n": ln["line_no"], "nm": ln["name"], "ids": ids})
+    keep = [r for r in left if r["shipment_index"] is not None or r["has_as"]]
+    drop = [r for r in left if not (r["shipment_index"] is not None or r["has_as"])]
+    if keep and same:                                       # 같은 판 — 품목 줄 없이 기록으로(이 판 S/N 화면에서는 빠짐)
+        await db.execute(text("UPDATE product_units SET line_no = NULL, updated_at = NOW() WHERE id = ANY(:ids)"),
+                         {"ids": [r["id"] for r in keep]})
+    if drop:
+        await db.execute(text("DELETE FROM product_units WHERE id = ANY(:ids)"), {"ids": [r["id"] for r in drop]})
+    notes = []
+    if keep:
+        notes.append(f"S/N {len(keep)}개({', '.join(r['serial'] for r in keep[:5])}{' 등' if len(keep) > 5 else ''})는 새 견적서에 맞는 품목이 없어 "
+                     "이전 기록으로 남겼습니다(출하·A/S 기록은 그대로, 출하 카드·제품 검색에서 보임).")
+    if drop:
+        notes.append(f"출하 전 S/N {len(drop)}개({', '.join(r['serial'] for r in drop[:5])}{' 등' if len(drop) > 5 else ''})는 새 견적서에 "
+                     "맞는 품목이 없어 지웠습니다.")
+    return " ".join(notes)
+
+
+async def _remap_shipments(db: AsyncSession, quote_id: int, new_lines: list[dict]) -> None:
+    """출하 기록의 품목 줄 번호도 새 견적 줄로(QA 2026-11-17 D1) — 출하 기록 줄은 수주 판의 '몇 번째 줄'(line_no)을 가리켜,
+    S/N 만 새 줄로 옮기면 출하 카드에서 다른 품목 밑에 S/N 이 보이고 품목별 S/N 수량이 엇갈렸다. 품목 이름으로 새 줄을 찾고,
+    없으면 줄 번호를 비운다(출하 카드는 이름으로 보여 줌). 이름·수량·사진은 그대로. 커밋하지 않는다."""
+    row = (await db.execute(text(
+        "SELECT s.id, s.shipments FROM sales_deals s JOIN product_quotes q ON q.deal_id = s.id WHERE q.id = :q FOR UPDATE OF s"),
+        {"q": quote_id})).first()
+    if not row:
+        return
+    ships = json.loads(row[1]) if isinstance(row[1], str) else (row[1] or [])
+    targets = target_lines(new_lines)
+    changed = False
+    for sh in ships:
+        free: dict[str, list[int]] = {}
+        for ln in targets:
+            free.setdefault(_line_key(ln["name"]), []).append(ln["line_no"])
+        for ln in sh.get("lines") or []:
+            if ln.get("line_no") is None:
+                continue
+            cand = free.get(_line_key(ln.get("name") or ""))
+            new = cand.pop(0) if cand else None
+            if new != ln.get("line_no"):
+                ln["line_no"] = new
+                changed = True
+    if changed:
+        await db.execute(text("UPDATE sales_deals SET shipments = CAST(:s AS jsonb), updated_at = NOW() WHERE id = :i"),
+                         {"s": json.dumps(ships, ensure_ascii=False), "i": row[0]})
+
+
+async def units_on_issue(db: AsyncSession, quote_id: int, revision: int) -> int:
+    """그 판에 등록한 S/N 수(지운 건 기록 빼고)."""
+    return int((await db.execute(text("SELECT COUNT(*) FROM product_units WHERE quote_id = :q AND quote_revision = :r AND status <> :g"),
+                                 {"q": quote_id, "r": revision, "g": DELETED})).scalar() or 0)
+
+
 # ── 시리얼 읽기·저장 ─────────────────────────────────────────────────────────
 
 def _unit_view(r: Any) -> dict:
@@ -265,7 +360,7 @@ async def save_units(db: AsyncSession, deal_id: int, user_id: int | None, quote_
         raw_day = d["shipments"][shipment_index].get("date")
         ship_day = dt.date.fromisoformat(raw_day) if raw_day else kst_today()
     by_line = {ln["line_no"]: ln for ln in iss["lines"]}
-    only = " AND line_no = ANY(:lines)" if partial else ""
+    only = " AND line_no = ANY(:lines)" if partial else " AND line_no IS NOT NULL"     # 품목 줄 없이 남긴 S/N(rebind_units)은 그대로
     old = {r["id"]: r for r in (await db.execute(text(
         f"SELECT {_UNIT_COLS} FROM product_units WHERE deal_id = :d AND " + SRC + f"{only} FOR UPDATE"),
         {"d": deal_id, "q": quote_id, "r": revision, "lines": [b.get("line_no") for b in payload]})).mappings().all()}
@@ -300,13 +395,14 @@ async def save_units(db: AsyncSession, deal_id: int, user_id: int | None, quote_
         busy += (await db.execute(text("SELECT DISTINCT serial FROM as_cases WHERE unit_id = ANY(:g)"), {"g": gone})).scalars().all()
         if busy:
             raise DealError("출하했거나 A/S 기록이 있는 S/N은 지울 수 없습니다: " + ", ".join(dict.fromkeys(busy)))
-    # 이번에 다시 쓰는 부품 밖(다른 줄·다른 판·다른 건)에 이미 있는 시리얼(같은 제조사)
+    # 이번에 다시 쓰는 부품 밖(다른 줄·다른 판·다른 건)에 이미 있는 시리얼(같은 제조사) — 회수가 끝난 줄('회수')은 빼고:
+    # 회수한 대여 제품은 다음 대여·판매 건에 새 줄로 다시 등록한다(사용자 2026-11-16)
     reals = [(v["maker"].lower(), v["serial"].lower(), uid) for uid, v in keep if not v["no_serial"]]
     if reals:
         dup = (await db.execute(text(
             "SELECT u.serial, u.maker, u.issue_no, u.status, u.note, s.customer FROM product_units u LEFT JOIN sales_deals s ON s.id = u.deal_id "
             "WHERE NOT u.no_serial AND (lower(u.maker), lower(u.serial)) IN (SELECT * FROM unnest(CAST(:m AS text[]), CAST(:s AS text[]))) "
-            "AND NOT (u.id = ANY(:own))"),
+            f"AND NOT (u.id = ANY(:own)) AND u.status <> '{RETURNED}'"),
             {"m": [m for m, _, _ in reals], "s": [s for _, s, _ in reals], "own": list(old)})).mappings().all()
         if dup:
             x = dup[0]
@@ -488,10 +584,21 @@ async def ship_units(db: AsyncSession, deal_id: int, index: int, day: dt.date, u
 
 
 async def shipment_removed(db: AsyncSession, deal_id: int, index: int | None) -> None:
-    """출하 기록 삭제(index) 또는 견적 상태로 되돌림(None) — 묶여 있던 부품을 '등록'으로, 뒤 출하 번호는 하나씩 당긴다."""
-    cond = "" if index is None else " AND shipment_index = :x"
-    await db.execute(text("UPDATE product_units SET shipment_index = NULL, warranty_start = NULL, warranty_until = NULL, "
-                          f"status = '등록', updated_at = NOW() WHERE deal_id = :d AND shipment_index IS NOT NULL{cond}"),
+    """출하 기록 삭제(index) 또는 견적 상태로 되돌림(None) — 묶여 있던 부품을 '등록'으로, 뒤 출하 번호는 하나씩 당긴다.
+    (QA 2026-11-16) A/S 기록이 있는 S/N 이 묶인 출하는 지우지 않는다 — 무상 기간 기준(출하일)이 사라져 A/S 의 무상·유상과 어긋났다.
+    회수를 마친 S/N 은 '회수' 그대로 둔다 — '등록'으로 되돌리면 다른 건에 다시 나간 같은 S/N 과 겹쳐 오류(500)가 났고,
+    회수했는데도 다른 건에 다시 쓸 수 없게 됐다."""
+    cond = "" if index is None else " AND u.shipment_index = :x"
+    asn = (await db.execute(text(
+        "SELECT DISTINCT u.serial FROM product_units u JOIN as_cases a ON a.unit_id = u.id "
+        f"WHERE u.deal_id = :d AND u.shipment_index IS NOT NULL{cond}"), {"d": deal_id, "x": index})).scalars().all()
+    if asn:
+        raise DealError("A/S 기록이 있는 S/N이 묶인 출하 기록은 지울 수 없습니다(무상 기간의 기준이 사라짐): "
+                        + ", ".join(asn[:5]) + ". 출하일·운송 정보가 틀렸으면 출하 기록을 고쳐 주세요.", 409,
+                        code="SHIP_HAS_AS")   # 화면이 팝업으로 알리고 [출하 기록 고치기]로 이어 준다(사용자 2026-11-17)
+    await db.execute(text("UPDATE product_units u SET shipment_index = NULL, warranty_start = NULL, warranty_until = NULL, "
+                          f"status = CASE WHEN u.status = '{RETURNED}' THEN '{RETURNED}' ELSE '등록' END, updated_at = NOW() "
+                          f"WHERE u.deal_id = :d AND u.shipment_index IS NOT NULL{cond}"),
                      {"d": deal_id, "x": index})
     if index is not None:
         await db.execute(text("UPDATE product_units SET shipment_index = shipment_index - 1 WHERE deal_id = :d AND shipment_index > :x"),
@@ -550,9 +657,13 @@ async def unit_detail(db: AsyncSession, unit_id: int, today: dt.date) -> dict:
     ships = u.pop("shipments") or []
     ships = json.loads(ships) if isinstance(ships, str) else ships
     ship = ships[u["shipment_index"]] if u.get("shipment_index") is not None and u["shipment_index"] < len(ships) else None
+    # A/S 이력은 같은 제품(같은 제조사·S/N)의 모든 건 기록 — 회수 뒤 다른 건에 다시 나가도 고장 이력이 이어지게(사용자 2026-11-16)
+    ids = [unit_id] if u.get("no_serial") else (await db.execute(text(
+        "SELECT id FROM product_units WHERE NOT no_serial AND lower(maker) = lower(:m) AND lower(serial) = lower(:s)"),
+        {"m": u.get("maker") or "", "s": u["serial"]})).scalars().all()
     return {**u, "warranty_state": warranty_state(u, today),
             "shipment": {k: ship.get(k) for k in ("date", "carrier", "tracking", "receiver")} if ship else None,
-            "cases": await list_cases(db, unit_id=unit_id)}
+            "cases": await list_cases(db, unit_ids=list(ids) or [unit_id])}
 
 
 # ── A/S 기록 ─────────────────────────────────────────────────────────────────
@@ -629,12 +740,15 @@ async def _with_events(db: AsyncSession, cases: list[dict]) -> list[dict]:
     return [{**c, "events": case_events(c, names)} for c in cases]
 
 
-async def list_cases(db: AsyncSession, *, unit_id: int | None = None, status: str | None = None, limit: int = 200) -> list[dict]:
-    """A/S 기록 — 마지막으로 바뀐 기록이 위(사용자 2026-10-30: 가장 최신 이력이 위), 기록마다 이력(events)."""
+async def list_cases(db: AsyncSession, *, unit_id: int | None = None, status: str | None = None, limit: int = 200,
+                     unit_ids: list[int] | None = None) -> list[dict]:
+    """A/S 기록 — 마지막으로 바뀐 기록이 위(사용자 2026-10-30: 가장 최신 이력이 위), 기록마다 이력(events).
+    unit_ids = 같은 제품의 여러 건 기록(회수 뒤 다시 나간 S/N)을 함께."""
+    ids = unit_ids if unit_ids is not None else ([unit_id] if unit_id is not None else None)
     rs = (await db.execute(text(
-        f"SELECT {_CASE_COLS} FROM as_cases WHERE (CAST(:u AS BIGINT) IS NULL OR unit_id = :u) "
+        f"SELECT {_CASE_COLS} FROM as_cases WHERE (CAST(:all AS BOOLEAN) OR unit_id = ANY(:u)) "
         "AND (CAST(:s AS TEXT) IS NULL OR status = :s) ORDER BY updated_at DESC, id DESC LIMIT :n"),
-        {"u": unit_id, "s": status, "n": limit})).mappings().all()
+        {"all": ids is None, "u": ids or [], "s": status, "n": limit})).mappings().all()
     return await _with_events(db, [_case_view(r) for r in rs])
 
 

@@ -124,7 +124,7 @@ async def main() -> None:
                                                           "expected_date": "2026-11-20"})
         report(r.status_code == 400, "다른 건 저장 위치 파일은 거절", r.status_code)
         r, p = await post(f"/{pid}/po/upload/confirm", {"upload": ur["upload"], "doc_no": ur["doc_no"], "items": ur["items"],
-                                                        "date": ur.get("date"), "expected_date": "2026-11-20"})
+                                                        "date": ur.get("date"), "expected_date": "2026-11-20", "same_no": "replace"})
         report(r.status_code == 200 and p["po"]["no"] == ur["doc_no"] and p["po"]["upload"]["filename"] == "발주서_고침.xlsx"
                and p["po"]["total"] == total, "같은 번호 — 지금 판을 고친 파일로", r.status_code, p and p.get("po", {}).get("upload"))
         g = await c.get(F + f"/{pid}/po/file?fmt=xlsx")

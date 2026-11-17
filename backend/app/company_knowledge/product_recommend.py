@@ -49,7 +49,17 @@ _CORRECTION_RE = re.compile(r"아니라|아니고|대신|말고|틀렸|잘못|�
 
 
 class RecommendError(Exception):
-    """화면에 그대로 보여도 되는 한국어 문구."""
+    """화면에 그대로 보여도 되는 한국어 문구. code·deal_id 는 화면이 따로 처리할 때(PAY_LOCKED → 입금 확인 칸으로 안내)."""
+
+    def __init__(self, message: str = "", *, code: str | None = None, deal_id: int | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.deal_id = deal_id
+
+
+def _deal_err(e: Exception, deal_id: int | None) -> RecommendError:
+    """영업 건 오류를 화면용으로 — 코드(입금 확인 잠금 등)와 건 번호를 함께 넘긴다."""
+    return RecommendError(str(e), code=getattr(e, "code", None), deal_id=deal_id)
 
 
 class DuplicateDocNo(RecommendError):
@@ -1065,11 +1075,110 @@ async def quote_price_list() -> list[dict[str, Any]]:
             for r in await pp.list_prices() if r.get("customer_price")]
 
 
+def _state_sig(st: dict[str, Any]) -> str:
+    """작성 상태의 지문 — 발행한 뒤 고친 게 있는지(issued_mark 와 비교). 대화·바탕 파일·표시는 빼고 견적 내용만."""
+    import hashlib
+
+    keep = {k: st.get(k) for k in ("form", "lines", "options", "work", "delivery", "nego")}
+    return hashlib.sha1(json.dumps(keep, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _mark_issued(st: dict[str, Any], revision: int) -> None:
+    """이 작성 상태 = 그 판의 발행 내용이라는 표시(사용자 2026-11-16 — 수주한 건의 [견적서 고치기]가 수주한 판을 먼저 띄우게)."""
+    st["issued_mark"] = {"revision": int(revision), "sig": _state_sig(st)}
+
+
+async def _won_issue(db, r: dict[str, Any]) -> tuple[int, str] | None:
+    """이 견적서가 수주한 영업 건의 수주 판이면 (판, 발행번호), 아니면 None."""
+    if not r.get("deal_id"):
+        return None
+    from ..sales_deals import units as su
+
+    d = (await db.execute(text("SELECT id, proposal_id, quote, won FROM sales_deals WHERE id = :i"), {"i": r["deal_id"]})).mappings().first()
+    if not d or not d["won"]:
+        return None
+    dd = {"id": d["id"], "proposal_id": d["proposal_id"], "quote": json.loads(d["quote"]) if isinstance(d["quote"], str) else (d["quote"] or {})}
+    won = await su.won_issue(db, dd)
+    return (won[1], str(dd["quote"].get("no") or "")) if won and won[0] == r["id"] else None
+
+
+async def _statement_no(db, deal_id: int | None) -> str | None:
+    """영업 건에 발급한 거래명세서 번호(없으면 None) — 수주한 견적서를 고칠 때 명세서도 다시 발급할지 묻는다(사용자 2026-11-17)."""
+    if not deal_id:
+        return None
+    v = (await db.execute(text("SELECT statement->>'no' FROM sales_deals WHERE id = :i AND jsonb_typeof(statement) = 'object'"),
+                          {"i": deal_id})).scalar()
+    return v or None
+
+
+def _won_open(r: dict[str, Any], won: tuple[int, str] | None, statement_no: str | None = None) -> dict[str, Any] | None:
+    """수주한 건의 견적서를 열 때 — 작성 상태가 수주한 판이 아니면 수주한 판을 띄운다(사용자 2026-11-16).
+    open: none = 지금 상태 그대로(수주한 판이거나 그 위에서 고치는 중), auto = 수주한 판을 불러옴(고치다 만 내용 없음),
+    ask = 고치다 만 내용이 있거나(또는 예전 기록이라 알 수 없음) 물어봄 — [이어서 고치기] / [수주한 견적서 불러오기]."""
+    if not won:
+        return None
+    st = r["state"] or {}
+    mark = st.get("issued_mark")
+    if mark:
+        at, dirty = int(mark.get("revision", -1)), _state_sig(st) != mark.get("sig")
+        mode = "none" if at == won[0] else ("ask" if dirty else "auto")
+    else:                                                  # 표시가 없는 예전 기록 — 마지막 발행 판 기준, 고친 게 있는지는 모름
+        last = max((int(h.get("revision") or 0) for h in r["history"] or []), default=-1)
+        mode = "none" if last == won[0] else "ask"
+    return {"revision": won[0], "quote_no": won[1], "open": mode, "statement_no": statement_no}
+
+
 async def quote_get(qid: int, *, user_id: int | None) -> dict[str, Any]:
     from ..database import SessionLocal
 
     async with SessionLocal() as db:
-        return _quote_view(await _quote_row(db, qid, user_id))
+        r = await _quote_row(db, qid, user_id)
+        won = await _won_issue(db, r)
+        return {**_quote_view(r), "won_issue": _won_open(r, won, await _statement_no(db, r.get("deal_id")) if won else None)}
+
+
+async def quote_load_won(qid: int, *, user_id: int | None) -> dict[str, Any]:
+    """[수주한 견적서 불러오기] — 수주한 판의 발행본을 읽어 작성 상태로(사용자 2026-11-16). 회사 양식이면 그 판을 다시 만들어 칸 그대로
+    읽고(quote_readback), 올린 엑셀·그 위에서 고친 발행본이면 그 파일을 바탕으로(이후 서식 그대로 고침), PDF 면 품목만."""
+    from ..database import SessionLocal
+    from . import quote_readback as rb
+
+    async with SessionLocal() as db:
+        r = await _quote_row(db, qid, user_id)
+        won = await _won_issue(db, r)
+    if not won:
+        raise RecommendError("수주한 견적서가 아닙니다.")
+    h = next((x for x in r["history"] or [] if int(x.get("revision") or 0) == won[0]), None)
+    if not h:
+        raise RecommendError("수주한 견적서 판을 찾을 수 없습니다.")
+    name, data = await quote_file(qid, user_id=None, revision=won[0], fmt="xlsx")
+    parsed = None
+    if name.lower().endswith(".xlsx"):
+        try:
+            parsed = rb.parse(data)
+        except Exception:  # noqa: BLE001 — 못 읽으면 품목만
+            parsed = None
+    st = r["state"] or {}
+    if parsed is not None:
+        new, _, _ = rb.merge(st, parsed)
+        _take_photos(new, parsed.get("pics") or {}, qid, [], [])
+        base = h.get("file_key") or ((h.get("upload") or {}).get("key") if name.lower().endswith(".xlsx") and h.get("upload") else None)
+        if base and parsed["lang"] == ((st.get("form") or {}).get("lang") or "ko"):
+            new["base_file"] = {"key": base, "quote_no": won[1], "state": _snapshot(new)}
+        else:
+            new.pop("base_file", None)
+    else:
+        items = [{"name": ln.get("name") or ln.get("desc") or "", "spec": ln.get("spec") or "", "qty": ln.get("qty"),
+                  "unit_price": ln.get("unit_price")} for ln in h.get("lines") or [] if ln.get("row") in (None, "item")]
+        new, _, _ = rb.merge_items(st, items)
+        new.pop("base_file", None)
+    _mark_issued(new, won[0])
+    new["chat"] = [*(st.get("chat") or []), {"role": "assistant", "text": (
+        f"수주한 견적서({won[1]})를 불러왔습니다 — 이 내용에서 고쳐 발행하세요.")}][-QUOTE_CHAT_MAX:]
+    async with SessionLocal() as db:
+        await _save_state(db, qid, new)
+        await db.commit()
+    return await quote_get(qid, user_id=user_id)
 
 
 async def quote_list(*, user_id: int | None, limit: int = 100) -> list[dict[str, Any]]:
@@ -1276,7 +1385,8 @@ def _snap_biz(form: dict[str, Any]) -> dict[str, Any]:
     return {"biz": "rental", "rental": r["rental"]} if r else {"biz": "sale"}
 
 
-async def quote_issue(qid: int, *, user_id: int | None) -> dict[str, Any]:
+async def quote_issue(qid: int, *, user_id: int | None, replace_won: bool = False,
+                      statement: str | None = None) -> dict[str, Any]:
     """[견적서 발행] — 미정 값이 없어야(C13). 발행할 때마다 새 발행번호 QT-{이니셜}{발행일}-NN(사용자 2026-10-12):
     NN 은 그 발행자의 그날 견적서 발행 순서(고객사 무관, doc_numbers). 다른 사람이 고쳐 다시 내면 그 사람 번호.
     덮어쓰기는 없앴다 — 고치면 재발행(새 번호). 처음 발행이면 이 추천의 영업 건('제품 추천 확정')이 견적 단계가 되고
@@ -1309,6 +1419,8 @@ async def quote_issue(qid: int, *, user_id: int | None) -> dict[str, Any]:
                        "statement": deals.for_statement(ln)} for ln in lines
                       if ln.get("row") in (None, "nego") or (ln.get("row") == "option" and ln.get("in_total"))],
             **_deal_rental(f)}
+    if replace_won:                                # 수주한 견적서를 이 내용으로 고치기(같은 번호, 사용자 2026-11-16)
+        return await _issue_replace_won(r, parts, deal, user_id=user_id, day=day, statement=statement)
     async with SessionLocal() as db:
         pid = (await db.execute(text("SELECT id FROM product_proposals WHERE recommendation_id = :r"),
                                 {"r": r["recommendation_id"]})).scalar() if r["recommendation_id"] else None
@@ -1323,7 +1435,7 @@ async def quote_issue(qid: int, *, user_id: int | None) -> dict[str, Any]:
             await dn.link_deal(db, no, deal_id)
         except (deals.DealError, ValueError) as e:
             await db.rollback()
-            raise RecommendError(str(e)) from e
+            raise _deal_err(e, r.get("deal_id")) from e
         if pid and deal["customer"]:
             await db.execute(text(
                 "UPDATE product_proposals SET customer = :c, title = :c || ' · ' || model WHERE id = :p AND customer = ''"),
@@ -1359,9 +1471,88 @@ async def quote_issue(qid: int, *, user_id: int | None) -> dict[str, Any]:
             f"견적서를 발행했습니다 — {no}, 합계 {money}. 제품 영업 건 관리에도 반영했습니다."
             + (" 올린 파일의 엑셀 서식 그대로 고쳐 냈습니다." if pdata is not None else "")
             + (f" {pnote}" if pnote else ""))}][-QUOTE_CHAT_MAX:]
+        _mark_issued(st, rev)
         await _save_state(db, qid, st)
         await db.commit()
         return _quote_view(await _quote_row(db, qid, user_id))
+
+
+async def _issue_replace_won(r: dict[str, Any], parts: dict[str, Any], deal: dict[str, Any], *, user_id: int | None, day,
+                             statement: str | None = None) -> dict[str, Any]:
+    """[수주한 견적서 고치기] — 수주한 판을 지금 작성 내용으로 교체(같은 발행번호·판, 사용자 2026-11-16). 고친 파일 같은 번호 교체와 같게:
+    교체 전 내용은 그 판의 replaced 에 보관, 영업 건 견적·금액이 따라가고(입금 확인이 있으면 금액 변경은 막힘), S/N 은 품목 이름으로 다시
+    짝지음(짝 없는 S/N 은 기록으로 남김·안내). 회사 양식으로 새로 그리거나, 바탕 파일이 있으면 그 파일 위에서 고친다."""
+    import uuid
+    from datetime import datetime, timezone
+
+    from ..database import SessionLocal
+    from ..sales_deals import service as deals
+    from ..sales_deals import units as su
+    from ..storage import put_object
+    from . import product_prices as pp
+    from . import quote_xlsx as qx
+
+    qid = r["id"]
+    f, lang, lines = parts["form"], parts["lang"], parts["lines"]
+    async with SessionLocal() as db:
+        cur = (await db.execute(text("SELECT history, deal_id FROM product_quotes WHERE id = :i FOR UPDATE"), {"i": qid})).mappings().one()
+        won = await _won_issue(db, {**r, "deal_id": cur["deal_id"]})
+        if not won:
+            raise RecommendError("수주한 견적서가 없습니다 — [새 견적서로 발행]으로 내 주세요.")
+        rev, no = won
+        hist = json.loads(cur["history"]) if isinstance(cur["history"], str) else (cur["history"] or [])
+        idx = next((i for i, h in enumerate(hist) if int(h.get("revision") or 0) == rev), None)
+        if idx is None:
+            raise RecommendError("수주한 견적서 판을 찾을 수 없습니다.")
+        old = hist[idx]
+        header = _header(parts, no, rev, day)
+        fname = pp.quote_file_name(parts["customer"], parts["subject"], parts["ini"], day, no) + ".xlsx"
+        st = parts["st"]
+        pdata, pnote = _patched(st, lines, header, day)
+        keep = {k: old[k] for k in ("upload", "file_key", "header", "lines", "total", "currency", "file_name", "replaced_at", "replaced_by") if k in old}
+        new = {**{k: v for k, v in old.items() if k not in ("upload", "file_key")}, "header": header, "lines": lines,
+               "total": qx.total(lines), "currency": qx.CURRENCY[lang], "file_name": fname, **_snap_biz(f),
+               "replaced_at": datetime.now(timezone.utc).isoformat(), "replaced_by": user_id, "replaced": [*(old.get("replaced") or []), keep]}
+        if pdata is not None:
+            fkey = f"product-quotes/{qid}/issued/{uuid.uuid4().hex}.xlsx"
+            put_object(key=fkey, data=io.BytesIO(pdata), length=len(pdata),
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            new["file_key"] = fkey
+            st["base_file"] = {"key": fkey, "quote_no": no, "state": _snapshot(st)}
+        elif st.get("base_file"):
+            st.pop("base_file", None)
+        latest = idx == len(hist) - 1
+        try:
+            sn_note = await su.rebind_units(db, (qid, rev), (qid, rev, None), lines)
+            await deals.quote_replaced(db, cur["deal_id"], user_id, {
+                "doc_no": no, "revision": rev + 1, "items": deal["items"], "total": qx.total(lines), "currency": qx.CURRENCY[lang],
+                "file": fname, **_deal_rental(f)}, latest=latest)
+            if sn_note:
+                await deals._log(db, cur["deal_id"], user_id, "sn_rebind", {"note": sn_note})
+            # 거래명세서도 새 견적으로(사용자 2026-11-17) — same 같은 번호로 교체 · new 새 번호 · 그 밖은 그대로(다시 발급 알림만)
+            st_no = None
+            if statement in ("same", "new"):
+                st_no = await deals.reissue_statement(db, cur["deal_id"], user_id, same_no=statement == "same")
+        except deals.DealError as e:
+            await db.rollback()
+            raise _deal_err(e, cur["deal_id"]) from e
+        await db.execute(text(
+            "UPDATE product_quotes SET history = jsonb_set(history, CAST(:p AS text[]), CAST(:snap AS jsonb)), updated_at = NOW()"
+            + (", total = :t, file_name = :f, header = CAST(:h AS jsonb), lines = CAST(:l AS jsonb)" if latest else "") + " WHERE id = :i"),
+            {"p": [str(idx)], "snap": json.dumps(new, ensure_ascii=False), "t": qx.total(lines), "f": fname,
+             "h": json.dumps(header, ensure_ascii=False), "l": json.dumps(lines, ensure_ascii=False), "i": qid})
+        money = f"${qx.total(lines):,.2f}" if lang == "en" else f"{qx.total(lines):,.0f}원"
+        st["chat"] = [*(st.get("chat") or []), {"role": "assistant", "text": (
+            f"수주한 견적서({no})를 고쳐 다시 냈습니다 — 같은 번호, 합계 {money}. 영업 건에도 반영했습니다."
+            + (f" 거래명세서도 {'같은 번호' if statement == 'same' else '새 번호'}({st_no})로 다시 발급했습니다." if st_no else "")
+            + (f" {sn_note}" if sn_note else "") + (f" {pnote}" if pnote else ""))}][-QUOTE_CHAT_MAX:]
+        _mark_issued(st, rev)
+        await _save_state(db, qid, st)
+        await db.commit()
+        out = _quote_view(await _quote_row(db, qid, user_id))
+        return {**out, "won_issue": _won_open(await _quote_row(db, qid, user_id), won, await _statement_no(db, cur["deal_id"])),
+                "sn_note": sn_note, "replaced_won": True, "deal_id": cur["deal_id"],
+                "statement_reissued": {"no": st_no, "same_no": statement == "same"} if st_no else None}
 
 
 PHOTO_TYPES = {"image/jpeg", "image/png", "image/webp"}
@@ -1486,16 +1677,25 @@ async def _issue_with_no(db, deal_id: int, doc_no: str) -> dict[str, Any] | None
 
 async def _replace_issue(db, target: dict[str, Any], *, deal_id: int, user_id: int | None, upload_ref: dict[str, Any],
                          lines: list[dict[str, Any]], total: float, currency: str, file_name: str,
-                         form: dict[str, Any]) -> None:
+                         form: dict[str, Any], deal_lines: list[dict[str, Any]] | None = None) -> str:
     """발행한 판을 밖에서 고친 파일로 교체(사용자 2026-10-13) — 번호·판·발행 시각은 그대로, 파일·품목·금액만 바꾼다.
-    원래 내용은 replaced 목록에 보관(지우지 않음). 가장 최근 판이면 영업 건 견적 금액·품목도. 커밋하지 않는다."""
+    원래 내용은 replaced 목록에 보관(지우지 않음). 가장 최근 판이면 영업 건 견적 금액·품목도. 커밋하지 않는다.
+    deal_lines = 영업 건에 넣을 줄(부가세 포함 견적서면 공급가 단가) — 없으면 lines 그대로. 반환 = S/N 다시 짝짓기 안내(없으면 "")."""
     from datetime import datetime, timezone
 
     from ..sales_deals import service as deals
 
     await db.execute(text("SELECT id FROM product_quotes WHERE id = :i FOR UPDATE"), {"i": target["quote_id"]})
+    # 이 판에 S/N 을 등록했으면 새 파일의 품목 줄로 다시 짝짓는다 — 순서가 바뀌어도 그 품목을 따라가고, 빠지면 막음(QA 2026-11-16)
+    from ..sales_deals import units as su
+
+    sn_note = await su.rebind_units(db, (target["quote_id"], int(target["revision"] or 0)),
+                                    (target["quote_id"], int(target["revision"] or 0), None), lines)
     old = target["snap"]
-    keep = {k: old[k] for k in ("upload", "lines", "total", "currency", "file_name", "replaced_at", "replaced_by") if k in old}
+    # 교체 전 파일 다시 받기(사용자 2026-11-16) — 올린 파일 위에서 고친 발행본(file_key)·회사 양식(header+lines)도 그대로 다시 만들 수 있게
+    keep = {k: old[k] for k in ("upload", "file_key", "header", "lines", "total", "currency", "file_name", "replaced_at", "replaced_by")
+            if k in old}
+    old = {k: v for k, v in old.items() if k != "file_key"}     # 교체한 판은 올린 파일이 그 판 — 예전 file_key 가 먼저 나가지 않게
     new = {**old, "lines": lines, "total": total, "currency": currency, "file_name": file_name, "upload": upload_ref, **_snap_biz(form),
            "replaced_at": datetime.now(timezone.utc).isoformat(), "replaced_by": user_id,
            "replaced": [*(old.get("replaced") or []), keep]}
@@ -1507,8 +1707,23 @@ async def _replace_issue(db, target: dict[str, Any], *, deal_id: int, user_id: i
         {"p": [str(target["index"])], "snap": json.dumps(new, ensure_ascii=False), "t": total, "f": file_name,
          "i": target["quote_id"]})
     await deals.quote_replaced(db, deal_id, user_id, {
-        "doc_no": _printed_no(old), "revision": (target["revision"] or 0) + 1, "items": lines, "total": total, "currency": currency,
+        "doc_no": _printed_no(old), "revision": (target["revision"] or 0) + 1, "items": deal_lines or lines, "total": total, "currency": currency,
         "file": str(upload_ref.get("filename") or ""), **_deal_rental(form)}, latest=target["latest"])
+    if sn_note:
+        await deals._log(db, deal_id, user_id, "sn_rebind", {"note": sn_note})
+    return sn_note
+
+
+async def _rental_start_if_current(db, deal_id: int, user_id: int | None, start: Any, no: str) -> None:
+    """올린 대여 견적서의 시작일을 영업 건에 — 그 견적서가 지금 영업 건 견적일 때만. 수주한 건에 다른 번호로 올리면 건 견적은 그대로라
+    시작일도 그대로(QA 2026-11-16 영업 7: 회수까지 끝난 대여 건에 새 번호 견적서를 올리면 건의 시작일·끝나는 날이 지워졌다).
+    지금 견적이면 확인 창에서 고른 값 그대로 — '미정으로 둠'(None)이면 지운다(사용자 2026-10-27, 창의 기본값은 건에 정한 시작일)."""
+    from ..sales_deals import service as deals
+
+    cur = (await db.execute(text("SELECT quote->>'no' FROM sales_deals WHERE id = :i"), {"i": deal_id})).scalar()
+    if str(cur or "").upper() != str(no or "").upper():
+        return
+    await deals.put_rental_start(db, deal_id, user_id, start)
 
 
 async def quote_issue_upload(*, qid: int | None, deal_id: int | None, user_id: int | None, owner_check: bool,
@@ -1609,24 +1824,32 @@ async def quote_issue_upload(*, qid: int | None, deal_id: int | None, user_id: i
                                 {"r": r["recommendation_id"]})).scalar() if r["recommendation_id"] else None
         total = round(sum(x["qty"] * x["unit_price"] for x in lines), 2)
         subject = _FILE_BAD.sub(" ", str(f.get("subject") or "").strip()).strip() or "견적"
+        # 부가세 포함 견적서 파일이면 영업 건에는 공급가액으로(÷ 1.1, 원 단위) — 명세서가 부가세를 또 붙이지 않게(사용자 2026-10-28).
+        # 발행 기록 줄에도 supply_unit 을 남겨 나중에 이 판으로 수주 확정해도(snapshot_items) 공급가액으로.
+        # 같은 번호 교체도 같게(QA 2026-11-16 — 교체 경로엔 이 계산이 없어 영업 건 금액이 10% 부풀었음)
+        if qs.vat_included({"form": f}):
+            lines = [{**ln, "supply_unit": round(float(ln["unit_price"]) / 1.1)} if isinstance(ln.get("unit_price"), (int, float))
+                     else ln for ln in lines]
+        deal_lines = [{**ln, "unit_price": ln["supply_unit"]} if "supply_unit" in ln else ln for ln in lines]
         try:
             link = r.get("deal_id") or deal_id
             target = await _issue_with_no(db, link, given) if given and link else None
             if target and not overwrite:                # 같은 영업 건의 같은 번호 — 덮어쓸지 묻는다(사용자 2026-10-13)
                 raise OverwriteNeeded(
                     f"이 영업 건에 같은 발행번호({given})의 견적서가 있습니다(v{(target['revision'] or 0) + 1}). "
-                    "올린 파일로 덮어쓸까요? 번호·판은 그대로이고 원래 파일은 보관됩니다.", given, target["revision"])
+                    "그 판을 올린 파일로 교체할까요? 번호·판은 그대로이고 교체 전 파일은 보관됩니다.", given, target["revision"])
             if target:
                 fname = f"(주)유엔디로보틱스_견적서_{_FILE_BAD.sub(' ', customer).strip()}_{subject}_{given}{ext}"
                 upload_ref = {"key": key, "mime": qu.TYPES[ext], "filename": str(upload.get("filename") or "")[:200],
                               "size": int(upload.get("size") or 0), "by": user_id}
-                await _replace_issue(db, target, deal_id=link, user_id=user_id, upload_ref=upload_ref, lines=lines,
+                sn_note = await _replace_issue(db, target, deal_id=link, user_id=user_id, upload_ref=upload_ref, lines=lines, deal_lines=deal_lines,
                                      total=total, currency=qx.CURRENCY[lang], file_name=fname, form=f)
                 if f.get("purpose") == "rental":
-                    await deals.put_rental_start(db, link, user_id, rental_start)
+                    await _rental_start_if_current(db, link, user_id, rental_start, given)
                 if sync and target["quote_id"] == r["id"]:
                     if target["latest"]:
                         new, ch, wn = _synced_state(st, qid=r["id"], key=key, ext=ext, items=items, no=given, parsed=parsed)
+                        _mark_issued(new, int(target["revision"] or 0))
                         new["chat"] = [*(st.get("chat") or []), {"role": "assistant", "text": _sync_note(given, ch, wn)}][-QUOTE_CHAT_MAX:]
                     else:
                         new = {**st, "chat": [*(st.get("chat") or []), {"role": "assistant", "text": (
@@ -1634,7 +1857,7 @@ async def quote_issue_upload(*, qid: int | None, deal_id: int | None, user_id: i
                     await _save_state(db, r["id"], new)
                 await db.commit()
                 return {"quote": _quote_view(await _quote_row(db, r["id"], None)), "deal_id": link, "quote_no": given,
-                        "replaced": True}
+                        "replaced": True, "sn_note": sn_note}
             if given:                                   # 견적서에 적힌 번호 — 다른 건에서 이미 발행한 번호면 거절, 우리 형식이면 기록
                 hit = await dn.issued_where(db, given)
                 if hit:
@@ -1646,12 +1869,6 @@ async def quote_issue_upload(*, qid: int | None, deal_id: int | None, user_id: i
             else:
                 no = await dn.allocate(db, dn.QUOTE, ini, day, deal_id=link, quote_id=r["id"], user_id=user_id)
             fname = f"(주)유엔디로보틱스_견적서_{_FILE_BAD.sub(' ', customer).strip()}_{subject}_{no}{ext}"
-            # 부가세 포함 견적서 파일이면 영업 건에는 공급가액으로(÷ 1.1, 원 단위) — 명세서가 부가세를 또 붙이지 않게(사용자 2026-10-28).
-            # 발행 기록 줄에도 supply_unit 을 남겨 나중에 이 판으로 수주 확정해도(snapshot_items) 공급가액으로
-            if qs.vat_included({"form": f}):
-                lines = [{**ln, "supply_unit": round(float(ln["unit_price"]) / 1.1)} if isinstance(ln.get("unit_price"), (int, float))
-                         else ln for ln in lines]
-            deal_lines = [{**ln, "unit_price": ln["supply_unit"]} if "supply_unit" in ln else ln for ln in lines]
             did, _ = await deals.quote_deal(db, user_id, pid, {
                 "quote_date": day, "customer": customer, "contact": str(f.get("to") or "").strip() or None,
                 "owner": str(f.get("contact_name") or "").strip() or None, "vat_included": False, "initials": ini,
@@ -1659,13 +1876,13 @@ async def quote_issue_upload(*, qid: int | None, deal_id: int | None, user_id: i
                 "file": str(upload.get("filename") or "")[:200], **_deal_rental(f)}, rev + 1, deal_id=r.get("deal_id") or deal_id, action="quote_upload")
             await dn.link_deal(db, no, did)
             if f.get("purpose") == "rental":
-                await deals.put_rental_start(db, did, user_id, rental_start)
+                await _rental_start_if_current(db, did, user_id, rental_start, no)
         except DuplicateDocNo:
             await db.rollback()
             raise
         except (deals.DealError, ValueError, RecommendError) as e:
             await db.rollback()
-            raise RecommendError(str(e)) from e
+            raise _deal_err(e, r.get("deal_id") or deal_id) from e
         snap = {"revision": rev, "quote_no": no, "issued_at": datetime.now(timezone.utc).isoformat(), "total": total,
                 "currency": qx.CURRENCY[lang], "file_name": fname, "lines": lines, **_snap_biz(f),
                 "upload": {"key": key, "mime": qu.TYPES[ext], "filename": str(upload.get("filename") or "")[:200],
@@ -1675,6 +1892,7 @@ async def quote_issue_upload(*, qid: int | None, deal_id: int | None, user_id: i
         if sync:
             chat = st.get("chat") or []
             st, ch, wn = _synced_state(st, qid=r["id"], key=key, ext=ext, items=items, no=no, parsed=parsed)
+            _mark_issued(st, rev)
             st["chat"] = [*chat, {"role": "assistant", "text": f"{note} {_sync_note(no, ch, wn)}"}][-QUOTE_CHAT_MAX:]
         else:
             st["chat"] = [*(st.get("chat") or []), {"role": "assistant", "text": (
@@ -1878,8 +2096,10 @@ async def upload_sync_preview(*, qid: int | None, deal_id: int | None, user_id: 
                        + ("" if parsed is not None else " (회사 양식이 아니라 확인한 품목의 수량·단가만)")}
 
 
-async def quote_file(qid: int, *, user_id: int | None, revision: int | None = None, fmt: str = "xlsx") -> tuple[str, bytes]:
-    """발행한 견적서(기본 = 최신 판, revision 을 주면 그 판) → (파일명, 바이트). fmt 'pdf' 면 같은 엑셀을 PDF 로. 만든 사람만."""
+async def quote_file(qid: int, *, user_id: int | None, revision: int | None = None, fmt: str = "xlsx",
+                     replaced: int | None = None) -> tuple[str, bytes]:
+    """발행한 견적서(기본 = 최신 판, revision 을 주면 그 판) → (파일명, 바이트). fmt 'pdf' 면 같은 엑셀을 PDF 로. 만든 사람만.
+    replaced = 같은 번호로 교체하기 전 파일 순번(그 판의 replaced, 사용자 2026-11-16)."""
     from ..database import SessionLocal
     from . import product_prices as pp
     from . import quote_xlsx as qx
@@ -1890,7 +2110,16 @@ async def quote_file(qid: int, *, user_id: int | None, revision: int | None = No
     snap = next((h for h in reversed(hist) if revision is None or h.get("revision") == revision), None)
     if snap is None:
         raise RecommendError("아직 발행한 견적서가 없습니다.")
-    if snap.get("file_key"):                     # 올린 파일 위에서 고쳐 낸 발행본(사용자 2026-10-15)
+    if replaced is not None:
+        rs = snap.get("replaced") or []
+        if not 0 <= replaced < len(rs):
+            raise RecommendError("교체 전 견적서를 찾을 수 없습니다.")
+        r0 = rs[replaced]
+        # 2026-11-16 전에 보관한 기록엔 file_key 가 없다 — 그때는 교체한 판에 예전 file_key 가 남아 있었다(올린 파일이 없던 원래 판의 것)
+        fk = r0["file_key"] if "file_key" in r0 else (snap.get("file_key") if not r0.get("upload") else None)
+        snap = {"header": r0.get("header") or snap.get("header"), "lines": r0.get("lines") or [], "file_name": r0.get("file_name") or snap.get("file_name"),
+                "upload": r0.get("upload"), "file_key": fk}
+    if snap.get("file_key") and not snap.get("upload"):   # 올린 파일 위에서 고쳐 낸 발행본(사용자 2026-10-15) — 교체한 판이면 올린 파일이 먼저
         data = _object_bytes(snap["file_key"])
         name = pp.clean_quote_file_name(snap["file_name"])
         if fmt == "pdf":

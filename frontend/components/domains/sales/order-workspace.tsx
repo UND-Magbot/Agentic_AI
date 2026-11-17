@@ -7,15 +7,17 @@
 
 import { useEffect, useRef, useState } from "react";
 import { AgentBubble, type AgentStep, streamNdjson } from "@/components/domains/sales/agent-chat";
-import { type Act, BUYER_HINT, GroupHead, ShipDialog, type ShipDraft, ShipForm, StatementDialog, StatementItems, shipmentDraft } from "@/components/domains/sales/deal-flow";
+import { type Act, BUYER_HINT, GroupHead, ShipDialog, type ShipDraft, ShipForm, StatementDialog, StatementItems, TermsEditor, shipmentDraft } from "@/components/domains/sales/deal-flow";
 import { INPUT, Muted, STAGE_DONE, STAGE_SHIP_ONLY, STAGE_TONE, dealRequest, shortDate, termExpect, todayIso, won } from "@/components/domains/sales/deal-format";
 import { DownloadDialog, PreviewDialog } from "@/components/domains/sales/quote-workspace";
+import { askConfirm } from "@/components/shared/ui/confirm-host";
 import { Icon } from "@/components/shared/ui/icon";
 import type { DealListData, DealRow, DealStatement, PayTerm } from "@/lib/shared/sales-deals";
 import { cn, scrollChatToEnd } from "@/lib/shared/utils";
 import { ErrorBox, primaryBtn, secondaryBtn } from "./proposal-actions";
 import { HEAD_FIELD } from "./quote-styles";
 import { SPLIT_GRID, SplitBar, splitStyle, useSplit } from "./split-pane";
+import { REQ_SCOPE, reqField } from "@/components/domains/sales/required";
 
 type ChatMsg =
   | { role: "user"; text: string }
@@ -663,7 +665,8 @@ export function OrderWorkspace({ id, onBack, openShip = false }: { id: number; o
                           <>
                             <span className="text-emerald-700 dark:text-emerald-300">✓ 입금 확인 {shortDate(t.paid_date)}</span>
                             <button type="button" disabled={!!busy}
-                                    onClick={() => { if (window.confirm(`${t.label} 입금 확인을 취소할까요? 금액이 바뀌었으면 취소한 뒤 다시 확인하세요(완납이었으면 함께 풀립니다).`)) void unconfirmTerm(t); }}
+                                    onClick={() => void askConfirm({ title: `${t.label} 입금 확인을 취소할까요?`, message: "금액이 바뀌었으면 취소한 뒤 다시 확인하세요. 완납이었으면 함께 풀리고, 변경 이력에 남습니다.", confirmLabel: "확인 취소" })
+                                      .then((ok) => { if (ok) void unconfirmTerm(t); })}
                                     className="text-[11.5px] text-foreground-subtle hover:text-red-600 hover:underline">확인 취소</button>
                           </>
                         ) : (
@@ -790,110 +793,6 @@ export function OrderWorkspace({ id, onBack, openShip = false }: { id: number; o
 
 const HL = "border-accent ring-2 ring-accent/25 shadow-sm";
 
-type TermDraft = { label: string; pct: string; when: string; expected_date: string; fixed: boolean };
-/** 항상 나오는 회차(사용자 2026-10-08: 회차 추가 대신 선금·중도금·잔금 고정, % 와 시점은 수기 — 시점은 비워 두어도 됨) */
-const FIXED = ["선금", "중도금", "잔금"];
-
-/** 저장된 결제 조건 → 고정 세 줄(+ 예전에 다른 이름으로 저장한 회차가 있으면 그 줄도) */
-function termRows(saved: DealRow["pay_terms"]): TermDraft[] {
-  const rows: TermDraft[] = FIXED.map((label) => {
-    const t = saved.find((x) => x.label === label);
-    return { label, pct: t ? String(t.pct) : "", when: t?.when ?? "", expected_date: t?.expected_date ?? "", fixed: true };
-  });
-  for (const t of saved) {
-    if (!FIXED.includes(t.label)) rows.push({ label: t.label, pct: String(t.pct), when: t.when ?? "", expected_date: t.expected_date ?? "", fixed: false });
-  }
-  return rows;
-}
-
-/** 결제 조건 편집 — 선금·중도금·잔금 세 줄이 항상 있고, 줄마다 %·시점(수기, 비워도 됨)·예정 입금일. 0% 나 빈 줄은 저장하지 않는다.
- *  입금 확인한 회차는 % 를 못 바꾼다(예정일은 됨). */
-function TermsEditor({ deal, busy, onSave }: { deal: DealRow; busy: boolean; onSave: (t: { label: string; pct: number; when: string; expected_date: string | null }[]) => void }) {
-  const saved = deal.pay_case ? deal.pay_terms : [];
-  const doneIdx = new Set(deal.payments.map((p) => p.term).filter((x): x is number => x != null));
-  const doneLabels = new Set(saved.filter((_, i) => doneIdx.has(i)).map((t) => t.label));
-  const [rows, setRows] = useState<TermDraft[]>(() => termRows(saved));
-  const [editing, setEditing] = useState(!saved.length);
-  const total = deal.flow?.total ?? 0;
-  const used = rows.filter((r) => Number(r.pct) > 0);
-  const sum = used.reduce((s, r) => s + Number(r.pct), 0);
-  const okSum = Math.abs(sum - 100) < 0.01;
-  const setRow = (i: number, patch: Partial<TermDraft>) => setRows((p) => p.map((r, j) => (j === i ? { ...r, ...patch } : r)));
-  // backend 와 같게: 금액은 저장되는 회차(0% 아닌 줄) 기준, 마지막 회차가 끝전
-  const amountOf = (r: TermDraft) => {
-    const k = used.indexOf(r);
-    if (k < 0) return null;
-    if (k < used.length - 1) return Math.round(total * Number(r.pct) / 100);
-    return Math.round(total - used.slice(0, -1).reduce((s, x) => s + Math.round(total * Number(x.pct) / 100), 0));
-  };
-
-  if (!editing) {
-    return (
-      <div className="flex flex-wrap items-center gap-2">
-        {saved.map((t, i) => (
-          <span key={i} className="rounded-md bg-foreground/[0.04] px-2 py-1">
-            <b>{t.label} {t.pct}%</b> <span className="text-foreground-subtle">{[t.when, t.expected_date ? `예정 ${shortDate(t.expected_date)}` : "예정일 미정"].filter(Boolean).join(" · ")}</span>
-          </span>
-        ))}
-        <button type="button" className="ml-auto text-[12px] font-semibold text-accent hover:underline" disabled={busy} onClick={() => setEditing(true)}>고치기</button>
-      </div>
-    );
-  }
-  return (
-    <div className="flex flex-col gap-2">
-      {/* 칸 폭을 고정 — 좁은 칸에서 머리글이 세로로 쪼개지지 않게(사용자 2026-10-23). 금액 = 공급가액 */}
-      <table className="w-full table-fixed border-collapse">
-        <colgroup><col className="w-[60px]" /><col className="w-[80px]" /><col /><col className="w-[150px]" /><col className="w-[104px]" /></colgroup>
-        <thead>
-          <tr className="border-b border-border text-left text-[12px] text-foreground-muted">
-            {["구분", "비율(%)", "시점", "예정 입금일", "금액"].map((h) => (
-              <th key={h} className={cn("whitespace-nowrap py-1.5 pr-1.5 font-bold", h === "금액" && "text-right")} title={h === "금액" ? "공급가액 기준" : undefined}>{h}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r, i) => {
-            const locked = doneLabels.has(r.label);
-            const off = !(Number(r.pct) > 0);
-            const amt = amountOf(r);
-            return (
-              <tr key={r.label} className={cn("border-b border-border/60", off && "text-foreground-subtle")}>
-                <td className="py-1.5 pr-1.5 font-bold">{r.label}{!r.fixed && <span className="ml-1 text-[11px] font-normal text-foreground-subtle">(예전)</span>}</td>
-                <td className="py-1.5 pr-1.5">
-                  <input value={r.pct} disabled={locked} inputMode="decimal" placeholder="0" aria-label={`${r.label} 비율`}
-                         onChange={(e) => setRow(i, { pct: e.target.value.replace(/[^\d.]/g, "") })} className={cn(HEAD_FIELD, "text-right")} />
-                </td>
-                <td className="py-1.5 pr-1.5">
-                  <input value={r.when} disabled={off} maxLength={30} placeholder="예: 발주 시" aria-label={`${r.label} 시점`}
-                         onChange={(e) => setRow(i, { when: e.target.value })} className={HEAD_FIELD} />
-                </td>
-                <td className="py-1.5 pr-1.5">
-                  {/* 지난 날짜는 새로 고를 수 없게(검증 2026-10-26) — 이미 저장된 지난 예정일은 그대로 보인다 */}
-                  <input type="date" value={r.expected_date} disabled={off} aria-label={`${r.label} 예정 입금일`} min={locked ? undefined : todayIso()}
-                         onChange={(e) => setRow(i, { expected_date: e.target.value })} className={HEAD_FIELD} />
-                </td>
-                <td className="py-1.5 text-right font-bold tabular-nums">
-                  {locked ? <span className="mr-2 text-[11px] text-emerald-700 dark:text-emerald-300">입금 확인됨</span> : null}
-                  {amt != null ? won(amt) : <Muted>-</Muted>}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[12px] text-foreground-subtle">쓰지 않는 회차는 비워 두세요(0% 는 저장하지 않음).</span>
-        <span className={cn("ml-auto", okSum ? "text-foreground-muted" : "font-semibold text-red-600")}>합계 {sum}%{okSum ? "" : " — 100% 가 되게"}</span>
-        {saved.length > 0 && <button type="button" className={secondaryBtn} disabled={busy} onClick={() => setEditing(false)}>취소</button>}
-        <button type="button" className={primaryBtn} disabled={busy || !used.length || !okSum}
-                onClick={() => onSave(used.map((r) => ({ label: r.label, pct: Number(r.pct), when: r.when.trim(), expected_date: r.expected_date || null })))}>
-          <Icon name="check" className="h-4 w-4" /> 결제 조건 저장
-        </button>
-      </div>
-    </div>
-  );
-}
-
 function NowBadge({ children }: { children: React.ReactNode }) {
   return <span className="rounded-full bg-accent px-2 py-0.5 text-[11px] font-bold text-white">{children}</span>;
 }
@@ -943,7 +842,13 @@ export function CompletionDialog({ deals, onClose }: { deals: DealRow[]; onClose
 }
 
 function Lab({ label, children, wide }: { label: string; children: React.ReactNode; wide?: boolean }) {
-  return <label className={cn("flex min-w-0 flex-col gap-1.5", wide && "md:col-span-3")}><span className="text-[12.5px] font-semibold text-foreground-muted">{label}</span>{children}</label>;
+  // 이름 끝이 ' *' 이면 필수 표시(required.tsx, 사용자 2026-11-16)
+  const [lab, child, on] = reqField(label, children);
+  return (
+    <label className={cn("flex min-w-0 flex-col gap-1.5", wide && "md:col-span-3", on && REQ_SCOPE)}>
+      <span className={cn("text-[12.5px] font-semibold", !on && "text-foreground-muted")}>{lab}</span>{child}
+    </label>
+  );
 }
 
 /** 묶음 머리 — 번호 배지 + 제목(견적서 머리와 같은 모양) */

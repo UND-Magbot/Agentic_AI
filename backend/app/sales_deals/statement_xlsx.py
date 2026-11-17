@@ -26,6 +26,7 @@ from openpyxl.drawing.xdr import XDRPositiveSize2D
 from openpyxl.utils.units import pixels_to_EMU
 from openpyxl.worksheet.pagebreak import Break
 from openpyxl.styles import Alignment, Border, Font, Side
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 
 from ..company_knowledge.product_prices import COMPANY_PROFILE
 
@@ -157,6 +158,8 @@ def _cell(ws, ref: str, value: Any = None, *, size: float = 10, bold: bool = Fal
     if merge:
         ws.merge_cells(f"{ref}:{merge}")
     c = ws[ref]
+    # 엑셀이 받지 않는 보이지 않는 제어문자(복사·붙여넣기·AI 판독에서 섞임)는 뺀다 — 그대로 쓰면 파일을 못 만들어 미리보기·다운로드가 500(QA 2026-11-16)
+    value = ILLEGAL_CHARACTERS_RE.sub("", value) if isinstance(value, str) else value
     c.value = value
     c.font = Font(name=FONT, size=size, bold=bold, underline=underline)
     c.alignment = Alignment(horizontal=h, vertical="center", wrap_text=not shrink, shrink_to_fit=shrink, indent=indent)

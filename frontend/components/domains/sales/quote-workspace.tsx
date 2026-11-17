@@ -5,10 +5,11 @@
 // 발행 전후 PDF 미리보기, 발행 뒤 덮어쓰기(같은 판), 내려받기는 PDF·엑셀 중 골라 다른 이름으로 저장(사용자 2026-10-06).
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import type { QuoteBlock, QuoteDelivery, QuoteForm, QuoteLine, QuoteListItem, QuoteNego, QuoteHangulCell, QuotePurpose, QuoteSession, QuoteWork } from "@/lib/shared/product-recommend";
 import { RichText } from "@/components/domains/sales/agent-chat";
-import { ConfirmDialog } from "@/components/shared/ui/confirm-dialog";
+import { ConfirmDialog, POPUP_BTN_HOVER } from "@/components/shared/ui/confirm-dialog";
 import { Icon } from "@/components/shared/ui/icon";
 import { useDragMove } from "@/components/shared/ui/use-drag-move";
 import { cn, keepInPlace, scrollChatToEnd } from "@/lib/shared/utils";
@@ -18,6 +19,7 @@ import { QuoteUploadDialog } from "./quote-upload-dialog";
 import { ErrorBox, ITEM_BTN, inputCls, primaryBtn, secondaryBtn } from "./proposal-actions";
 import { AMOUNT_BOX, HEAD_AREA, HEAD_FIELD, ROW_BTN, ROW_CARD, ROW_CARD_AUTO, ROW_FIELD, ROW_ICON_BTN, ROW_LABEL } from "./quote-styles";
 import { SPLIT_GRID, SplitBar, splitStyle, useSplit } from "./split-pane";
+import { req, REQ, REQ_SCOPE, ReqLabel, ReqMark, withReq } from "@/components/domains/sales/required";
 
 const CONTACT_KEY = "atcQuoteContact";
 
@@ -44,8 +46,16 @@ async function api<T>(path: string, body?: unknown): Promise<T> {
   const r = await fetch(`/api/product-recommend${path}`, body === undefined ? { cache: "no-store" }
     : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const d = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(typeof d?.detail === "string" ? d.detail : "요청을 처리하지 못했습니다.");
+  if (!r.ok) {
+    if (d?.detail && typeof d.detail === "object") throw new ApiError(String(d.detail.message ?? ""), d.detail.code, d.detail.deal_id);
+    throw new Error(typeof d?.detail === "string" ? d.detail : "요청을 처리하지 못했습니다.");
+  }
   return d as T;
+}
+
+/** 화면이 따로 처리하는 오류 — PAY_LOCKED(입금 확인 때문에 견적 금액을 못 바꿈) → 팝업으로 알리고 입금 확인 칸으로 데려간다(사용자 2026-11-17) */
+class ApiError extends Error {
+  constructor(message: string, readonly code?: string, readonly dealId?: number | null) { super(message); }
 }
 
 const won = (n: number | null | undefined) => (n == null ? "-" : `${Math.round(n).toLocaleString("ko-KR")}원`);
@@ -156,7 +166,7 @@ export function DownloadDialog({ urlFor, fileName, title, onClose, formats }: {
           {(formats ?? (Object.keys(FMT) as Fmt[])).map((k) => (
             <button key={k} type="button" onClick={() => setFmt(k)} aria-pressed={fmt === k}
                     className={cn("flex-1 rounded-lg border px-3 py-2 text-[13px] font-semibold",
-                      fmt === k ? "border-accent bg-accent/10 text-accent" : "border-border text-foreground-muted hover:bg-foreground/[0.04]")}>
+                      fmt === k ? "border-accent bg-accent/10 text-accent" : "border-border text-foreground-muted", POPUP_BTN_HOVER)}>
               {FMT[k].label} (.{k})
             </button>
           ))}
@@ -171,8 +181,8 @@ export function DownloadDialog({ urlFor, fileName, title, onClose, formats }: {
         </label>
         <ErrorBox error={err} />
         <div className="flex justify-end gap-2">
-          <button type="button" className={secondaryBtn} disabled={busy} onClick={onClose}>닫기</button>
-          <button type="button" className={primaryBtn} disabled={busy || !clean} onClick={() => void go()}>
+          <button type="button" className={cn(secondaryBtn, POPUP_BTN_HOVER)} disabled={busy} onClick={onClose}>닫기</button>
+          <button type="button" className={cn(primaryBtn, "hover:bg-none! hover:bg-blue-700!")} disabled={busy || !clean} onClick={() => void go()}>
             <Icon name="download" className="h-4 w-4" /> {busy ? (fmt === "pdf" ? "PDF 만드는 중…" : "받는 중…") : "다른 이름으로 저장"}
           </button>
         </div>
@@ -548,17 +558,42 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
   const [uploading, setUploading] = useState(false);
   // 완납한 건에 발행 — 한 번 확인(사용자 2026-10-26)
   const [paidAsk, setPaidAsk] = useState(false);
+  // 수주한 건(사용자 2026-11-16) — 열 때 수주한 판을 띄우고(고치다 만 내용이 있으면 물어봄), 발행할 때 '수주한 견적서 고치기 / 새 견적서' 묻기
+  const [wonOpenAsk, setWonOpenAsk] = useState(false);
+  const [wonIssueAsk, setWonIssueAsk] = useState(false);
+  // 수주한 견적서를 고칠 때 발급한 거래명세서도 다시 발급할지(같은 번호로 교체 / 새 번호 / 견적서만, 사용자 2026-11-17)
+  const [stAsk, setStAsk] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  // 입금 확인 때문에 막힌 발행 — 팝업으로 알리고 [예]면 그 영업 건의 입금 확인 칸으로 이동(사용자 2026-11-17: 직접 찾아가게 하지 말 것)
+  const [payLock, setPayLock] = useState<{ message: string; dealId: number | null } | null>(null);
+  const router = useRouter();
   const chatEnd = useRef<HTMLDivElement>(null);
 
   function load(s: QuoteSession) {
-    setQ(s);
+    // 수주한 판 정보는 조회·불러오기·수주한 견적서 고치기 응답에만 온다 — 다른 응답(대화·수정·발행)에는 앞의 값을 이어 쓴다
+    setQ((prev) => ({ ...s, won_issue: s.won_issue !== undefined ? s.won_issue : prev?.won_issue }));
     setD(toDraft(s));
     setDraftVer((v) => v + 1);
     setDirty(false);
   }
+  async function loadWon() {
+    const no = q?.won_issue?.quote_no;
+    setWonOpenAsk(false);
+    const s = await run("수주한 견적서 불러오는 중", () => api<QuoteSession>(`/quotes/${id}/load-won`, {}));
+    if (s) {
+      load(s);
+      setNotice(`수주한 견적서(${s.won_issue?.quote_no ?? no ?? ""})를 불러왔습니다 — 이 내용에서 고쳐 발행하세요.`);
+    }
+  }
   useEffect(() => {
     let alive = true;
-    api<QuoteSession>(`/quotes/${id}`).then((s) => { if (alive) load(s); }).catch((e: Error) => { if (alive) setErr(e.message); });
+    api<QuoteSession>(`/quotes/${id}`).then((s) => {
+      if (!alive) return;
+      load(s);
+      // 수주한 건 — 작성 상태가 수주한 판이 아니면 수주한 판을 띄운다(고치다 만 내용이 있으면 물어봄)
+      // 수주한 판이 아닌 견적서(수주 뒤 새로 발행한 판·고치다 만 내용)가 있으면 둘 중 고르게(사용자 2026-11-17)
+      if (s.won_issue && s.won_issue.open !== "none") setWonOpenAsk(true);
+    }).catch((e: Error) => { if (alive) setErr(e.message); });
     return () => { alive = false; };
   }, [id]);
   useEffect(() => { scrollChatToEnd(chatEnd.current); }, [q?.chat.length, busy]);
@@ -569,7 +604,8 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
     try {
       return await f();
     } catch (e) {
-      setErr((e as Error).message);
+      if (e instanceof ApiError && e.code === "PAY_LOCKED") setPayLock({ message: e.message, dealId: e.dealId ?? q?.deal_id ?? null });
+      else setErr((e as Error).message);
       return null;
     } finally {
       setBusy(null);
@@ -677,19 +713,30 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
   }
 
   /** 발행·재발행(늘 새 발행번호, 사용자 2026-10-12) → 바로 내려받기 창(PDF·엑셀 고르기, 다른 이름으로 저장). */
-  async function issue(paidConfirmed = false) {
+  async function issue(paidConfirmed = false, mode?: "replace" | "new", statement?: "same" | "new" | "keep") {
     if (!q) return;
-    if (q.deal_paid_full && !paidConfirmed) { setPaidAsk(true); return; }   // 완납한 건 — 발행 전에 한 번 확인(사용자 2026-10-26)
+    if (q.won_issue && !mode) { setWonIssueAsk(true); return; }            // 수주한 건 — 수주한 견적서를 고칠지 새 견적서로 낼지
+    if (mode === "replace" && q.won_issue?.statement_no && !statement) { setStAsk(true); return; }   // 거래명세서도 같이?
+    if (mode !== "replace" && q.deal_paid_full && !paidConfirmed) { setPaidAsk(true); return; }   // 완납한 건 — 발행 전에 한 번 확인(사용자 2026-10-26)
     if ((q.hangul ?? []).some((c) => c.en == null && !c.keep)) {
       setEnNote("한글 칸을 AI 가 영어로 바꿨습니다 — 미리보기와 아래 'AI 번역' 목록을 확인한 뒤 다시 [발행]을 눌러 주세요.");
       setPreview(true);
       return;
     }
     setEnNote(null);
-    const s = await run("발행 중", () => api<QuoteSession>(`/quotes/${id}/issue`, {}));
+    const s = await run("발행 중", () => api<QuoteSession>(`/quotes/${id}/issue`, {
+      replace_won: mode === "replace", statement: mode === "replace" && (statement === "same" || statement === "new") ? statement : null }));
     if (s) {
       load(s);
       rememberContact(s.state.form);
+      if (s.replaced_won) {                     // 수주한 견적서를 같은 번호로 고침 — 그 판을 내려받기
+        const wh = s.history.find((x) => x.quote_no === s.won_issue?.quote_no) ?? s.history[s.history.length - 1];
+        const sr = s.statement_reissued;
+        const stLine = sr ? `거래명세서도 ${sr.same_no ? "같은 번호" : "새 번호"}(${sr.no})로 다시 발급했습니다 — 수주 진행 화면에서 받을 수 있습니다.` : "";
+        setNotice(s.sn_note || stLine ? ["수주한 견적서를 고쳤습니다.", stLine, s.sn_note ?? ""].filter(Boolean).join(" ") : null);
+        if (wh) setSaving({ revision: wh.revision, fileName: wh.file_name, title: `수주한 견적서를 고쳤습니다 — ${wh.quote_no ?? ""} · 내려받기` });
+        return;
+      }
       const h = s.history[s.history.length - 1];
       // 무상 대여 건 등록은 [대여 제품 목록]에 건이 생긴다(사용자 2026-11-10, 영업 건 관리에는 나오지 않음)
       const where = s.state.form.purpose === "rental" && s.state.form.rental_fee === "free" ? " · [대여 제품 목록]에 등록됨" : "";
@@ -795,12 +842,20 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" className={secondaryBtn} onClick={onBack}><Icon name="back" className="h-4 w-4" /> 목록</button>
             <h2 className="text-[15px] font-semibold text-foreground">
-              {q.quote_no ? `${q.quote_no} (v${q.revision + 1})` : "견적서 초안"} · {q.manual ? "수기 견적" : q.state.model}
+              {/* 수주한 판을 고치는 중이면 그 판 번호로(마지막 발행 번호가 아니라 — 사용자 2026-11-16) */}
+              {q.won_issue?.open === "none" ? `${q.won_issue.quote_no} (v${q.won_issue.revision + 1})`
+                : q.quote_no ? `${q.quote_no} (v${q.revision + 1})` : "견적서 초안"} · {q.manual ? "수기 견적" : q.state.model}
             </h2>
             <span className={cn("rounded-md px-1.5 py-0.5 text-[11.5px] font-semibold",
               issued ? "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300" : "bg-amber-500/15 text-amber-700 dark:text-amber-300")}>
               {issued ? "발행" : "작성 중"}
             </span>
+            {q.won_issue && (
+              <span className="rounded-md bg-blue-500/12 px-1.5 py-0.5 text-[11.5px] font-semibold text-blue-700 dark:text-blue-300"
+                    title="이 견적서로 수주한 영업 건입니다 — 발행할 때 수주한 견적서를 고칠지 새 견적서로 낼지 고릅니다">
+                {q.won_issue.open === "none" ? "수주한 견적서를 고치는 중" : `수주한 견적서 ${q.won_issue.quote_no}`}
+              </span>
+            )}
             {q.on_file && (
               <span className="rounded-md bg-sky-500/12 px-1.5 py-0.5 text-[11.5px] font-semibold text-sky-700 dark:text-sky-300"
                     title="미리보기·발행 파일을 회사 양식으로 새로 그리지 않고, 올린 엑셀 파일에서 바뀐 칸만 고칩니다(엑셀에서 넣은 서식 유지).">
@@ -808,6 +863,12 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
               </span>
             )}
           </div>
+          {notice && (
+            <p className="flex items-start gap-2 rounded-lg bg-amber-500/10 px-3 py-2 text-[12.5px] text-amber-800 dark:text-amber-200">
+              <span className="min-w-0 flex-1">{notice}</span>
+              <button type="button" onClick={() => setNotice(null)} className="shrink-0 font-semibold hover:underline">닫기</button>
+            </p>
+          )}
           {q.question && !dirty && (
             <div className="flex flex-col gap-1.5 rounded-lg bg-accent/[0.07] px-3 py-2 text-[12.5px] text-foreground">
               <p><span className="font-semibold text-accent">AI 가 묻는 중 · </span>{q.question.text}</p>
@@ -895,9 +956,9 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
                 </span>
               </div>
               <div className={cn("grid gap-3", free ? "sm:grid-cols-2" : "sm:grid-cols-3")}>
-                <label className={cn(HEAD_LABEL, "text-emerald-900/80 dark:text-emerald-200/80")}>
-                  <span>대여 개월 수<span className="text-red-600"> *</span></span>
-                  <input className={cn(HEAD_FIELD, "border-emerald-500/40")} inputMode="numeric" value={d.form.rental_months ?? ""} placeholder="예: 36 (3년)"
+                <label className={cn(HEAD_LABEL, REQ_SCOPE, "text-emerald-900/80 dark:text-emerald-200/80")}>
+                  <ReqLabel>대여 개월 수</ReqLabel>
+                  <input {...REQ} className={cn(HEAD_FIELD, "border-emerald-500/40")} inputMode="numeric" value={d.form.rental_months ?? ""} placeholder="예: 36 (3년)"
                          disabled={!!busy} onChange={(e) => setForm("rental_months", e.target.value)} />
                 </label>
                 <label className={cn(HEAD_LABEL, "text-emerald-900/80 dark:text-emerald-200/80")}>
@@ -967,9 +1028,9 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
                 {!folded && (
                   <div className={cn("grid gap-3 px-4 pb-4", g.fold ? "pt-0" : "pt-3", g.cols)}>
                     {fields.map((h) => (
-                      <label key={h.k} className={HEAD_LABEL}>
-                        <span>{en ? LABEL_EN[h.k] ?? h.label : h.label}{h.req && <span className="text-red-600"> *</span>}</span>
-                        {headInput(h)}
+                      <label key={h.k} className={cn(HEAD_LABEL, h.req && REQ_SCOPE)}>
+                        {h.req ? <ReqLabel>{en ? LABEL_EN[h.k] ?? h.label : h.label}</ReqLabel> : <span>{en ? LABEL_EN[h.k] ?? h.label : h.label}</span>}
+                        {h.req ? withReq(headInput(h)) : headInput(h)}
                       </label>
                     ))}
                     {g.n === 3 && en && (
@@ -1047,10 +1108,10 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
                 </div>
                 <div className="mt-2.5 flex flex-wrap items-end gap-2.5">
                   <div className={ROW_LABEL}>
-                    <span>{en ? "Qty · Unit" : "수량 · 단위"}</span>
+                    <span>{isAuto(l) ? (en ? "Qty · Unit" : "수량 · 단위") : <ReqMark>{en ? "Qty · Unit" : "수량 · 단위"}</ReqMark>}</span>
                     {isAuto(l) ? <span className="flex h-10 items-center text-[13.5px] font-semibold">{l.qty}{l.unit ? ` ${l.unit}` : ""}</span> : (
                       <span className="flex">
-                        <input className={cn(ROW_FIELD, "w-[64px] rounded-r-none text-right", (l.qty == null || (l.conditional && !l.confirmed)) && "border-amber-500")}
+                        <input className={cn(ROW_FIELD, "w-[64px] rounded-r-none text-right", l.conditional && !l.confirmed && "border-amber-500")} {...REQ}
                                type="number" min={1} value={l.qty ?? ""} aria-label="수량" disabled={!!busy}
                                onChange={(e) => setLine(i, { qty: Math.max(0, Math.floor(Number(e.target.value) || 0)), ...(l.conditional ? { confirmed: true } : {}) })} />
                         <input className={cn(ROW_FIELD, "-ml-px w-[64px] rounded-l-none bg-foreground/[0.03] font-normal")} value={l.unit ?? ""} maxLength={8}
@@ -1060,17 +1121,17 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
                     )}
                   </div>
                   {(!free || isAuto(l)) && <div className={ROW_LABEL}>
-                    <span>{en ? (rentMonths ? "Price (Monthly)" : "Price") : rentMonths ? (monthFactor(l, rentMonths) > 1 ? "월 단가" : "금액 (1회)") : "단가"}</span>
+                    <span>{(() => { const t = en ? (rentMonths ? "Price (Monthly)" : "Price") : rentMonths ? (monthFactor(l, rentMonths) > 1 ? "월 단가" : "금액 (1회)") : "단가"; return isAuto(l) ? t : <ReqMark>{t}</ReqMark>; })()}</span>
                     {isAuto(l) ? <span className="flex h-10 items-center text-[13.5px] font-semibold">{en ? (usdOf(l, fx) == null ? "환율 필요" : usd(usdOf(l, fx))) : won(l.unit_price)}</span> : en ? (
                       <span className="flex flex-col gap-0.5">
-                        <input className={cn(ROW_FIELD, "w-[140px] text-right", usdOf(l, fx) == null && "border-amber-500")} inputMode="decimal"
+                        <input className={cn(ROW_FIELD, "w-[140px] text-right")} {...req(usdOf(l, fx) == null)} inputMode="decimal"
                                key={`usd-${l.id}-${draftVer}`} defaultValue={l.usd ?? ""} aria-label="달러 단가" disabled={!!busy}
                                placeholder={usdOf(l, fx) != null ? `${usd(usdOf(l, fx))} (환율 환산)` : "$ 단가"}
                                onChange={(e) => { const v = Number(e.target.value.replace(/[,$\s]/g, "")); setLine(i, { usd: v > 0 ? v : null }); }} />
                         {l.unit_price ? <span className="text-[10.5px] font-normal text-foreground-subtle">단가표 {won(l.unit_price)}</span> : null}
                       </span>
                     ) : (
-                      <input className={cn(ROW_FIELD, "w-[140px] text-right", l.unit_price == null && "border-amber-500")} inputMode="numeric"
+                      <input className={cn(ROW_FIELD, "w-[140px] text-right")} {...REQ} inputMode="numeric"
                              value={l.unit_price ?? ""} aria-label="단가" placeholder={l.price_status === "unset" ? "가격 미정" : rentMonths ? "월 납입금 또는 1회 지불" : "단가"} disabled={!!busy}
                              onChange={(e) => setLine(i, { unit_price: Number(e.target.value.replace(/,/g, "")) || null })} />
                     )}
@@ -1258,11 +1319,15 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
                     title={q.problems.length ? "발행 전에 위의 확인할 것을 채워 주세요"
                       : hangul.some((c) => c.en == null && !c.keep) ? "한글 칸을 AI 가 영어로 바꾼 뒤 미리보기로 먼저 보여 드립니다"
                       : dirty ? "먼저 변경을 저장해 주세요" : ""}>
-              <Icon name="file-spreadsheet" className="h-4 w-4" /> {issued ? "재발행 (새 번호)" : "견적서 발행"}
+              <Icon name="file-spreadsheet" className="h-4 w-4" /> {q.won_issue ? "재발행" : issued ? "재발행 (새 번호)" : "견적서 발행"}
             </button>
           </div>
           {issued && !dirty && (
-            <p className="text-[11.5px] text-foreground-subtle">발행 뒤에도 고칠 수 있습니다 — 고치고 저장한 뒤 [재발행]하면 새 발행번호(QT-이니셜+오늘 날짜-순번)가 붙고, 예전 판은 아래 발행 이력에 남습니다.</p>
+            <p className="text-[11.5px] text-foreground-subtle">
+              {q.won_issue
+                ? `수주한 건입니다 — 고치고 저장한 뒤 [재발행]에서 수주한 견적서(${q.won_issue.quote_no})를 같은 번호로 고치거나, 새 견적서로 따로 낼 수 있습니다.`
+                : "발행 뒤에도 고칠 수 있습니다 — 고치고 저장한 뒤 [재발행]하면 새 발행번호(QT-이니셜+오늘 날짜-순번)가 붙고, 예전 판은 아래 발행 이력에 남습니다."}
+            </p>
           )}
           {/* 자리는 늘 잡아 둔다 — 저장 뒤 이 줄이 사라지며 페이지가 짧아져 화면이 밀리지 않게(사용자 2026-10-23) */}
           <p className={cn("min-h-[17px] text-[11.5px]", dirty ? "text-amber-700 dark:text-amber-300" : "invisible")} aria-hidden={!dirty}>
@@ -1294,10 +1359,55 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
       {preview && <PreviewDialog url={`/api/product-recommend/quotes/${q.id}/preview`} title="견적서 미리보기"
                                   sub={en && hangul.length ? "한글 칸은 AI 영어로 · 발행 전이면 견적번호는 발행 때 정해집니다" : "지금 저장된 내용 그대로 · 발행 전이면 견적번호는 발행 때 정해집니다"}
                                   onClose={() => setPreview(false)} onLoaded={() => void reloadAfterPreview()} />}
+      <ConfirmDialog open={!!payLock} icon="help" variant="default" title="입금 확인을 먼저 취소해야 합니다"
+                     description={<>
+                       <span className="block rounded-lg bg-foreground/[0.04] px-3 py-2 text-foreground">{payLock?.message}</span>
+                       {payLock?.dealId ? <>
+                         <b className="mt-3 block text-foreground">입금 확인 취소 란으로 안내해 드릴까요?</b>
+                         <span className="mt-0.5 block">영업 건 화면의 결제 조건 칸으로 이동합니다. 고친 견적 내용은 저장되어 있으니, [확인 취소] 뒤 [견적서로 돌아가기]를 눌러 다시 [재발행]하면 됩니다.</span>
+                       </> : <span className="mt-3 block">이 견적서에 묶인 영업 건을 찾지 못했습니다. 영업 건 관리에서 그 건의 입금 확인을 먼저 취소해 주세요.</span>}
+                     </>}
+                     confirmLabel={payLock?.dealId ? "예, 안내해 주세요" : "확인"} cancelLabel="아니요"
+                     onClose={() => setPayLock(null)}
+                     onConfirm={() => {
+                       const to = payLock?.dealId;
+                       setPayLock(null);
+                       if (to) router.push(`/proposals/recommend?tab=deals&deal=${to}&focus=pay&quote=${id}`);
+                     }} />
       <ConfirmDialog open={paidAsk} icon="help" variant="default" title="완납한 건입니다"
                      description="완납한 건입니다. 새로 발행해도 이 건의 견적 금액·품목은 바뀌지 않고 견적서 목록에만 남습니다. 추가 주문이면 새 영업 건으로 만들어 주세요."
                      confirmLabel="그래도 발행" onClose={() => setPaidAsk(false)}
-                     onConfirm={() => { setPaidAsk(false); void issue(true); }} />
+                     onConfirm={() => { setPaidAsk(false); void issue(true, "new"); }} />
+      {wonOpenAsk && q.won_issue && (
+        <ChoiceDialog title="어떤 견적서를 고칠까요?"
+                      text={q.won_issue.open === "ask"
+                        ? `이 견적서는 ${q.won_issue.quote_no}로 수주한 건입니다. 지금 화면에는 수주한 견적서가 아닌, 발행하지 않고 고치던 내용이 있습니다.`
+                        : `이 견적서는 ${q.won_issue.quote_no}로 수주한 건입니다. 그 뒤에 발행한 견적서(${q.quote_no ?? ""})가 있습니다.`}
+                      a={{ label: `수주한 견적서(${q.won_issue.quote_no}) 불러오기`, sub: "수주한 견적서 내용에서 고칩니다",
+                           run: () => void loadWon() }}
+                      b={q.won_issue.open === "ask"
+                        ? { label: "작성 중인 내용 이어서 고치기", sub: "발행하지 않고 고치던 내용 그대로", run: () => setWonOpenAsk(false) }
+                        : { label: `마지막 견적서(${q.quote_no ?? ""}) 이어서 고치기`, sub: "마지막에 발행한 견적서 내용 그대로", run: () => setWonOpenAsk(false) }} />
+      )}
+      {wonIssueAsk && q.won_issue && (
+        <ChoiceDialog title="어떻게 발행할까요?"
+                      text={`이 견적서는 ${q.won_issue.quote_no}로 수주한 건입니다.`}
+                      a={{ label: `수주한 견적서(${q.won_issue.quote_no}) 고치기`, sub: "같은 번호로 교체 — 영업 건 금액·품목도 바뀌고 S/N 은 품목을 따라갑니다(입금 확인이 있으면 금액 변경은 [확인 취소] 먼저)",
+                           run: () => { setWonIssueAsk(false); void issue(false, "replace"); } }}
+                      b={{ label: "새 견적서로 발행", sub: "새 번호로 견적서 목록에만 추가 — 영업 건은 그대로", run: () => { setWonIssueAsk(false); void issue(false, "new"); } }}
+                      onCancel={() => setWonIssueAsk(false)} />
+      )}
+      {stAsk && q.won_issue?.statement_no && (
+        <ChoiceDialog title="거래명세서도 새 금액으로 다시 발급할까요?"
+                      text={`이 건은 거래명세서(${q.won_issue.statement_no})를 이미 발급했습니다. 견적서를 고치면 명세서도 같은 품목·금액으로 맞출 수 있습니다. 공급받는자·발행자 이니셜은 그대로입니다.`}
+                      a={{ label: `같은 번호(${q.won_issue.statement_no})로 교체`, sub: "번호·날짜는 그대로, 품목·금액만 새 견적으로 — 교체 전 내용은 기록에 남습니다",
+                           run: () => { setStAsk(false); void issue(false, "replace", "same"); } }}
+                      b={{ label: "새 번호로 다시 발급", sub: "오늘 날짜 새 번호로 발급 — 예전 번호는 히스토리에 남습니다",
+                           run: () => { setStAsk(false); void issue(false, "replace", "new"); } }}
+                      c={{ label: "견적서만 고치기", sub: "명세서는 그대로 두고 '다시 발급' 알림만 남깁니다",
+                           run: () => { setStAsk(false); void issue(false, "replace", "keep"); } }}
+                      onCancel={() => setStAsk(false)} />
+      )}
       {uploading && (
         <QuoteUploadDialog title="고친 견적서 파일로 발행" uploadUrl={`/api/product-recommend/quotes/${q.id}/upload`}
                            confirmUrl={`/api/product-recommend/quotes/${q.id}/upload/confirm`} paidFull={!!q.deal_paid_full}
@@ -1404,5 +1514,37 @@ function PricePicker({ disabled, onPick }: { disabled: boolean; onPick: (p: { mo
         </div>
       )}
     </span>
+  );
+}
+
+/** 두 가지 중 고르기(수주한 견적서 — 사용자 2026-11-16). onCancel 이 없으면 둘 중 하나는 꼭 고른다. */
+function ChoiceDialog({ title, text, a, b, c, onCancel }: {
+  title: string; text: string; onCancel?: () => void;
+  a: { label: string; sub: string; run: () => void }; b: { label: string; sub: string; run: () => void };
+  c?: { label: string; sub: string; run: () => void };
+}) {
+  // 마우스를 올린 고를 것은 파란 배경으로 채움(사용자 2026-11-17) — 안의 설명 글자도 흰색으로
+  const opt = cn("group flex w-full flex-col items-start gap-0.5 rounded-xl border border-border px-4 py-3 text-left", POPUP_BTN_HOVER);
+  return (
+    <div role="dialog" aria-modal="true" aria-labelledby="choice-title" className="fixed inset-0 z-[70] grid place-items-center bg-black/30 px-4"
+         onMouseDown={(e) => { if (onCancel && e.target === e.currentTarget) onCancel(); }}>
+      <div className="anim-fade-in-up w-full max-w-[460px] rounded-2xl border border-border bg-surface-raised p-5 text-[13px] shadow-[0_30px_70px_-30px_rgba(15,30,70,0.55)]">
+        <h3 id="choice-title" className="text-[15px] font-semibold text-foreground">{title}</h3>
+        <p className="mt-1 text-[12.5px] leading-relaxed text-foreground-muted">{text}</p>
+        <div className="mt-4 flex flex-col gap-2">
+          {[a, b, ...(c ? [c] : [])].map((o) => (
+            <button key={o.label} type="button" className={opt} onClick={o.run}>
+              <b className="text-[13.5px] text-foreground group-hover:text-white!">{o.label}</b>
+              <span className="text-[12px] text-foreground-muted group-hover:text-white/85!">{o.sub}</span>
+            </button>
+          ))}
+        </div>
+        {onCancel && (
+          <div className="mt-4 flex justify-end">
+            <button type="button" onClick={onCancel} className={cn("h-9 rounded-lg border border-border px-4 text-[13px]", POPUP_BTN_HOVER)}>취소</button>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }

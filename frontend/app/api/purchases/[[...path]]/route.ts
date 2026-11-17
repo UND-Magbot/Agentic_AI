@@ -38,7 +38,7 @@ async function target(params: Params["params"], req: NextRequest) {
   if (path.length > 5 || !path.every(ok)) return null;
   const qs = req.nextUrl.searchParams;
   const keep = new URLSearchParams();
-  for (const k of ["fmt", "revision"]) {
+  for (const k of ["fmt", "revision", "replaced"]) {      // replaced = 같은 번호로 교체하기 전 파일 순번(2026-11-16)
     const v = qs.get(k);
     if (v && /^[a-z0-9]{1,8}$/.test(v)) keep.set(k, v);
   }

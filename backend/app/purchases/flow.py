@@ -4,7 +4,7 @@
 단계(사용자 2026-11-02 → 2026-11-11 개편):
 - 견적: 발주할 최종 견적서 파일을 올리면 끝. 고쳐 받은 견적서로 언제든 교체할 수 있다(예전 파일은 이전 견적서로 남김).
 - 재가: 대표님 재가 서류를 첨부하고 [재가 완료]. 첨부가 있어야 누를 수 있다.
-- 발주: 회사 발주서 양식으로 작성·발행(UND-LU20261102-01). 엑셀에서 고친 발주서 파일로도 발행(번호는 파일의 Order No.).
+- 발주: 회사 발주서 양식으로 작성·발행(PO-LU20261117-01, 2026-11-17 전에 나간 것은 UND-LU20261102-01). 엑셀에서 고친 발주서 파일로도 발행(번호는 파일의 Order No.).
   국내는 입고 예정일을 꼭 적어야 다음 단계로 넘어간다 — 리스트·상세에 보이고, 지나면 알림.
   해외는 같은 칸을 '납기일'로 적을 수 있지만 선택(사용자 2026-11-11 — 안 적어도 넘어감). 적으면 지남 알림은 같다.
 - 발주 뒤 단계는 정석 순서만 안내하고 순서와 상관없이 기록한다(입고가 송금보다 먼저 올 수도 있음).
@@ -26,6 +26,7 @@ import datetime as dt
 from typing import Any
 
 from ..sales_deals.flow import clean_terms  # noqa: F401 — 결제 조건 검사는 판매와 같다(구분·% 합 100·예정일)
+from .po_xlsx import item_name
 
 VAT_RATE = 0.1
 PAY_TOLERANCE = 1_000          # 송금 수수료 등 원 단위 차이 — 판매(flow.PAY_TOLERANCE)와 같게
@@ -95,6 +96,50 @@ def overdue(d: dict, today: dt.date) -> list[dict[str, Any]]:
     return out
 
 
+def merge_receipts(recs: list[dict]) -> list[dict]:
+    """입고 기록은 한 건(사용자 2026-11-17 — 나눠 들어오는 일이 거의 없어 1차·2차를 없앰). 예전에 나눠 남긴 기록은 하나로 합친다:
+    품목 줄별 수량은 더하고 사진·S/N 은 이어 붙이며, 날짜·운송·받은 사람·보관 위치는 가장 최근 기록, 메모는 이어 붙인다.
+    [입고 완료]는 하나라도 있으면 완료 — 닫은 범위(closed)는 줄마다 가장 많이 닫은 것(예전 꼴 closed 없는 완료가 있으면 없음 = 전부 닫힘).
+    처음 남긴 사람·때(by·at)는 첫 기록 것 — 화면이 고치기·지우기를 보낼 때 같은 기록인지 보는 값(at)이 바뀌지 않게."""
+    if len(recs) <= 1:
+        return recs
+    first, last = recs[0], recs[-1]
+    lines: dict[Any, dict] = {}
+    for r in recs:
+        for ln in r.get("lines") or []:
+            k = ln.get("line_no")
+            cur = lines.get(k)
+            if cur is None:
+                lines[k] = {**ln, "qty": float(ln.get("qty") or 0), "photos": list(ln.get("photos") or []),
+                            "serials": list(ln.get("serials") or [])}
+                continue
+            cur["qty"] = float(cur.get("qty") or 0) + float(ln.get("qty") or 0)
+            cur["photos"] += [x for x in ln.get("photos") or [] if x not in cur["photos"]]
+            cur["serials"] += [x for x in ln.get("serials") or [] if x not in cur["serials"]]
+            cur["name"] = ln.get("name") or cur.get("name")
+    pick = lambda key: next((r.get(key) for r in reversed(recs) if r.get(key)), last.get(key))   # noqa: E731
+    out = {**last, "date": max(str(r.get("date") or "") for r in recs) or last.get("date"),
+           "carrier": pick("carrier") or "", "receiver": pick("receiver") or "", "location": pick("location") or "",
+           "tracking": [t for r in recs for t in (r.get("tracking") or [])][:10],
+           "note": " / ".join(str(r.get("note") or "").strip() for r in recs if str(r.get("note") or "").strip())[:500],
+           "lines": sorted(lines.values(), key=lambda x: (x.get("line_no") is None, x.get("line_no") or 0)),
+           "by": first.get("by"), "at": first.get("at"), "merged": len(recs)}
+    out.pop("closed", None)
+    finals = [r for r in recs if r.get("final")]
+    out["final"] = bool(finals)
+    if finals and all("closed" in r for r in finals):
+        closed: dict[str, Any] = {}
+        for r in finals:
+            for k, v in (r.get("closed") or {}).items():
+                q = float((v.get("qty") if isinstance(v, dict) else v) or 0)
+                old = closed.get(k)
+                oq = float((old.get("qty") if isinstance(old, dict) else old) or 0) if old is not None else -1
+                if q >= oq:
+                    closed[k] = v
+        out["closed"] = closed
+    return [out]
+
+
 def received(d: dict) -> dict[int, float]:
     """발주 품목 줄(line_no)별 지금까지 입고한 수량 — 입고 기록(receipt.records)의 합."""
     out: dict[int, float] = {}
@@ -105,16 +150,45 @@ def received(d: dict) -> dict[int, float]:
     return out
 
 
+def receipt_open(d: dict) -> list[int]:
+    """아직 입고가 남은 발주 품목 줄(line_no) — 발주 수량만큼 받지 않았고, [입고 완료]로 닫지도 않은 줄.
+    [입고 완료]는 누른 때의 발주 수량까지만 닫는다(closed, 사용자 2026-11-16) — 뒤에 품목을 더하거나 수량을 늘리면 늘어난 만큼 다시 열린다.
+    closed 가 없는 예전 [입고 완료] 기록은 전부 닫은 것으로 본다.
+    닫은 줄은 품목 이름도 기억한다(QA 2026-11-16) — 다시 발행해 그 자리에 다른 품목이 들어오면(B → C) 닫힌 줄이 아니라 새로 열린 줄.
+    이름 없이 수량만 남긴 기록(같은 날 먼저 저장한 꼴 {줄: 수량})은 이름 검사 없이 수량만 본다."""
+    recs = (d.get("receipt") or {}).get("records") or []
+    finals = [r for r in recs if r.get("final")]
+    if any("closed" not in r for r in finals):
+        return []
+    closed: dict[int, list[tuple[float, str | None]]] = {}
+    for r in finals:
+        for k, v in (r.get("closed") or {}).items():
+            q, name = (v.get("qty"), v.get("name")) if isinstance(v, dict) else (v, None)
+            closed.setdefault(int(k), []).append((float(q or 0), name))
+    items = (d.get("po") or {}).get("items") or []
+    got = received(d)
+
+    def shut(i: int, it: dict) -> bool:
+        want = float(it.get("qty") or 0)
+        return any(want <= q + 1e-9 and (name is None or _name_key(name) == _name_key(item_name(it))) for q, name in closed.get(i, []))
+
+    return [i for i, it in enumerate(items) if got.get(i, 0) < float(it.get("qty") or 0) and not shut(i, it)]
+
+
+def _name_key(v: Any) -> str:
+    """품목 이름 비교 — 대소문자·띄어쓰기 차이는 같은 이름(재발행 줄 지키기와 같은 기준)."""
+    return " ".join(str(v or "").split()).upper()
+
+
 def receipt_done(d: dict) -> bool:
-    """입고 완료 — 기록 중 하나가 '입고 완료'로 남았거나, 발주 품목 수량을 모두 받았을 때."""
+    """입고 완료 — 발주 품목 수량을 모두 받았거나, [입고 완료]로 닫았을 때(닫은 뒤 늘어난 품목·수량은 다시 입고 대기 — receipt_open)."""
     recs = (d.get("receipt") or {}).get("records") or []
     if not recs:
         return False
-    if any(r.get("final") for r in recs):
-        return True
     items = (d.get("po") or {}).get("items") or []
-    got = received(d)
-    return bool(items) and all(got.get(i, 0) >= float(it.get("qty") or 0) for i, it in enumerate(items))
+    if not items and not any(r.get("final") for r in recs):
+        return False
+    return not receipt_open(d)
 
 
 def quote_done(d: dict) -> bool:
@@ -207,7 +281,7 @@ def steps(d: dict) -> list[dict[str, Any]]:
         notes["ship"] = "배송 중"
     recs = (d.get("receipt") or {}).get("records") or []
     if recs and not done["receipt"]:
-        notes["receipt"] = f"부분 입고 {len(recs)}회"
+        notes["receipt"] = "부분 입고"
     return [{"key": k, "label": lab[k], "done": done[k], "ready": ready.get(k, ordered) and not d.get("dropped"),
              "note": notes.get(k), "optional": k in OPTIONAL} for k in step_order(d)]
 

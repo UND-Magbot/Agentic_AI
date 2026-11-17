@@ -108,8 +108,20 @@ check(not any(a["code"] == "NO_FILE" for a in flow.alerts(d, TODAY)), "명세서
 # ── 입고 기록 · 입고 예정일 · 해외 ──
 part = base(po=po, receipt={"records": [{"lines": [{"line_no": 0, "qty": 1}]}]})
 check(not flow.receipt_done(part) and flow.received(part) == {0: 1.0}, "부분 입고는 아직 미완료")
-check({x["key"]: x for x in flow.steps({**part, "quote_files": [{}], "approval": {"done_at": "x"}})}["receipt"]["note"] == "부분 입고 1회",
+check({x["key"]: x for x in flow.steps({**part, "quote_files": [{}], "approval": {"done_at": "x"}})}["receipt"]["note"] == "부분 입고",
       "부분 입고 표시")
+# 입고 기록 한 건(사용자 2026-11-17) — 예전에 나눠 남긴 기록은 하나로: 수량 더함·사진 S/N 이어 붙임·최근 날짜·완료 범위는 줄마다 가장 많이
+two = [{"date": "2026-11-01", "by": "A", "at": "t1", "carrier": "경동", "lines": [{"line_no": 0, "name": "M", "qty": 1, "photos": ["p1"], "serials": ["S1"]}]},
+       {"date": "2026-11-05", "by": "B", "at": "t2", "final": True, "closed": {"0": {"qty": 2, "name": "M"}, "1": {"qty": 1, "name": "N"}},
+        "lines": [{"line_no": 0, "name": "M", "qty": 1, "photos": ["p2"], "serials": ["S2"]}, {"line_no": 1, "name": "N", "qty": 1, "photos": [], "serials": []}]}]
+m = flow.merge_receipts(two)
+check(len(m) == 1 and m[0]["at"] == "t1" and m[0]["by"] == "A" and m[0]["date"] == "2026-11-05" and m[0]["carrier"] == "경동"
+      and [(x["line_no"], x["qty"], x["photos"], x["serials"]) for x in m[0]["lines"]] == [(0, 2.0, ["p1", "p2"], ["S1", "S2"]), (1, 1.0, [], [])]
+      and m[0]["final"] and m[0]["closed"]["0"]["qty"] == 2, "입고 기록 합치기 — 수량 더함·사진/S/N 이어 붙임·처음 기록자·최근 날짜·완료 범위", str(m))
+po2 = {"items": [{"commodity": "M", "qty": 2}, {"commodity": "N", "qty": 1}]}
+check(flow.receipt_done({"po": po2, "receipt": {"records": two}}) == flow.receipt_done({"po": po2, "receipt": {"records": m}}) == True,
+      "합쳐도 입고 완료 판정 같음")
+check(flow.merge_receipts(two[:1]) == two[:1], "기록 하나면 그대로")
 check(flow.receipt_done(base(po=po, receipt={"records": [{"lines": [], "final": True}]})), "'입고 완료'로 남기면 끝")
 late = base(quote_files=[{}], approval={"done_at": "x"}, po={**po, "expected_date": "2026-10-30"})
 check(any(a["code"] == "RECEIPT_DUE" and "2026-10-30" in a["text"] for a in flow.alerts(late, TODAY)), "입고 예정일 지나면 알림")

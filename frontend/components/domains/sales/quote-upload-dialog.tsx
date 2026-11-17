@@ -13,6 +13,7 @@ import { useEffect, useState } from "react";
 import { Icon } from "@/components/shared/ui/icon";
 import { fileBugReport, readFailureContent } from "@/lib/shared/bug-report";
 import { cn } from "@/lib/shared/utils";
+import { req, REQ, REQ_SCOPE, ReqLabel, ReqMark } from "@/components/domains/sales/required";
 
 type Item = { name: string; spec: string; qty: number | null; unit_price: number | null };
 type Upload = { key: string; filename: string; mime: string; size: number };
@@ -55,6 +56,7 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
   const [dupMsg, setDupMsg] = useState<string | null>(null);
   // 같은 영업 건에 같은 번호의 판이 있을 때 — 덮어쓸지 묻는 팝업(사용자 2026-10-13)
   const [overMsg, setOverMsg] = useState<string | null>(null);
+  const [snNote, setSnNote] = useState<{ text: string; data: unknown } | null>(null);
   // 완납한 건에 발행 — [그래도 발행]을 누르면 이번 창에서는 다시 묻지 않는다
   const [paidAsk, setPaidAsk] = useState(false);
   const [paidOk, setPaidOk] = useState(false);
@@ -125,7 +127,7 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
       return;
     }
     setOverMsg(null);
-    setBusy(overwrite ? "덮어쓰는 중…" : "발행하는 중…");
+    setBusy(overwrite ? "교체하는 중…" : "발행하는 중…");
     setError(null);
     try {
       const r = await fetch(confirmUrl, {
@@ -138,12 +140,15 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
       const d = await r.json().catch(() => ({}));
       if (r.status === 409) {
         const x = (d as { detail?: { overwrite?: boolean; message?: string } })?.detail;
-        if (x && typeof x === "object" && x.overwrite) setOverMsg(x.message ?? "같은 발행번호의 견적서가 있습니다. 덮어쓸까요?");
+        if (x && typeof x === "object" && x.overwrite) setOverMsg(x.message ?? "같은 발행번호의 견적서가 있습니다. 올린 파일로 교체할까요?");
         else setDupMsg(detail(d, "이미 존재하는 발행번호입니다. 견적서의 발행번호를 새 번호로 고쳐 주세요."));
         setBusy(null);
         return;
       }
       if (!r.ok) throw new Error(detail(d, "발행하지 못했습니다."));
+      // S/N 을 새 품목 줄로 다시 짝지으며 맞는 품목이 없던 S/N 이 있으면 먼저 알린다(QA 2026-11-16)
+      const sn = (d as { sn_note?: string })?.sn_note;
+      if (sn) { setSnNote({ text: sn, data: d }); setBusy(null); return; }
       onDone(d);
     } catch (e) {
       setError(e instanceof Error ? e.message : "발행하지 못했습니다.");
@@ -234,21 +239,22 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
               <table className="w-full min-w-[620px] text-[12.5px]">
                 <thead>
                   <tr className="text-left text-[11.5px] text-foreground-subtle">
-                    <th className="px-1 py-1 font-medium">품명 *</th><th className="px-1 py-1 font-medium">규격</th>
-                    <th className="w-[80px] px-1 py-1 font-medium">수량 *</th><th className="w-[120px] px-1 py-1 font-medium">단가(공급가) *</th>
+                    <th className="px-1 py-1 font-medium"><ReqMark>품명</ReqMark></th><th className="px-1 py-1 font-medium">규격</th>
+                    <th className="w-[80px] px-1 py-1 font-medium"><ReqMark>수량</ReqMark></th>
+                    <th className="w-[120px] px-1 py-1 font-medium">{free ? "단가(공급가)" : <ReqMark>단가(공급가)</ReqMark>}</th>
                     <th className="w-[110px] px-1 py-1 text-right font-medium">금액</th><th className="w-6" />
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
                   {items.map((x, i) => (
                     <tr key={i}>
-                      <td className="px-1 py-1"><input className={inputCls} value={x.name} aria-label={`${i + 1}번 품명`} placeholder="예: Magbot ATC"
+                      <td className="px-1 py-1"><input className={inputCls} {...REQ} value={x.name} aria-label={`${i + 1}번 품명`} placeholder="예: Magbot ATC"
                                                        onChange={(e) => setItem(i, { name: e.target.value })} /></td>
                       <td className="px-1 py-1"><input className={inputCls} value={x.spec} aria-label={`${i + 1}번 규격`} placeholder="예: TCV1 - MASTER T.C"
                                                        onChange={(e) => setItem(i, { spec: e.target.value })} /></td>
-                      <td className="px-1 py-1"><input className={cn(inputCls, x.qty == null && "border-amber-500")} inputMode="decimal" value={x.qty ?? ""}
+                      <td className="px-1 py-1"><input className={inputCls} {...REQ} inputMode="decimal" value={x.qty ?? ""}
                                                        aria-label={`${i + 1}번 수량`} onChange={(e) => setItem(i, { qty: num(e.target.value) })} /></td>
-                      <td className="px-1 py-1"><input className={cn(inputCls, x.unit_price == null && !free && "border-amber-500")} inputMode="numeric" value={x.unit_price ?? ""}
+                      <td className="px-1 py-1"><input className={inputCls} {...req(!free)} inputMode="numeric" value={x.unit_price ?? ""}
                                                        placeholder={free ? "무상" : undefined}
                                                        aria-label={`${i + 1}번 단가`} onChange={(e) => setItem(i, { unit_price: num(e.target.value) })} /></td>
                       <td className="whitespace-nowrap px-1 py-1 text-right tabular-nums">{won((x.qty ?? 0) * (x.unit_price ?? 0))}</td>
@@ -333,9 +339,9 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
                 </span>
               </label>
               {!docNo.trim() && (
-                <label className="flex flex-wrap items-center gap-2">
-                  <span className="font-medium">발행자 이니셜 *</span>
-                  <input value={initials} maxLength={2} disabled={!!busy} onChange={(e) => setInitials(e.target.value.toUpperCase())}
+                <label className={cn("flex flex-wrap items-center gap-2", REQ_SCOPE)}>
+                  <ReqLabel>발행자 이니셜</ReqLabel>
+                  <input {...REQ} value={initials} maxLength={2} disabled={!!busy} onChange={(e) => setInitials(e.target.value.toUpperCase())}
                          className={cn(inputCls, "w-24 uppercase")} aria-label="발행자 이니셜" />
                   <span className="text-[11.5px] text-foreground-subtle">→ 새 번호 QT-{(initials || "??").toUpperCase()}{ymd}-NN</span>
                 </label>
@@ -406,18 +412,36 @@ export function QuoteUploadDialog({ title, uploadUrl, confirmUrl, onDone, onClos
           </div>
         </div>
       )}
+      {snNote && (
+        <div role="alertdialog" aria-modal="true" aria-labelledby="qup-sn-title"
+             className="anim-fade-in fixed inset-0 z-[60] grid place-items-center bg-black/30 px-4">
+          <div className="anim-fade-in-up w-full max-w-[460px] rounded-2xl border border-border bg-surface-raised p-5 text-[13px] shadow-[0_30px_70px_-30px_rgba(15,30,70,0.55)]">
+            <h3 id="qup-sn-title" className="text-[15px] font-semibold text-amber-700 dark:text-amber-300">발행했습니다 — S/N 확인</h3>
+            <p className="mt-2 text-[13px] leading-relaxed text-foreground">{snNote.text}</p>
+            <p className="mt-1 text-[12px] text-foreground-muted">새 견적서 품목에 맞는 S/N 은 그 품목으로 옮겼습니다. 빈 칸은 영업 건 상세의 S/N 등록에서 채울 수 있습니다.</p>
+            <div className="mt-4 flex justify-end">
+              <button type="button" autoFocus onClick={() => { const d = snNote.data; setSnNote(null); onDone(d); }}
+                      className="h-9 rounded-lg bg-accent px-5 text-[13px] font-semibold text-white hover:brightness-105">확인</button>
+            </div>
+          </div>
+        </div>
+      )}
       {overMsg && (
         <div role="alertdialog" aria-modal="true" aria-labelledby="qup-over-title" aria-describedby="qup-over-msg"
              className="anim-fade-in fixed inset-0 z-[60] grid place-items-center bg-black/30 px-4">
           <div className="anim-fade-in-up w-full max-w-[440px] rounded-2xl border border-border bg-surface-raised p-5 text-[13px] shadow-[0_30px_70px_-30px_rgba(15,30,70,0.55)]">
             <h3 id="qup-over-title" className="text-[15px] font-semibold text-amber-700 dark:text-amber-300">같은 발행번호의 견적서가 있습니다</h3>
             <p id="qup-over-msg" className="mt-2 text-[13px] leading-relaxed text-foreground">{overMsg}</p>
-            <p className="mt-1 text-[12px] text-foreground-muted">덮어쓰면 그 판을 다시 받을 때 올린 파일이 나가고, 품목·금액도 올린 파일 기준으로 바뀝니다. 히스토리에 &lsquo;견적서 파일 교체&rsquo;가 남습니다. 번호를 바꿔 새 판으로 내려면 [취소] 후 발행번호를 고쳐 주세요.</p>
+            <ul className="mt-2 list-disc space-y-0.5 pl-5 text-[12px] text-foreground-muted">
+              <li>번호·판은 그대로이고, 그 판을 받으면 올린 파일이 나가며 품목·금액도 올린 파일 기준으로 바뀝니다.</li>
+              <li>교체 전 파일은 보관되어 견적서 카드의 &lsquo;교체 전&rsquo;에서 다시 받을 수 있습니다.</li>
+              <li>따로 남기려면 [취소]를 누르고 발행번호를 바꿔 올려 주세요(새 판이 됩니다).</li>
+            </ul>
             <div className="mt-4 flex justify-end gap-2">
               <button type="button" onClick={() => { setOverMsg(null); closeDup(); }}
                       className="h-9 rounded-lg border border-border px-4 text-[13px] font-semibold hover:bg-foreground/5">취소</button>
               <button type="button" autoFocus onClick={() => void issue(true, true)}
-                      className="h-9 rounded-lg bg-amber-600 px-5 text-[13px] font-semibold text-white hover:brightness-105">덮어쓰기</button>
+                      className="h-9 rounded-lg bg-amber-600 px-5 text-[13px] font-semibold text-white hover:brightness-105">교체</button>
             </div>
           </div>
         </div>

@@ -106,9 +106,11 @@ export async function GET(req: NextRequest, { params }: Params) {
     const sp = req.nextUrl.searchParams;
     const q = sp.get("quote");
     const rev = sp.get("revision");
+    const rep = sp.get("replaced");                       // 같은 번호로 교체하기 전 파일 순번(2026-11-16)
     if (!q || !/^\d+$/.test(q)) return notFound();
     const fmt = sp.get("fmt") === "xlsx" ? "xlsx" : "pdf";
-    return passFile(`${BACKEND_URL}${BASE}/${path[0]}/quote-file?quote=${q}&fmt=${fmt}${rev && /^\d+$/.test(rev) ? `&revision=${rev}` : ""}`, tok);
+    return passFile(`${BACKEND_URL}${BASE}/${path[0]}/quote-file?quote=${q}&fmt=${fmt}${rev && /^\d+$/.test(rev) ? `&revision=${rev}` : ""}`
+                    + (rep && /^\d+$/.test(rep) ? `&replaced=${rep}` : ""), tok);
   }
   if (path.length === 3 && /^\d+$/.test(path[0]) && path[1] === "order" && path[2] === "preview") {
     return passFile(`${BACKEND_URL}${BASE}/${path[0]}/order/preview`, tok);
@@ -119,7 +121,8 @@ export async function GET(req: NextRequest, { params }: Params) {
   }
   if (path.length === 3 && /^\d+$/.test(path[0]) && path[1] === "statement" && path[2] === "file") {
     const fmt = req.nextUrl.searchParams.get("fmt") === "xlsx" ? "xlsx" : "pdf";
-    return passFile(`${BACKEND_URL}${BASE}/${path[0]}/statement/file?fmt=${fmt}`, tok);
+    const prev = req.nextUrl.searchParams.get("prev");                 // 예전 발급본 순번(사용자 2026-11-17)
+    return passFile(`${BACKEND_URL}${BASE}/${path[0]}/statement/file?fmt=${fmt}${prev && /^\d+$/.test(prev) ? `&prev=${prev}` : ""}`, tok);
   }
   if (path.length === 3 && /^\d+$/.test(path[0]) && path[1] === "ship-photos" && /^[0-9a-f]{32}\.(jpg|jpeg|png|webp)$/.test(path[2])) {
     return passFile(`${BACKEND_URL}${BASE}/${path[0]}/ship-photos/${path[2]}`, tok);

@@ -223,13 +223,21 @@ async def replaced_after_confirm(db, tag: str) -> None:
     except svc.DealError as e:
         await db.rollback()
         check("완납" in str(e), "건관리-7 완납 뒤 다른 판으로 수주 바꾸기는 막음", str(e))
-    # 완납 전(선금만 확인)에는 지금처럼 교체 가능
+    # 완납 전이라도 입금 확인한 회차가 있으면 금액이 바뀌는 교체는 막음(사용자 2026-11-16 — 덜 받아도 완납이 되던 문제),
+    # [확인 취소] 뒤에는 교체 가능
     d2, _ = await new_deal(db, "QT-RV20261026-06")
     await svc.set_terms(db, d2, None, [{"label": "선금", "pct": 30}, {"label": "잔금", "pct": 70}])
     await svc.confirm_term(db, d2, None, 0, TODAY)
+    try:
+        await svc.quote_replaced(db, d2, None, {**rep, "doc_no": "QT-RV20261026-06"}, latest=True)
+        check(False, "건관리-7 선금만 확인한 건도 금액 바뀌는 교체는 막음", "교체됨")
+    except svc.DealError as e:
+        await db.rollback()
+        check("확인 취소" in str(e), "건관리-7 선금만 확인한 건도 금액 바뀌는 교체는 막음", str(e))
+    await svc.unconfirm_term(db, d2, None, 0)
     await svc.quote_replaced(db, d2, None, {**rep, "doc_no": "QT-RV20261026-06"}, latest=True)
     await db.commit()
-    check((await svc.get_deal(db, d2, TODAY))["quote"]["amount"] == 12_000_000, "건관리-7 완납 전에는 견적 교체 가능(지금과 같음)")
+    check((await svc.get_deal(db, d2, TODAY))["quote"]["amount"] == 12_000_000, "건관리-7 입금 확인을 취소하면 견적 교체 가능")
 
 
 async def payment_unsets_full(db, tag: str) -> None:
@@ -518,11 +526,12 @@ async def stale_index(db, tag: str) -> None:
     from fastapi import HTTPException
 
     from app import api_sales_deals as api      # noqa: E402
-    me = SimpleNamespace(id=None, role="admin", is_superuser=True)
+    me = SimpleNamespace(id=None, role=__import__("app.models", fromlist=["UserRole"]).UserRole.domain_admin, is_superuser=True)   # 영업 관리자
     deal_id, qid = await new_deal(db, "QT-RV20261027-41")
+    # 결제 조건을 먼저 정한다 — 조건 전에 남긴 입금이 있으면 결제 조건을 못 정함(QA 2026-11-16 영업 8, 이중 집계 방지)
+    await svc.set_terms(db, deal_id, None, [{"label": "선금", "pct": 30}, {"label": "잔금", "pct": 70}])
     await svc.add_payment(db, deal_id, None, {"date": dt.date(2026, 10, 1), "amount": 1000, "full": False})
     await svc.add_payment(db, deal_id, None, {"date": dt.date(2026, 10, 2), "amount": 2000, "full": False})
-    await svc.set_terms(db, deal_id, None, [{"label": "선금", "pct": 30}, {"label": "잔금", "pct": 70}])
     seen = await svc.get_deal(db, deal_id, TODAY)              # A 가 본 화면
     p0, p1 = seen["payments"]
     t1 = next(t for t in seen["flow"]["terms"] if t["index"] == 1)
@@ -547,7 +556,8 @@ async def stale_index(db, tag: str) -> None:
     code = await status_of(api.remove_entry(deal_id, api.RemoveIn(kind="payments", index=0, expect=p0), me, db))
     left = [x["amount"] for x in (await svc.get_deal(db, deal_id, TODAY))["payments"]]
     check(code == 409 and left == [2000], "동시사용 이미 지워진 줄을 다시 지우려 하면 그 자리의 다른 줄을 지우지 않고 막음", f"{code} {left}")
-    # 결제 조건을 B 가 바꾼 뒤 A 가 예전 회차로 입금 확인 → 막힘
+    # 결제 조건을 B 가 바꾼 뒤 A 가 예전 회차로 입금 확인 → 막힘(조건 없이 남은 입금은 먼저 정리 — 영업 8)
+    await svc.remove_entry(db, deal_id, None, "payments", 0)
     await svc.set_terms(db, deal_id, None, [{"label": "선금", "pct": 50}, {"label": "잔금", "pct": 50}])
     code = await status_of(api.confirm_term(deal_id, api.TermConfirmIn(index=1, expect={"label": t1["label"], "pct": t1["pct"]}), me, db))
     d = await svc.get_deal(db, deal_id, TODAY)
@@ -628,7 +638,7 @@ async def search_literal(db, tag: str) -> None:
     check(got == [f"RV-{tag}-A_1"], "S/N찾기 '_' 는 글자 그대로(AB1 은 안 나옴)", str(got))
     got = sorted(x["serial"] for x in await units.search_units(db, "50%", TODAY))
     check(f"RV-{tag}-50%" in got and f"RV-{tag}-A_1" not in got, "S/N찾기 '%' 도 글자 그대로", str(got))
-    me = SimpleNamespace(id=None, role="admin", is_superuser=True)
+    me = SimpleNamespace(id=None, role=__import__("app.models", fromlist=["UserRole"]).UserRole.domain_admin, is_superuser=True)   # 영업 관리자
     r = await api.search_units(q="", _=me, db=db)
     total = (await db.execute(text("SELECT COUNT(*) FROM product_units"))).scalar()
     check(len(r["items"]) <= api.UNIT_LIST_MAX and r["more"] == (total > api.UNIT_LIST_MAX),

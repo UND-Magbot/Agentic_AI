@@ -8,6 +8,9 @@ import { cn } from "@/lib/shared/utils";
 
 type Variant = "danger" | "default";
 
+/** 팝업 버튼에 마우스를 올리면 파란 배경으로 채워 어디를 가리키는지 보이게(사용자 2026-11-17) — 다른 팝업도 같이 쓴다 */
+export const POPUP_BTN_HOVER = "transition-colors hover:border-blue-600! hover:bg-blue-600! hover:text-white!";
+
 type Props = {
   open: boolean;
   /** 헤더 좌측 아이콘. 위험 액션은 "trash", 그 외는 "help" 등. */
@@ -22,6 +25,10 @@ type Props = {
   confirmLabel?: string;
   /** 취소 버튼 라벨. default "취소". */
   cancelLabel?: string;
+  /** 알림만(확인 버튼 하나) — 막힌 이유를 보여 줄 때(사용자 2026-11-17) */
+  hideCancel?: boolean;
+  /** 제목 위 작은 글자(예: "UND Cortex" — 브라우저 기본 창의 주소 줄 대신, 사용자 2026-11-17) */
+  brand?: string;
   /** danger = 빨간 확인 버튼(파괴적 액션). default = 중립 톤. */
   variant?: Variant;
   /** 확인 시 실행. async 가능. throw 시 에러 메시지가 모달 안에 표시되고 모달은 열린 상태 유지. */
@@ -45,6 +52,8 @@ export function ConfirmDialog({
   highlight,
   confirmLabel = "삭제",
   cancelLabel = "취소",
+  hideCancel = false,
+  brand,
   variant = "danger",
   onConfirm,
   onClose,
@@ -115,6 +124,7 @@ export function ConfirmDialog({
             <Icon name={icon} className="h-5 w-5" />
           </div>
           <div className="min-w-0 flex-1">
+            {brand && <p className="mb-0.5 text-[12px] font-bold tracking-[0.02em] text-accent">{brand}</p>}
             <h2
               id="confirm-dialog-title"
               className="text-[16px] font-semibold tracking-tight text-foreground"
@@ -141,15 +151,15 @@ export function ConfirmDialog({
 
         {/* 액션 영역 — 헤어라인 + 우측 정렬. */}
         <div className="flex items-center justify-end gap-2 border-t border-border bg-surface-raised/40 px-5 py-3">
-          <button
+          {!hideCancel && <button
             ref={cancelBtnRef}
             type="button"
             onClick={onClose}
             disabled={busy}
-            className="rounded-md px-3.5 py-1.5 text-[13px] font-medium text-foreground transition hover:bg-foreground/5 disabled:opacity-50"
+            className={cn("rounded-lg border border-transparent px-3.5 py-1.5 text-[13px] font-medium text-foreground disabled:opacity-50", POPUP_BTN_HOVER)}
           >
             {cancelLabel}
-          </button>
+          </button>}
           <button
             type="button"
             onClick={handleConfirm}
@@ -158,7 +168,7 @@ export function ConfirmDialog({
               "inline-flex items-center gap-2 rounded-lg px-4 py-2 text-[13px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-60",
               isDanger
                 ? "bg-red-600 text-white shadow-[0_8px_18px_-8px_rgba(220,38,38,0.6)] hover:bg-red-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/40"
-                : "und-grad text-white shadow-[0_8px_18px_-8px_rgba(37,99,235,0.6),inset_0_1px_0_rgba(255,255,255,0.35)] hover:brightness-105",
+                : "und-grad text-white shadow-[0_8px_18px_-8px_rgba(37,99,235,0.6),inset_0_1px_0_rgba(255,255,255,0.35)] hover:bg-none! hover:bg-blue-700!",
             )}
           >
             {busy && <Icon name="refresh" className="h-3.5 w-3.5 animate-spin" />}

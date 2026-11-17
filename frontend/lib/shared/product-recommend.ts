@@ -338,6 +338,14 @@ export type QuoteWork = { needed: boolean | null; people: number | null; days: n
 export type QuoteDelivery = { case: 1 | 2 | 3 | 4 | 5 | null; freight: number | null; /** 물류비·인건비 줄을 넣을 묶음(기본 B0) */ block?: string | null };
 export type QuoteSession = {
   id: number; recommendation_id: number | null; status: "draft" | "issued"; quote_no: string | null; revision: number;
+  /** 수주한 영업 건의 수주 판(사용자 2026-11-16) — open: none 지금 그대로 · auto 수주한 판을 불러옴 · ask 고치다 만 내용이 있어 물어봄 */
+  won_issue?: { revision: number; quote_no: string; open: "none" | "auto" | "ask";
+                /** 영업 건에 발급한 거래명세서 번호 — 있으면 고칠 때 명세서도 다시 발급할지 묻는다(사용자 2026-11-17) */
+                statement_no?: string | null } | null;
+  /** 수주한 견적서를 고쳐 낸 결과 — S/N 다시 짝짓기 안내 */
+  sn_note?: string; replaced_won?: boolean;
+  /** 수주한 견적서를 고치며 거래명세서도 다시 발급한 결과(같은 번호 교체·새 번호) */
+  statement_reissued?: { no: string; same_no: boolean } | null;
   /** 견적서 수기 작성(AI 추천 없이, 사용자 2026-10-08) · 발행 뒤 이어진 영업 건 */
   manual?: boolean; deal_id?: number | null;
   file_name: string | null; customer: string | null;

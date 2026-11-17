@@ -79,7 +79,11 @@ export interface DealQuoteDoc {
   /** issue_no = 그 판의 발행번호(새 체계 QT-…, 예전 판은 그때 견적서에 찍힌 번호 AL20261008 등),
    *  uploaded = 밖에서 고친 파일로 발행했거나 교체한 판, replaced_at = 같은 번호로 파일을 교체한 때 */
   issues: { revision: number; quote_no?: string | null; issue_no?: string | null; uploaded?: boolean; issued_at: string; total: number;
-            currency: "KRW" | "USD"; file_name: string; replaced_at?: string | null }[];
+            currency: "KRW" | "USD"; file_name: string; replaced_at?: string | null;
+            /** 같은 번호로 교체하기 전 파일(사용자 2026-11-16 — 번호 하나 = 견적서 하나, 교체 전 파일은 보관·다시 받기).
+             *  filename 이 없으면 회사 양식으로 발행했던 내용, replaced_at = 교체된 때 */
+            replaced?: { filename: string | null; total: number | null; currency: "KRW" | "USD" | null; replaced_at: string | null;
+                         file_name: string }[] }[];
 }
 
 /** 결제 조건을 정했다는 표시 — 'terms'(예전 after·split·prepay 도 같은 뜻) */
@@ -118,6 +122,10 @@ export interface DealStatement {
   parts?: DealStatementItem[];
   totals?: { supply: number; vat: number; total: number };
   issued_at?: string;
+  /** 같은 번호로 내용을 교체한 때(견적서 고치기, 사용자 2026-11-17) */
+  replaced_at?: string;
+  /** 예전 발급본(오래된 것 먼저) — replaced 같은 번호로 교체되기 전 · reissued 새 번호로 다시 발급되기 전 */
+  history?: (Omit<DealStatement, "history"> & { kind: "replaced" | "reissued"; ended_at: string })[];
 }
 
 export interface DealFlow {

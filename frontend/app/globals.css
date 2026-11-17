@@ -401,3 +401,30 @@ textarea.autosize {
     radial-gradient(700px 300px at 10% -100px, rgba(34, 211, 238, 0.08), transparent 70%),
     var(--background);
 }
+
+/* 필수 칸(사용자 2026-11-16 — 무심코 못 지나가게, 영업 화면 공용: components/domains/sales/required.tsx)
+   required + data-req 칸이 비어 있으면(:invalid) 빨간 두꺼운 테두리·옅은 빨간 바탕·빛. 이름 옆 '필수' 알약은 채우면 초록 체크로. */
+[data-req]:invalid {
+  border-width: 2px !important;
+  border-color: rgb(248 113 113) !important;
+  background-color: rgb(239 68 68 / 0.05) !important;
+  box-shadow: 0 0 0 3px rgb(239 68 68 / 0.12) !important;
+}
+[data-req]:invalid:focus {
+  border-color: rgb(239 68 68) !important;
+  box-shadow: 0 0 0 3px rgb(239 68 68 / 0.22) !important;
+}
+[data-req]:invalid::placeholder { color: rgb(248 113 113 / 0.85); }
+/* 채운 필수 칸 — 초록 두꺼운 테두리(사용자 2026-11-16: 초록 테두리가 보기 좋음) */
+[data-req]:valid:not(:disabled),
+[data-req-filled]:not(:disabled) {
+  border-width: 2px !important;
+  border-color: rgb(16 185 129 / 0.6) !important;
+}
+[data-req]:valid:not(:disabled):focus {
+  border-color: rgb(5 150 105) !important;
+  box-shadow: 0 0 0 3px rgb(16 185 129 / 0.15) !important;
+}
+.req-ok { display: none; }
+.req-scope:not(:has([data-req]:invalid)) .req-ok { display: inline-flex; }
+.req-scope:not(:has([data-req]:invalid)) .req-need { display: none; }

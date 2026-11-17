@@ -243,6 +243,14 @@ async def deal_quotes(db: AsyncSession, proposal_id: int | None, deal_id: int | 
                     "issues": [{**{k: h.get(k) for k in ("revision", "quote_no", "issued_at", "total", "currency", "replaced_at")},
                                 "issue_no": _issue_no(h),
                                 "uploaded": bool(h.get("upload")),
+                                # 같은 번호로 교체하기 전 파일(사용자 2026-11-16) — 화면 '교체 전'에서 다시 받기
+                                # replaced_at = 이 내용이 교체된 때(다음 내용이 들어온 때 — 마지막은 그 판의 replaced_at)
+                                "replaced": [{"filename": (r.get("upload") or {}).get("filename"), "total": r.get("total"),
+                                              "currency": r.get("currency"),
+                                              "replaced_at": ((h.get("replaced") or [])[i + 1].get("replaced_at")
+                                                              if i + 1 < len(h.get("replaced") or []) else h.get("replaced_at")),
+                                              "file_name": clean_quote_file_name(str(r.get("file_name") or ""))}
+                                             for i, r in enumerate(h.get("replaced") or [])],
                                 # 예전 발행본 파일명('_Revn'·이니셜·날짜 중복)은 지금 이름 규칙으로(사용자 2026-10-08)
                                 "file_name": clean_quote_file_name(str(h.get("file_name") or ""))} for h in hist]})
     return out
@@ -437,6 +445,16 @@ async def set_rental_return(db: AsyncSession, deal_id: int, user_id: int | None,
         if not admin:
             raise DealError("회수 기록 취소는 관리자만 할 수 있습니다.", 403)
         if ret.get("done"):
+            # 회수한 S/N 이 이미 다른 건에 다시 등록됐으면 막는다 — 같은 제품이 두 건에서 대여 중이 되지 않게(사용자 2026-11-16)
+            again = (await db.execute(text(
+                "SELECT u.serial, s.customer, s.deal_no FROM product_units u JOIN product_units o "
+                "  ON lower(o.maker) = lower(u.maker) AND lower(o.serial) = lower(u.serial) AND o.id <> u.id AND o.status <> '회수' "
+                "LEFT JOIN sales_deals s ON s.id = o.deal_id "
+                "WHERE u.deal_id = :d AND u.status = '회수' AND NOT u.no_serial AND NOT o.no_serial LIMIT 3"), {"d": deal_id})).mappings().all()
+            if again:
+                where = ", ".join(f"{r['serial']}({r['customer'] or '고객사 없음'} {r['deal_no'] or ''})".replace(" )", ")") for r in again)
+                raise DealError(f"회수한 S/N이 이미 다른 건에 다시 등록돼 회수 기록을 취소할 수 없습니다: {where}. "
+                                "그 건의 S/N을 먼저 정리해 주세요.", 409)
             await db.execute(text("UPDATE product_units SET status = '출하', updated_at = NOW() WHERE deal_id = :d AND status = '회수'"),
                              {"d": deal_id})
         ret = {}
@@ -535,6 +553,10 @@ async def quote_deal(db: AsyncSession, user_id: int | None, proposal_id: int | N
     fields: dict[str, Any] = {"quote": quote, "customer": p["customer"], "contact": p.get("contact"), "title": title}
     if r.won or r.paid_full:   # 완납한 건도 견적은 그대로(사용자 2026-10-26). 수주한 건 — 수주한 견적서(품목·금액·번호)는 그대로, 새 발행은 견적서 목록·이력에만(사용자 2026-10-22)
         fields = {}
+    else:                      # 수주 전이어도 입금 확인이 있으면 금액을 바꾸는 발행은 막는다(QA 2026-11-16)
+        cur = (await db.execute(text("SELECT payments, quote->>'amount' FROM sales_deals WHERE id = :i"), {"i": r.id})).first()
+        pays = json.loads(cur[0]) if isinstance(cur[0], str) else cur[0]
+        _amount_locked(pays, cur[1], quote["amount"])
     if r.kind == "recommend":
         fields.update(kind="quote", base_date=p["quote_date"], owner=p.get("owner"))
     deal_no = r.deal_no
@@ -550,7 +572,22 @@ async def quote_deal(db: AsyncSession, user_id: int | None, proposal_id: int | N
     return r.id, deal_no
 
 
+# 입금 확인 때문에 견적 금액을 못 바꿈 — 화면이 팝업으로 알리고 입금 확인 칸으로 데려간다(사용자 2026-11-17)
+PAY_LOCKED = "PAY_LOCKED"
 PAID_QUOTE_LOCKED = "완납한 건은 견적(품목·금액)을 바꿀 수 없습니다. 바꿔야 하면 입금 확인을 먼저 취소해 주세요(완납도 함께 풀립니다)."
+PART_PAID_LOCKED = ("입금 확인한 회차가 있어 견적 금액을 바꿀 수 없습니다({old} → {new}). 금액을 바꾸려면 결제 조건의 [확인 취소]로 "
+                    "입금 확인을 먼저 취소한 뒤 다시 발행하고, 바뀐 금액으로 다시 입금 확인해 주세요.")
+
+
+def _amount_locked(payments: list | None, old: Any, new: Any) -> None:
+    """입금 확인이 하나라도 있으면 견적 금액을 못 바꾼다(QA 2026-11-16, 사용자 결정 — 선금 확인 뒤 금액을 바꾸면 회차 금액이
+    새 금액으로 다시 계산돼 확인한 돈과 어긋나고, 덜 받아도 '완납'이 됐음). 금액이 같은 재발행(문구·품목 설명 수정)은 된다."""
+    o, n = round(float(old or 0), 2), round(float(new or 0), 2)
+    if payments and o != n:
+        if any(p.get("term") is None for p in payments):
+            raise DealError(f"입금 기록이 있어 견적 금액을 바꿀 수 없습니다({o:,.0f} → {n:,.0f}). 금액을 바꾸려면 입금 칸에서 입금 기록을 "
+                            "먼저 지우고(회차 입금이면 [확인 취소]) 다시 발행한 뒤, 바뀐 금액으로 다시 입금 확인해 주세요.", 409, PAY_LOCKED)
+        raise DealError(PART_PAID_LOCKED.format(old=f"{o:,.0f}", new=f"{n:,.0f}"), 409, PAY_LOCKED)
 
 
 async def quote_replaced(db: AsyncSession, deal_id: int, user_id: int | None, p: dict, *, latest: bool) -> None:
@@ -562,11 +599,12 @@ async def quote_replaced(db: AsyncSession, deal_id: int, user_id: int | None, p:
     # 건의 현재 견적(수주한 건이면 수주한 판)과 같은 번호를 바꿨을 때만 품목·금액을 따라간다 — 번호 없는 예전 건은 최근 판 기준
     if (str(q["no"]).upper() == str(p["doc_no"]).upper()) if q.get("no") else latest:
         if d.get("paid_full"):                   # 완납 뒤에는 견적을 못 바꾼다(사용자 2026-10-26) — 받은 돈과 금액이 어긋나지 않게
-            raise DealError(PAID_QUOTE_LOCKED, 409)
+            raise DealError(PAID_QUOTE_LOCKED, 409, PAY_LOCKED)
         if (q.get("biz") == "rental") != bool(p.get("rental")):
             raise DealError("올린 파일과 이 영업 건의 판매/대여 구분이 다릅니다. 판매/대여를 맞춘 뒤 다시 올려 주세요.", 409)
         day = dt.date.fromisoformat(q["date"]) if q.get("date") else kst_today()
         new = _quote_from_items(p["items"], day, bool(q.get("vat_included")), p["currency"])
+        _amount_locked(d.get("payments"), q.get("amount"), new["amount"])
         fresh = {**q, "items": new["items"], "amount": new["amount"], "currency": p["currency"]}
         if p.get("rental"):   # 대여 — 개월 수는 파일 기준, 시작일은 담당자가 정한 그대로, 끝나는 날·월 납입금 다시 계산(사용자 2026-10-27)
             fresh.update(_rental({"rental": {"months": p["rental"]["months"], "start": (q.get("rental") or {}).get("start"),
@@ -601,7 +639,7 @@ def snapshot_items(lines: list[dict]) -> list[dict]:
 
 
 async def set_won(db: AsyncSession, deal_id: int, user_id: int | None, won: bool | None, day: dt.date | None,
-                  pick: dict | None = None) -> None:
+                  pick: dict | None = None) -> str:
     """수주 상태. 수주 확정 때 pick = {quote_id, revision} 이면 그 판으로 수주(사용자 2026-10-13, 영업팀 요청 15번 —
     2차를 냈어도 고객이 1차로 발주하면 1차): 영업 건 견적(품목·금액·번호)을 그 판으로 바꾸고, 그 판이 '수주 중'으로 보인다."""
     d = await _lock(db, deal_id)
@@ -612,6 +650,7 @@ async def set_won(db: AsyncSession, deal_id: int, user_id: int | None, won: bool
     keep = dt.date.fromisoformat(d["won_date"]) if won and d.get("won") and d.get("won_date") and day is None else None
     fields: dict[str, Any] = {"won": won, "won_date": (day or keep or kst_today()) if won else None}
     picked = None
+    sn_note = ""
     if won and pick and pick.get("quote_id") is not None:
         docs = await deal_quotes(db, d.get("proposal_id"), deal_id)
         doc = next((q for q in docs if q["id"] == pick["quote_id"]), None)
@@ -626,19 +665,30 @@ async def set_won(db: AsyncSession, deal_id: int, user_id: int | None, won: bool
         cur = d.get("quote") or {}
         if picked and picked != cur.get("no"):
             if d.get("paid_full"):
-                raise DealError(PAID_QUOTE_LOCKED, 409)
+                raise DealError(PAID_QUOTE_LOCKED, 409, PAY_LOCKED)
+            # S/N 은 수주 판의 품목 줄에 붙는다 — 판을 바꾸면 등록·출하한 S/N 이 새 판에서 '미등록'이 되고, 같은 S/N 은 '이미 등록됨'으로
+            # 막혀 다음 출하가 영구히 막혔다(QA 2026-11-16 영업 3). 새 판의 같은 이름 품목으로 S/N 을 옮긴다(units.rebind_units)
+            from . import units
+
+            won_now = await units.won_issue(db, d)
+            if won_now and await units.units_on_issue(db, *won_now):
+                sn_note = await units.rebind_units(db, won_now, (doc["id"], int(h.get("revision") or 0), picked), h.get("lines") or [])
             items = snapshot_items(h.get("lines") or [])
             if not items:
                 raise DealError("고른 견적서 판에 품목이 없습니다.")
             issued = str(h.get("issued_at") or "")[:10]
             q = _quote_from_items(items, dt.date.fromisoformat(issued) if issued else kst_today(), False,
                                   h.get("currency") or cur.get("currency") or "KRW", picked)
+            _amount_locked(d.get("payments"), cur.get("amount"), q["amount"])
             fields["quote"] = {**q, "revision": int(h.get("revision") or 0) + 1, "sent_date": cur.get("sent_date"),
                                **_picked_rental(h, cur, q["amount"])}
     await _save(db, deal_id, **fields)
     await _log(db, deal_id, user_id, "won", {"from": d["won"], "to": won, "date": _iso(day),
                                               **({"no": picked} if picked else {})})
+    if sn_note:
+        await _log(db, deal_id, user_id, "sn_rebind", {"note": sn_note})
     await db.commit()
+    return sn_note
 
 
 def _picked_rental(h: dict, cur: dict, amount: float | None) -> dict:
@@ -741,17 +791,18 @@ def statement_name(it: dict) -> tuple[str, str]:
 async def _statement_draft(db: AsyncSession, deal_id: int) -> dict:
     d = _row((await db.execute(text(f"SELECT {COLS} FROM sales_deals WHERE id = :i"), {"i": deal_id})).mappings().first()
              or _missing())
+    # 품목 — 기본 품목 묶음의 제품 줄만(사용자 2026-10-13), 부가세 포함 단가로 등록한 건은 공급가(÷1.1, QA 2026-11-16: 부가세가 두 번 붙던 문제)
+    items = [{"name": n, "spec": s, "qty": x["qty"], "unit_price": x["unit_price"], "note": ""}   # 단위는 명세서에 안 넣음(사용자 2026-10-13)
+             for x in flow.statement_lines(d) for n, s in [statement_name(x["item"])]]
+    # 발급한 명세서·수주 진행 탭에서 고친 초안이 있으면 그것 — 단, 금액이 지금 견적과 다르면(견적이 바뀜) 품목은 지금 견적으로 새로 채우고
+    # 공급받는자·발행자·날짜는 그대로(QA 2026-11-16 영업 4: 예전 품목 그대로 다시 발급되던 문제)
     if d.get("statement"):
-        return d["statement"]
-    saved = await _order_state(db, deal_id)                # 수주 진행 탭에서 고친 초안이 있으면 그것
+        st = d["statement"]
+        return {**st, "items": items, "date": kst_today().isoformat(), "refreshed": True} if flow.statement_stale(d, st) else st
+    saved = await _order_state(db, deal_id)
     if saved and saved.get("draft"):
-        return {**saved["draft"], "_typed": True}
-    items = []
-    for it in (d.get("quote") or {}).get("items") or []:
-        if it.get("statement") is False:                  # 기본 품목 묶음의 제품 줄만(사용자 2026-10-13)
-            continue
-        name, spec = statement_name(it)
-        items.append({"name": name, "spec": spec, "qty": it.get("qty"), "unit_price": it.get("unit_price"), "note": ""})   # 단위는 명세서에 안 넣음(사용자 2026-10-13)
+        dr = saved["draft"]
+        return {**dr, "items": items, "_typed": True, "refreshed": True} if flow.statement_stale(d, dr) else {**dr, "_typed": True}
     buyer = await statement_buyer(db, d.get("customer")) or {"reg_no": "", "name": d.get("customer") or "", "ceo": "", "address": ""}
     return {"no": "", "date": kst_today().isoformat(), "buyer": buyer, "items": items}
 
@@ -763,6 +814,15 @@ def _missing():
 def _st_item(it: dict) -> dict:
     return {"name": str(it.get("name") or "").strip()[:80], "spec": str(it.get("spec") or "").strip()[:80],
             "qty": it.get("qty"), "unit_price": it.get("unit_price"), "note": str(it.get("note") or "").strip()[:60]}
+
+
+def _keep_history(old: dict | None, st: dict, kind: str, now: str) -> None:
+    """예전 거래명세서 발급본을 st['history'] 에 쌓는다(오래된 것 먼저, 사용자 2026-11-17 — 이전 버전·교체 기록을 보고 받을 수 있게).
+    kind: replaced = 같은 번호로 내용이 교체되기 전 · reissued = 새 번호로 다시 발급되기 전. ended_at = 그 발급본이 바뀐 때."""
+    if not old or not old.get("no"):
+        return
+    snap = {k: v for k, v in old.items() if k not in ("history", "replaced")}
+    st["history"] = [*(old.get("history") or []), {**snap, "kind": kind, "ended_at": now}]
 
 
 async def set_statement(db: AsyncSession, deal_id: int, user_id: int | None, p: dict) -> None:
@@ -787,20 +847,61 @@ async def set_statement(db: AsyncSession, deal_id: int, user_id: int | None, p: 
     st["no"] = await dn.allocate(db, dn.STATEMENT, ini, p["date"], deal_id=deal_id, user_id=user_id)
     st["totals"] = sx.totals(st["items"])
     st["issued_at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    _keep_history(d.get("statement"), st, "reissued", st["issued_at"])
     await _save(db, deal_id, statement=st)
     await _log(db, deal_id, user_id, "statement", {"no": st["no"], "date": st["date"], "total": st["totals"]["total"],
                                                    "again": bool(d.get("statement"))})
     await db.commit()
 
 
-async def statement_file(db: AsyncSession, deal_id: int) -> tuple[str, bytes]:
-    """발급한 거래명세서 → (파일 이름(확장자 없음), 엑셀 바이트)."""
+async def reissue_statement(db: AsyncSession, deal_id: int, user_id: int | None, *, same_no: bool) -> str | None:
+    """수주한 견적서를 고친 뒤 발급한 거래명세서도 지금 견적으로 다시 발급(사용자 2026-11-17 — 회사와 합의한 금액 변경이면 명세서도
+    따라가야 함). same_no = 같은 번호로 교체(날짜도 그대로) · 아니면 새 번호(오늘 날짜). 예전 발급본은 history 에 남는다.
+    공급받는자·발행자 이니셜은 그대로, 품목은 지금 견적으로(세트 묶음은 풀림). 발급한 명세서가 없거나 달러 견적이면 None.
+    커밋하지 않는다 — 견적서 교체와 한 묶음."""
+    d = await _lock(db, deal_id)
+    old = d.get("statement")
+    if not old or ((d.get("quote") or {}).get("currency") or "KRW") != "KRW":
+        return None
+    items = [_st_item({"name": n, "spec": s, "qty": x["qty"], "unit_price": x["unit_price"], "note": ""})
+             for x in flow.statement_lines(d) for n, s in [statement_name(x["item"])]]
+    day = dt.date.fromisoformat(old["date"]) if same_no and old.get("date") else kst_today()
+    ini = dn.clean_initials(old.get("initials")) or ""
+    st = {"no": "", "initials": ini, "date": day.isoformat(), "buyer": old.get("buyer") or {}, "items": items}
+    try:
+        sx.check(st)
+    except sx.StatementError as e:
+        raise DealError(f"거래명세서를 다시 발급하지 못했습니다 — {e}") from e
+    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    same = bool(same_no and old.get("no"))
+    _keep_history(old, st, "replaced" if same else "reissued", now)
+    if same:
+        st.update(no=old["no"], issued_at=old.get("issued_at") or now, replaced_at=now)
+    else:
+        if not ini:
+            raise DealError("발급한 거래명세서에 발행자 이니셜이 없어 새 번호를 만들 수 없습니다 — 수주 진행 화면에서 다시 발급해 주세요.")
+        st["no"] = await dn.allocate(db, dn.STATEMENT, ini, day, deal_id=deal_id, user_id=user_id)
+        st["issued_at"] = now
+    st["totals"] = sx.totals(st["items"])
+    await _save(db, deal_id, statement=st)
+    await _log(db, deal_id, user_id, "statement", {"no": st["no"], "date": st["date"], "total": st["totals"]["total"],
+                                                   "again": True, "same_no": same, "from_quote": True})
+    return st["no"]
+
+
+async def statement_file(db: AsyncSession, deal_id: int, prev: int | None = None) -> tuple[str, bytes]:
+    """발급한 거래명세서 → (파일 이름(확장자 없음), 엑셀 바이트). prev = 예전 발급본 순번(history, 사용자 2026-11-17)."""
     r = (await db.execute(text("SELECT statement FROM sales_deals WHERE id = :i"), {"i": deal_id})).first()
     if r is None:
         raise DealError("건을 찾을 수 없습니다.", 404)
     st = json.loads(r[0]) if isinstance(r[0], str) else r[0]
     if not st:
         raise DealError("아직 거래명세서를 발급하지 않았습니다.", 404)
+    if prev is not None:
+        hist = st.get("history") or []
+        if not 0 <= prev < len(hist):
+            raise DealError("그 예전 거래명세서를 찾을 수 없습니다.", 404)
+        st = hist[prev]
     return sx.file_name(st), sx.build_xlsx(st)
 
 
@@ -887,6 +988,13 @@ async def set_terms(db: AsyncSession, deal_id: int, user_id: int | None, raw: li
         ts = flow.clean_terms(raw)
     except ValueError as e:
         raise DealError(str(e)) from e
+    # 결제 조건을 정하기 전에 [+ 입금 확인]으로 남긴 입금(회차 없음)이 있으면 막는다 — 회차 입금과 이중으로 잡혀 100만 건에 140만·완납이
+    # 됐다(QA 2026-11-16 영업 8). 어느 회차 돈인지 알 수 없으니 그 입금 기록을 지우고 회차에서 [입금 확인] 하게 한다(지우기는 직원도)
+    loose = [p for p in d["payments"] if p.get("term") is None]
+    if loose:
+        raise DealError(f"결제 조건을 정하기 전에 남긴 입금 기록({len(loose)}건, 합계 {sum(float(p.get('amount') or 0) for p in loose):,.0f}원)이 "
+                        "있습니다. 회차 입금과 겹치지 않게 입금 칸에서 그 기록을 지운 뒤 결제 조건을 정하고, 회차마다 [입금 확인]을 눌러 주세요.", 409,
+                        code="LOOSE_PAYMENT")   # 화면: 팝업 → [입금 칸으로 가기](사용자 2026-11-17)
     done = {p.get("term") for p in d["payments"] if p.get("term") is not None}
     old = d.get("pay_terms") or []
     if not admin:
@@ -971,7 +1079,7 @@ async def set_dropped(db: AsyncSession, deal_id: int, user_id: int | None, dropp
     출하·입금 기록이 있는 건의 드랍은 관리자만(사용자 2026-10-27)."""
     d = await _lock(db, deal_id)
     if dropped and not admin and drop_locked(d):
-        raise DealError(DROP_LOCKED, 403)
+        raise DealError(DROP_LOCKED, 403, code="DROP_LOCKED")
     extra = {}
     if not dropped and d.get("won") is False:
         # 예전 '실주'(won=false)도 드랍으로 보인다(status.derive) — 되살리면 수주 결과를 '미확인'으로(사용자 2026-10-28)
@@ -1096,7 +1204,7 @@ async def check_entry(db: AsyncSession, deal_id: int, kind: str, index: int, exp
     cur = items[index] if 0 <= index < len(items) else None
     keys = [k for k in expect if cur is not None and k in cur]
     if not keys or any(cur[k] != expect[k] for k in keys):
-        raise DealError(STALE_ENTRY, 409)
+        raise DealError(STALE_ENTRY, 409, code="STALE")   # 화면: 팝업 → [새로 고치기]
 
 
 async def remove_entry(db: AsyncSession, deal_id: int, user_id: int | None, kind: str, index: int) -> dict:

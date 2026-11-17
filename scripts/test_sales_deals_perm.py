@@ -51,11 +51,7 @@ def app_as(role: UserRole) -> FastAPI:
 
 ADMIN_ONLY = [
     ("/v1/sales-deals/delete", {"ids": [999999999]}),
-    ("/v1/sales-deals/999999999/remove", {"kind": "payments", "index": 0}),
     ("/v1/sales-deals/999999999/reset-to-quote", {}),
-    ("/v1/sales-deals/999999999/won", {"won": None}),
-    ("/v1/sales-deals/999999999/paid-full", {"full": False}),
-    ("/v1/sales-deals/999999999/drop", {"dropped": False}),
 ]
 OPEN = [
     ("/v1/sales-deals/999999999/drop", {"dropped": True, "reason": "x"}),
@@ -63,6 +59,12 @@ OPEN = [
     # 입금 확인 취소는 누구나(사용자 2026-11-11 — 견적이 바뀌며 금액이 바뀔 수 있어서)
     ("/v1/sales-deals/999999999/unconfirm-term", {"index": 0}),
     ("/v1/sales-deals/999999999/won", {"won": True}),
+    ("/v1/sales-deals/999999999/remove", {"kind": "payments", "index": 0}),
+    # 되돌리기·취소는 영업팀 누구나(사용자 2026-11-17 — 실수·수정이 잦음, 이력에 남음). 건 삭제·테스트용 전부 되돌리기만 관리자
+    ("/v1/sales-deals/999999999/remove", {"kind": "shipments", "index": 0}),
+    ("/v1/sales-deals/999999999/won", {"won": None}),
+    ("/v1/sales-deals/999999999/paid-full", {"full": False}),
+    ("/v1/sales-deals/999999999/drop", {"dropped": False}),
 ]
 
 

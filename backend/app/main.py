@@ -20,6 +20,7 @@ from .api_proposal_projects import router as proposal_projects_router
 from .api_product_recommend import router as product_recommend_router
 from .api_proposal_records import router as proposal_records_router
 from .api_rag import router as rag_router
+from .api_sales_deals import CodedHTTPException
 from .api_sales_deals import router as sales_deals_router
 from .api_purchases import router as purchases_router
 from .config import settings, validate_security_settings
@@ -81,6 +82,15 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="UND AI Agent Backend", lifespan=lifespan)
+
+
+@app.exception_handler(CodedHTTPException)
+async def _coded_http_exception(_request, exc: CodedHTTPException):
+    """영업 건 막힘 — detail(문구)에 code 를 같이(사용자 2026-11-17, 화면이 팝업·해결할 곳으로 이동에 씀)."""
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse({"detail": exc.detail, "code": exc.code}, status_code=exc.status_code)
+
 
 app.add_middleware(
     CORSMiddleware,

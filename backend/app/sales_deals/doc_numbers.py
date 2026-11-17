@@ -15,9 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 QUOTE = "QT"
 STATEMENT = "TS"
-PURCHASE = "PO"            # 제품 구매 발주서(purchases/) — 기록 종류는 PO, 번호 앞머리는 UND(아래 PREFIX)
-# 발주서 번호는 회사 발주서 표기 UND-VT20261102-01(사용자 2026-11-11, 에이딘로보틱스 발주서 예시)
-PREFIX = {PURCHASE: "UND"}
+PURCHASE = "PO"            # 제품 구매 발주서(purchases/) — 기록 종류·번호 앞머리 모두 PO
+# 발주서 번호 PO-CH20261117-01(사용자 2026-11-17 — 앞으로 새로 매기는 번호만). 그 전에 나간 UND-VT20261102-01 은 그대로 두고
+# 같은 기록 종류(PO)로 센다 — 일련번호는 발행자·날짜별로 이어진다(그날 UND- 번호가 이미 있으면 그다음 번호).
+PREFIX: dict[str, str] = {}
+LEGACY_PREFIX = {"UND": PURCHASE}             # 예전 발주서 번호(UND-…)를 올린 파일에서 읽으면 PO 기록으로
 INITIALS_RE = re.compile(r"[A-Z]{2}")
 DOC_NO_RE = re.compile(r"^(QT|TS|PO|UND)-([A-Z]{2,4})(\d{8})-(\d{2,})$")
 
@@ -98,7 +100,7 @@ async def register(db: AsyncSession, doc_no: str, *, deal_id: int | None = None,
     if not m:
         return
     t, ini, ymd, seq = m.group(1), m.group(2), m.group(3), int(m.group(4))
-    t = {v: k for k, v in PREFIX.items()}.get(t, t)       # UND-… 발주서 번호는 PO 기록으로
+    t = LEGACY_PREFIX.get(t, t)                           # 예전 UND-… 발주서 번호는 PO 기록으로
     try:
         day = dt.date(int(ymd[:4]), int(ymd[4:6]), int(ymd[6:]))
     except ValueError:

@@ -60,6 +60,13 @@ def derive(d: dict, today: dt.date) -> dict:
         n = _days(last, today)
         if n is not None and n > UNPAID_DAYS:
             alerts.append({"code": "UNPAID", "level": "alert", "text": f"계산서 발행 후 {n}일 미입금(이전 기록)"})
+    if statement and stage != "드랍":
+        from .flow import statement_stale
+
+        gap = statement_stale(d, statement)
+        if gap:
+            alerts.append({"code": "STATEMENT_STALE", "level": "alert",
+                           "text": f"거래명세서 금액(공급가 {gap[0]:,.0f})이 지금 견적({gap[1]:,.0f})과 다릅니다 — 견적이 바뀌었으면 명세서를 다시 발급해 주세요"})
     rent = quote.get("rental") or {}
     if rent.get("unverified"):                       # 대여 조건 기록이 없는 예전 판으로 수주(사용자 2026-10-26)
         alerts.append({"code": "RENTAL_UNVERIFIED", "level": "review",

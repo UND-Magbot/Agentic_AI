@@ -10,6 +10,7 @@ import { Icon } from "@/components/shared/ui/icon";
 import { cn } from "@/lib/shared/utils";
 import { ITEM_BTN, inputCls, primaryBtn } from "./proposal-actions";
 import { AMOUNT_BOX, HEAD_AREA, ROW_CARD, ROW_CARD_AUTO, ROW_FIELD, ROW_ICON_BTN, ROW_LABEL } from "./quote-styles";
+import { req, REQ, ReqMark } from "@/components/domains/sales/required";
 
 /** 칸 높이를 내용만큼 */
 function useAutoHeight(value: string) {
@@ -234,9 +235,9 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
                         </div>
                         <div className="mt-2.5 flex flex-wrap items-end gap-2.5">
                           <div className={ROW_LABEL}>
-                            <span>{en ? "Qty · Unit" : "수량 · 단위"}</span>
+                            <span><ReqMark>{en ? "Qty · Unit" : "수량 · 단위"}</ReqMark></span>
                             <span className="flex">
-                              <input className={cn(ROW_FIELD, "w-[64px] rounded-r-none text-right", !l.qty && "border-amber-500")} type="number" min={1}
+                              <input className={cn(ROW_FIELD, "w-[64px] rounded-r-none text-right")} {...REQ} type="number" min={1}
                                      value={l.qty ?? ""} aria-label="수량" disabled={busy}
                                      onChange={(e) => setLine(idx, { qty: Math.max(0, Math.floor(Number(e.target.value) || 0)) || null })} />
                               <input className={cn(ROW_FIELD, "-ml-px w-[64px] rounded-l-none bg-foreground/[0.03] font-normal")} value={l.unit ?? ""} maxLength={8}
@@ -245,14 +246,14 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
                             </span>
                           </div>
                           {!free && <div className={ROW_LABEL}>
-                            <span>{en ? (months ? "Price ($ / month)" : "Price ($)") : months ? (oneTime ? "금액 (1회)" : "월 단가") : "단가"}</span>
+                            <span><ReqMark>{en ? (months ? "Price ($ / month)" : "Price ($)") : months ? (oneTime ? "금액 (1회)" : "월 단가") : "단가"}</ReqMark></span>
                             {en ? (
-                              <input key={`usd-${l.id}-${draftVer}`} className={cn(ROW_FIELD, "w-[140px] text-right", unit == null && "border-amber-500")}
+                              <input key={`usd-${l.id}-${draftVer}`} className={cn(ROW_FIELD, "w-[140px] text-right")} {...req(unit == null)}
                                      inputMode="decimal" defaultValue={l.usd ?? ""} aria-label="달러 단가" disabled={busy}
                                      placeholder={unit != null ? `${usd(unit)} (환율)` : "$ 단가"}
                                      onChange={(e) => { const v = Number(e.target.value.replace(/[,$\s]/g, "")); setLine(idx, { usd: v > 0 ? v : null }); }} />
                             ) : (
-                              <input className={cn(ROW_FIELD, "w-[140px] text-right", l.unit_price == null && "border-amber-500")} inputMode="numeric"
+                              <input className={cn(ROW_FIELD, "w-[140px] text-right")} {...REQ} inputMode="numeric"
                                      value={l.unit_price ?? ""} aria-label="단가" placeholder={months ? "월 납입금 또는 1회 지불" : "단가"} disabled={busy}
                                      onChange={(e) => setLine(idx, { unit_price: Number(e.target.value.replace(/,/g, "")) || null })} />
                             )}
@@ -399,7 +400,7 @@ export function QuoteBlocks({ blocks, lines, nego, en, fx, busy, draftVer, total
               </button>
             ))}
           </div>
-          <input className={cn(inputCls, "w-[120px] py-0.5 text-[12.5px]", !nego.value && "border-amber-500")} inputMode="decimal"
+          <input className={cn(inputCls, "w-[120px] py-0.5 text-[12.5px]")} {...REQ} inputMode="decimal"
                  value={nego.value ?? ""} disabled={busy} aria-label="NEGO 값" placeholder={nego.mode === "percent" ? "예: 5" : en ? "예: 500" : "예: 800000"}
                  onChange={(e) => { const v = Number(e.target.value.replace(/[,$%\s]/g, "")); onChange({ nego: { ...nego, value: v > 0 ? v : null } }); }} />
           <input className={cn(inputCls, "min-w-0 flex-1 basis-36 py-0.5 text-[12.5px]")} value={nego.label} maxLength={40} disabled={busy}

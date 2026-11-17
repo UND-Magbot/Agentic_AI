@@ -17,7 +17,8 @@
 - POST /v1/purchases/{id}/po/read-quote           → 지금 견적서를 AI 가 읽어 품목·공급사 담당자 돌려줌(저장 안 함)
 - POST /v1/purchases/{id}/po/preview              → 미리보기 PDF {header, items}(번호 없음)
 - POST /v1/purchases/{id}/po/issue                → 발주서 발행 {initials, header, items} — 새 번호 PO-{이니셜}{발주일}-NN
-- GET  /v1/purchases/{id}/po/file?fmt=pdf|xlsx&revision= → 발행한 발주서 내려받기(고친 파일로 발행했으면 그 파일)
+- GET  /v1/purchases/{id}/po/file?fmt=pdf|xlsx&revision=&replaced= → 발행한 발주서 내려받기(고친 파일로 발행했으면 그 파일,
+  replaced = 같은 번호로 교체하기 전 파일 순번)
 - POST /v1/purchases/{id}/po/chat                 → 발주서 AI 대화 {text, draft} — 말로 고친 초안을 저장하고 돌려줌(사용자 2026-11-11)
 - POST /v1/purchases/{id}/po/upload               → 고친 발주서 파일(xlsx·pdf) 올리기 — 저장하고 번호·날짜·품목을 읽어 돌려줌(발행 전)
 - POST /v1/purchases/{id}/po/upload/confirm       → 확인한 값으로 발행 {upload, doc_no, initials, date, expected_date, items}
@@ -25,9 +26,10 @@
 - POST /v1/purchases/{id}/terms/{n}/check         → 지출내역 문서(multipart)와 회차 금액 대조
 - POST /v1/purchases/{id}/terms/{n}/confirm       → 송금 확인 {date, mismatch_note?} — 불일치면 사유를 적고 넘어감
 - POST /v1/purchases/{id}/terms/{n}/unconfirm     → 송금 확인 취소(누구나 — 금액이 바뀔 수 있어서, 이력에 남음)
-- POST /v1/purchases/{id}/expected-date           → 입고 예정일 바꾸기 {date, reason}(발행할 때 꼭 적음 — po/issue 의 expected_date)
+- POST /v1/purchases/{id}/expected-date           → 입고 예정일(해외 납기일) 바꾸기 {date, reason}(국내는 발행할 때 꼭 적음 — po/issue 의
+  expected_date, 해외 납기일은 date=null 로 비울 수 있음)
 - POST /v1/purchases/{id}/paid · /paid/undo        → 해외 [제조사 송금 확인] {date, note} · 취소(누구나)
-- POST /v1/purchases/{id}/ship · /ship/undo(관리자) → [배송 시작] {date, note} → 상태 '배송 중'
+- POST /v1/purchases/{id}/ship · /ship/undo(누구나, 입고 뒤엔 관리자) → [배송 시작] {date, note} → 상태 '배송 중'
 - POST /v1/purchases/{id}/customs                 → 해외 [통관 서류 제출 완료] {date, note} — 첨부 없이도 됨
 - POST /v1/purchases/{id}/customs/no-origin       → 원산지 증명서 [증빙 자료 없음] {value} — 기타 서류 칸이 열림
 - POST /v1/purchases/{id}/broker · /broker/undo    → 해외 [관세사 송금 확인] {date, note} · 취소(누구나)
@@ -45,7 +47,7 @@ import datetime as dt
 import urllib.parse
 import uuid
 from pathlib import PurePosixPath
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import Response, StreamingResponse
@@ -66,7 +68,8 @@ ALL_KINDS = (*svc.FILE_KINDS, "expense")
 
 
 def _fail(e: svc.PurchaseError) -> HTTPException:
-    return HTTPException(status_code=e.status, detail=str(e))
+    # data 가 있으면 화면이 묻는 데 쓰게 detail 을 {message, ...} 로(예: 입고가 다시 열리는 품목 reopen — 발행 전 확인 팝업)
+    return HTTPException(status_code=e.status, detail={"message": str(e), **e.data} if e.data else str(e))
 
 
 def _name(user: User) -> str:
@@ -141,6 +144,11 @@ class PurchaseIn(BaseModel):
     title: str = Field(default="", max_length=300)
     owner: str = Field(default="", max_length=100)
     note: str = Field(default="", max_length=2000)
+    reason: str = Field(default="", max_length=1000)                # 구매 사유(만들 때만 — 고치기는 /reason, 사용자 2026-11-17)
+
+
+class ReasonIn(BaseModel):
+    reason: str = Field(default="", max_length=1000)
 
 
 class DeleteIn(BaseModel):
@@ -161,6 +169,8 @@ class PoIn(BaseModel):
     expected_date: str | None = Field(default=None, max_length=10)     # 입고 예정일 — 발행할 때 꼭(사용자 2026-11-02)
     header: dict = Field(default_factory=dict)
     items: list[dict] = Field(default_factory=list, max_length=31)
+    # 입고를 마친 건인데 품목 추가·수량 늘림으로 입고가 다시 열려도 발행(팝업 확인, 사용자 2026-11-16)
+    reopen_ok: bool = False
 
 
 class PoChatIn(BaseModel):
@@ -180,6 +190,9 @@ class PoUploadIn(BaseModel):
     # [버그 신고 후 넘어가기](사용자 2026-11-11 — AI 판독이 실패하거나 이상해도 [버그 신고 후 넘어가기]로 이 파일 그대로 발행하고 다음 단계로) — 품목 검사를 건너뛰고 발행, bug_report = 접수 번호(UND-00012)
     forced: bool = False
     bug_report: str = Field(default="", max_length=20)
+    # 지금 발주서와 같은 번호일 때 교체 확인(사용자 2026-11-16) — 번호 하나 = 발주서 하나, 교체 전 파일은 보관
+    same_no: Literal["", "replace"] = ""
+    reopen_ok: bool = False                               # 입고가 다시 열려도 발행(팝업 확인, 사용자 2026-11-16)
 
 
 class TermIn(BaseModel):
@@ -210,8 +223,17 @@ class SerialLineIn(BaseModel):
     serials: list[str] = Field(default_factory=list, max_length=500)
 
 
+# 순번으로 지우거나 고칠 때 화면에서 본 그 항목(파일 filename·uploaded_at, 입고 기록 at) — 다르면 409(QA 2026-11-16)
+Expect = dict[str, Any] | None
+
+
+class ExpectIn(BaseModel):
+    expect: Expect = None
+
+
 class SerialsIn(BaseModel):
     lines: list[SerialLineIn] = Field(min_length=1, max_length=31)
+    expect: Expect = None
 
 
 class FlagIn(BaseModel):
@@ -228,6 +250,9 @@ class ReceiptIn(BaseModel):
     note: str = Field(default="", max_length=500)
     lines: list[ReceiptLineIn] = Field(default_factory=list, max_length=31)
     final: bool = False
+    expect: Expect = None                                 # 고칠 때 — 화면에서 본 그 기록(at)
+    # [남은 품목 받기]로 고칠 때 — 입고 완료를 지금 발주 수량 기준으로 다시 닫는다(입고 기록 한 건 관리, 사용자 2026-11-17)
+    reclose: bool = False
 
 
 class DayNoteIn(BaseModel):
@@ -236,7 +261,7 @@ class DayNoteIn(BaseModel):
 
 
 class ExpectedIn(BaseModel):
-    date: dt.date
+    date: dt.date | None = None                           # 해외 납기일은 비울 수 있다(None, QA 2026-11-16) — 국내는 꼭
     reason: str = Field(default="", max_length=200)
 
 
@@ -276,6 +301,12 @@ async def get(pid: int, user: User = Depends(require_sales), db: AsyncSession = 
         raise _fail(e) from e
 
 
+@router.post("/{pid}/reason")
+async def set_reason(pid: int, body: ReasonIn, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    """구매 사유 등록·고치기(사용자 2026-11-17) — 목록의 [등록] 팝업. 영업팀 누구나, 이력에 남음."""
+    return await _act(db, pid, svc.set_reason(db, pid, user.id, body.reason))
+
+
 @router.post("/{pid}/info")
 async def set_info(pid: int, body: PurchaseIn, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
     return await _act(db, pid, svc.set_info(db, pid, user.id, body.model_dump()))
@@ -283,8 +314,7 @@ async def set_info(pid: int, body: PurchaseIn, user: User = Depends(require_sale
 
 @router.post("/{pid}/drop")
 async def drop(pid: int, body: DropIn, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
-    if not body.dropped and not is_admin(user):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="취소한 구매 건을 되살리는 것은 관리자만 할 수 있습니다.")
+    # 취소한 구매 건 되살리기 — 되돌리기·취소는 영업팀 누구나(사용자 2026-11-17 — 실수·수정이 잦음, 이력에 남음)
     return await _act(db, pid, svc.set_dropped(db, pid, user.id, body.dropped, body.reason))
 
 
@@ -333,9 +363,10 @@ async def download(pid: int, kind: Literal["quote", "approval", "statement", "ta
 
 @router.post("/{pid}/files/{kind}/{index}/remove")
 async def remove_file(pid: int, kind: Literal["quote", "approval", "statement", "tax", "customs", "remit", "customs_etc"], index: int,
-                      user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+                      body: ExpectIn | None = None, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
     # 파일 자체는 저장소에 남긴다(이력으로 무엇을 지웠는지 확인할 수 있게 — 영업 건 발주서와 같은 방식)
-    return await _act(db, pid, svc.remove_file(db, pid, user.id, kind, index, admin=is_admin(user)))
+    return await _act(db, pid, svc.remove_file(db, pid, user.id, kind, index, admin=True,   # 끝난 단계 첨부도 영업팀 누구나(2026-11-17)
+                                               expect=body.expect if body else None))
 
 
 # ── 재가 ─────────────────────────────────────────────────────────────────────
@@ -351,7 +382,8 @@ async def quote_skip(pid: int, body: FlagIn, user: User = Depends(require_sales)
 
 
 @router.post("/{pid}/unapprove")
-async def unapprove(pid: int, user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
+async def unapprove(pid: int, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    """재가 완료 취소 — 되돌리기·취소는 영업팀 누구나(사용자 2026-11-17 — 실수·수정이 잦음, 이력에 남음)."""
     return await _act(db, pid, svc.unapprove(db, pid, user.id))
 
 
@@ -497,12 +529,12 @@ async def po_upload_confirm(pid: int, body: PoUploadIn, user: User = Depends(req
 
 
 @router.get("/{pid}/po/file")
-async def po_file(pid: int, fmt: Literal["pdf", "xlsx"] = "pdf", revision: int | None = None, _: User = Depends(require_sales),
-                  db: AsyncSession = Depends(get_db)) -> Response:
+async def po_file(pid: int, fmt: Literal["pdf", "xlsx"] = "pdf", revision: int | None = None, replaced: int | None = None,
+                  _: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> Response:
     try:
-        src = await svc.po_source(db, pid, revision)
+        src = await svc.po_source(db, pid, revision, replaced)
         up = src.get("upload")
-        name, data = (None, None) if up else await svc.po_file(db, pid, revision)
+        name, data = (None, None) if up else await svc.po_file(db, pid, revision, replaced)
     except svc.PurchaseError as e:
         raise _fail(e) from e
     await db.rollback()
@@ -612,8 +644,9 @@ async def ship(pid: int, body: DayNoteIn, user: User = Depends(require_sales), d
 
 
 @router.post("/{pid}/ship/undo")
-async def ship_undo(pid: int, user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
-    return await _act(db, pid, svc.undo_shipping(db, pid, user.id))
+async def ship_undo(pid: int, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    """[배송 시작] 잘못 누른 것 되돌리기 — 되돌리기·취소는 영업팀 누구나(사용자 2026-11-17 — 실수·수정이 잦음, 이력에 남음)."""
+    return await _act(db, pid, svc.undo_shipping(db, pid, user.id, admin=True))
 
 
 @router.post("/{pid}/receipt")
@@ -631,12 +664,13 @@ async def receipt_edit(pid: int, index: int, body: ReceiptIn, user: User = Depen
 async def receipt_serials(pid: int, index: int, body: SerialsIn, user: User = Depends(require_sales),
                           db: AsyncSession = Depends(get_db)) -> dict:
     """입고 기록을 남긴 뒤 S/N 만 등록·고치기(입고 완료 뒤에도, 사용자 2026-11-11)."""
-    return await _act(db, pid, svc.set_receipt_serials(db, pid, user.id, index, body.model_dump()["lines"]))
+    return await _act(db, pid, svc.set_receipt_serials(db, pid, user.id, index, body.model_dump()["lines"], body.expect))
 
 
 @router.post("/{pid}/receipt/{index}/remove")
-async def receipt_remove(pid: int, index: int, user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
-    return await _act(db, pid, svc.remove_receipt(db, pid, user.id, index))
+async def receipt_remove(pid: int, index: int, body: ExpectIn | None = None, user: User = Depends(require_sales),   # 영업팀 누구나(2026-11-17)
+                         db: AsyncSession = Depends(get_db)) -> dict:
+    return await _act(db, pid, svc.remove_receipt(db, pid, user.id, index, body.expect if body else None))
 
 
 RECEIPT_PHOTO_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
@@ -703,6 +737,5 @@ async def tax(pid: int, body: DocIn, user: User = Depends(require_sales), db: As
 async def undo(pid: int, step: Literal["customs", "statement", "tax"], user: User = Depends(require_sales),
                db: AsyncSession = Depends(get_db)) -> dict:
     # 명세서·계산서 사유 기록(선결제·선발행)은 선택 서류라 누구나 되돌린다 — 통관 서류 제출 완료 취소는 관리자
-    if step == "customs" and not is_admin(user):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="통관 서류 제출 완료 취소는 관리자만 할 수 있습니다.")
+    # 통관 서류 제출 완료 취소도 — 되돌리기·취소는 영업팀 누구나(사용자 2026-11-17 — 실수·수정이 잦음, 이력에 남음)
     return await _act(db, pid, svc.undo_step(db, pid, user.id, step))
