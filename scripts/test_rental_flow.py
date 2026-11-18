@@ -205,14 +205,15 @@ async def run() -> None:
                 await db.rollback()
                 check(True, "판매 건에는 회수 없음")
 
-            # 대여 관리 탭 [삭제](관리자) — 판매와 같은 지우기: 보관함으로, 시리얼은 남음(사용자 2026-10-22)
+            # 대여 관리 탭 [삭제](관리자) — 판매와 같은 지우기: 보관함으로, 시리얼은 지움(사용자 2026-11-18)
             await svc.delete_deals(db, [r_oct], uid)
             left = (await db.execute(text("SELECT COUNT(*), COUNT(deal_id) FROM product_units WHERE serial LIKE 'ZZTEST-RENT-000%' "
                                           "AND serial IN ('ZZTEST-RENT-0001', 'ZZTEST-RENT-0002')"))).one()
             trash = (await db.execute(text("SELECT COUNT(*) FROM sales_deal_trash WHERE deal_id = :d"), {"d": r_oct})).scalar()
             rows = {r["id"] for r in (await svc.list_deals(db, TODAY, "rental"))["rows"]}
-            check(r_oct not in rows and trash == 1 and tuple(left) == (2, 0),
-                  "대여 건 삭제 → 목록에서 빠지고 보관함에, 시리얼 2개는 남음(건 연결만 끊김)", str((trash, tuple(left))))
+            # 사용자 2026-11-18: 지운 건의 S/N 도 지워 다시 쓸 수 있게(예전: 남기고 건 연결만 끊음)
+            check(r_oct not in rows and trash == 1 and tuple(left) == (0, 0),
+                  "대여 건 삭제 → 목록에서 빠지고 보관함에, 시리얼 2개도 지워짐(다시 쓸 수 있음)", str((trash, tuple(left))))
             await db.execute(text("DELETE FROM sales_deal_trash WHERE deal_id = :d"), {"d": r_oct})
             await db.commit()
         finally:

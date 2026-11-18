@@ -194,7 +194,9 @@ export interface PurchaseRow {
     replaced: PoReplaced[];
     /** 예전 판(다시 발행하기 전) — 판마다 보기·다시 다운로드(사용자 2026-11-11, 견적서와 같게) */
     history: { no: string; date: string; total: number; issued_at: string; issued_by: string; revision: number; file_name: string | null;
-               upload: PoUploadFile | null; replaced: PoReplaced[] }[];
+               upload: PoUploadFile | null; replaced: PoReplaced[];
+               /** [발주서 발행 취소]로 거둔 판(사용자 2026-11-18) */
+               cancelled_at?: string | null; cancelled_by?: string | null }[];
   };
   pay_terms: { label: string; pct: number; when: string; expected_date: string | null }[];
   terms: PurchaseTerm[];
@@ -269,8 +271,8 @@ export interface ReopenLine { name: string; got: number; ordered: number; kind: 
 /** 서버 오류 — detail 이 {message, ...} 이면 data 에 나머지(예: reopen) */
 export class PurchaseApiError extends Error {
   /** code — 막힘 종류(RECEIPT_LOCK·PAID_LOCK, 화면이 팝업·이동에 씀, 사용자 2026-11-17) */
-  data: { reopen?: ReopenLine[]; code?: string } | null;
-  constructor(message: string, data: { reopen?: ReopenLine[]; code?: string } | null) {
+  data: { reopen?: ReopenLine[]; code?: string; step?: string; label?: string } | null;
+  constructor(message: string, data: { reopen?: ReopenLine[]; code?: string; step?: string; label?: string } | null) {
     super(message);
     this.data = data;
   }

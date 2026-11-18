@@ -4,6 +4,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { askConfirm, type ConfirmAsk } from "@/components/shared/ui/confirm-host";
+import { useUnsaved } from "@/components/shared/ui/unsaved";
 import { Icon } from "@/components/shared/ui/icon";
 import { Field, INPUT, Muted, shortDate, todayIso, won } from "@/components/domains/sales/deal-format";
 import { SnButton, SnPanel, flatName, loadSnView, usableUnits, type SnLine } from "@/components/domains/sales/unit-register";
@@ -211,6 +213,38 @@ export type ShipDraft = Partial<{
   set_name: string; set_qty: string; set_photos: string[]; lines: ShipLine[];
 }>;
 
+/** [출하 취소] 확인 팝업 — 출하 기록을 지워 출하 전으로 되돌린다(사용자 2026-11-18: 고치기로 품목을 다 지워야 했음).
+ *  묶인 S/N 은 출하 전(등록)으로, 무상 기간도 지워진다. A/S 기록이 있는 S/N 이 묶였으면 서버가 막는다(SHIP_HAS_AS). */
+export function shipCancelAsk(deal: DealRow, index: number): ConfirmAsk {
+  const s = deal.shipments[index];
+  const sn = (deal.unit_list ?? []).filter((u) => u.shipment_index === index).length;
+  const which = deal.shipments.length > 1 ? `${index + 1}회차 출하` : "출하";
+  return {
+    title: `${which}를 취소할까요?`,
+    message: `출하일 ${s?.date ?? "-"} 기록을 지우고 출하 전으로 되돌립니다.`
+      + (sn ? ` 이 출하에 등록한 S/N ${sn}개도 함께 지워집니다(같은 S/N 을 다시 등록할 수 있음).` : "")
+      + " 지운 내용은 변경 이력에 남습니다.",
+    confirmLabel: "출하 취소", cancelLabel: "닫기", danger: true,
+  };
+}
+
+/** [발급 취소] 확인 팝업 — 마지막 발급을 없던 일로(사용자 2026-11-18). 예전 발급본이 있으면 그것으로, 없으면 발급 전. 번호는 다시 쓴다. */
+export function statementCancelAsk(no: string, hasPrev = false): ConfirmAsk {
+  return {
+    title: `거래명세서 ${no} 발급을 취소할까요?`,
+    message: (hasPrev ? "바로 전 발급본이 다시 지금 명세서가 됩니다." : "발급 전으로 되돌립니다.")
+      + " 이 번호는 다시 쓸 수 있습니다(오늘 다시 발급하면 같은 번호부터). 취소한 내용은 변경 이력에 남습니다.",
+    confirmLabel: "발급 취소", cancelLabel: "닫기", danger: true,
+  };
+}
+
+/** [결제 조건 지우기] 확인 팝업 — 결제 조건을 정하기 전으로(사용자 2026-11-18). */
+export const TERMS_CLEAR_ASK: ConfirmAsk = {
+  title: "결제 조건을 지울까요?",
+  message: "선금·잔금 같은 회차와 예정 입금일을 모두 지우고 결제 조건을 정하기 전으로 되돌립니다. 지운 내용은 변경 이력에 남습니다.",
+  confirmLabel: "지우기", cancelLabel: "닫기", danger: true,
+};
+
 /** 건의 기본 품목 줄(거래명세서 — 세트로 묶었으면 그 구성, 없으면 견적). */
 function baseLines(deal: DealRow): ShipLine[] {
   const st = deal.statement;
@@ -240,9 +274,11 @@ export function shipmentDraft(s: DealShipment): ShipDraft {
   };
 }
 
-export function ShipForm({ deal, busy, act, initial, onSaved, onCancel, onChange, editIndex }: {
+export function ShipForm({ deal, busy, act, initial, onSaved, onCancel, onChange, editIndex, saveRef }: {
   deal: DealRow; busy: boolean; act: Act; initial?: ShipDraft;
   onSaved?: () => void; onCancel?: () => void; onChange?: (d: ShipDraft) => void;
+  /** 상세를 닫을 때 [변경사항 저장]이 부를 저장 — 지금 저장할 수 없으면 null */
+  saveRef?: React.RefObject<(() => Promise<boolean>) | null>;
   /** 이미 남긴 출하 기록(번호)을 고칠 때 */
   editIndex?: number;
 }) {
@@ -333,9 +369,12 @@ export function ShipForm({ deal, busy, act, initial, onSaved, onCancel, onChange
           lines: [{ name: setName.trim(), qty: null, qty_text: setQty.trim(), photos: setPhotos }] }
       : { ...f, purpose: "판매", lines: items };
     if (unitIds) Object.assign(body, { unit_ids: unitIds });
+    // 새 출하 기록은 출하를 완료로 남기는 일이라 한 번 더 묻는다(고치기는 묻지 않음, 사용자 2026-11-18)
+    if (editIndex == null && !(await askConfirm({ title: "출하 기록을 저장할까요?", message: `출하일 ${f.date || todayIso()}`, confirmLabel: "저장" }))) return false;
     const ok = editIndex != null ? await act("shipment-edit", { ...body, index: editIndex, expect: deal.shipments[editIndex] })
       : await act("shipments", body);
     if (ok) onSaved?.();
+    return ok;
   }
   const noPhoto = mode === "set" ? (setPhotos.length ? 0 : 1) : items.filter((l) => !l.photos.length).length;
   // 순서를 건너뛴 출하 안내(사용자 2026-10-23) — 정상 순서는 거래명세서 → 입금 확인 → 출하. 막지는 않는다(출하는 언제든, 2026-10-08)
@@ -345,6 +384,11 @@ export function ShipForm({ deal, busy, act, initial, onSaved, onCancel, onChange
       .map((t) => `${t.label} ${t.pct}% 입금 확인`),
   ];
   const canSave = !busy && up === null && (editIndex != null || snShort.length === 0) && (mode === "set" ? !!setName.trim() && !!setQty.trim() : items.length > 0);
+  useEffect(() => {
+    if (!saveRef) return;
+    saveRef.current = canSave ? save : null;
+    return () => { saveRef.current = null; };
+  });
 
   const photoStrip = (photos: string[], remove: (p: string) => void, alt: string) => photos.length > 0 && (
     <div className="mt-2 flex flex-wrap gap-1.5">
@@ -597,6 +641,9 @@ export function TermsEditor({ deal, busy, onSave, startEditing = false, onCancel
   const used = rows.filter((r) => Number(r.pct) > 0);
   const sum = used.reduce((s, r) => s + Number(r.pct), 0);
   const okSum = Math.abs(sum - 100) < 0.01;
+  const canSave = !busy && used.length > 0 && okSum;
+  const submit = () => onSave(used.map((r) => ({ label: r.label, pct: Number(r.pct), when: r.when.trim(), expected_date: r.expected_date || null })));
+  useUnsaved("결제 조건", editing && JSON.stringify(rows) !== JSON.stringify(termRows(saved)), canSave ? submit : null);   // 닫을 때 묻기(사용자 2026-11-18)
   const setRow = (i: number, patch: Partial<TermDraft>) => setRows((p) => p.map((r, j) => (j === i ? { ...r, ...patch } : r)));
   // backend 와 같게: 금액은 저장되는 회차(0% 아닌 줄) 기준, 마지막 회차가 끝전
   const amountOf = (r: TermDraft) => {
@@ -665,8 +712,7 @@ export function TermsEditor({ deal, busy, onSave, startEditing = false, onCancel
         <span className={cn("ml-auto", okSum ? "text-foreground-muted" : "font-semibold text-red-600")}>합계 {sum}%{okSum ? "" : " — 100% 가 되게"}</span>
         {(saved.length > 0 || onCancel) && <button type="button" className={secondaryBtn} disabled={busy}
                                                    onClick={() => { setEditing(false); onCancel?.(); }}>취소</button>}
-        <button type="button" className={primaryBtn} disabled={busy || !used.length || !okSum}
-                onClick={() => onSave(used.map((r) => ({ label: r.label, pct: Number(r.pct), when: r.when.trim(), expected_date: r.expected_date || null })))}>
+        <button type="button" className={primaryBtn} disabled={!canSave} onClick={submit}>
           <Icon name="check" className="h-4 w-4" /> 결제 조건 저장
         </button>
       </div>

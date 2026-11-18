@@ -16,7 +16,7 @@ UNPAID_DAYS = 30      # 거래명세서 발급(이관 건은 옛 계산서 기�
 # 실주는 없앴다 — 수주까지 못 간 건은 모두 드랍(사용자 2026-10-08)
 # 대여 중·회수 중·회수 완료는 영업 건 단계가 아니다(사용자 2026-11-10 — 대여 건 한정 과정이라 [대여 제품 목록]의 대여 상태로만,
 # flow.rental_phase). 유상 대여 건도 영업 건 관리에서는 판매와 같은 단계로 본다.
-STAGES = ["제품 추천 확정", "견적", "수주", "출하 후 입금 대기", "완료 (출하·완납)", "드랍", "출하 기록만 (이전)"]
+STAGES = ["견적 전", "제품 추천 확정", "견적", "수주", "출하 후 입금 대기", "완료 (출하·완납)", "드랍", "출하 기록만 (이전)"]
 
 
 def _days(since: str | None, today: dt.date) -> int | None:
@@ -33,8 +33,8 @@ def derive(d: dict, today: dt.date) -> dict:
         stage = "드랍"
     elif d["kind"] == "shipment_only":
         stage = "출하 기록만 (이전)"
-    elif d["kind"] == "recommend":                   # 최종 제안 확정 — 견적서 발행 전
-        stage = "제품 추천 확정"
+    elif d["kind"] == "recommend":                   # 견적서 발행 전 — 최종 제안 확정 건 · [+ 새 건 등록]으로 만든 뼈대 건(사용자 2026-11-18)
+        stage = "제품 추천 확정" if d.get("proposal_id") else "견적 전"
     elif d["paid_full"] and (shipped or not d.get("pay_case")):
         stage = "완료 (출하·완납)"                  # 결제 방식을 고른 건(선입금)은 출하까지 끝나야 완료
     elif shipped:

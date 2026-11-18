@@ -9,11 +9,12 @@ import { PurchasePoEditor } from "@/components/domains/sales/purchase-po-editor"
 import { DownloadDialog, PreviewDialog } from "@/components/domains/sales/quote-workspace";
 import { INPUT, Muted, shortDate, stamp, todayIso, won } from "@/components/domains/sales/deal-format";
 import {
-  CUSTOMS_DOC_EXAMPLES, DOC_SKIP_HELP, DOC_SKIP_MODES, purchaseRequest, purchaseUpload, REGION_LABEL,
+  CUSTOMS_DOC_EXAMPLES, DOC_SKIP_HELP, DOC_SKIP_MODES, PurchaseApiError, purchaseRequest, purchaseUpload, REGION_LABEL,
   type PoReplaced, type PurchaseFile, type PurchaseRow,
 } from "@/lib/shared/purchases";
 import { ConfirmDialog } from "@/components/shared/ui/confirm-dialog";
-import { askConfirm } from "@/components/shared/ui/confirm-host";
+import { askConfirm, askText, type ConfirmAsk } from "@/components/shared/ui/confirm-host";
+import { clearDraft, confirmLeave, draftTime, readDraft, useUnsaved, writeDraft, type UnsavedSave } from "@/components/shared/ui/unsaved";
 import { Icon } from "@/components/shared/ui/icon";
 import { cn } from "@/lib/shared/utils";
 import { primaryBtn, secondaryBtn } from "./proposal-actions";
@@ -39,6 +40,8 @@ export function PurchaseDetail({ id, onClose, onChanged }: {
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [poOpen, setPoOpen] = useState(false);
+  // 막힌 팝업의 [○○ 칸으로 가기] — 서버가 알려 준 먼저 되돌릴 단계(발주서 발행 취소 등, 사용자 2026-11-18)
+  const [errGo, setErrGo] = useState<{ step: string; label: string } | null>(null);
   // 발행 직후 내려받기 창(사용자 2026-11-17 — 견적서처럼 PDF·엑셀 고르고 파일 이름도 고쳐 저장)
   const [issuedSave, setIssuedSave] = useState(false);
 
@@ -47,18 +50,38 @@ export function PurchaseDetail({ id, onClose, onChanged }: {
   }, [id]);
 
   /** 저장 요청 공통 — 바뀐 건으로 화면·리스트를 갱신하고, 실패하면 서버 문장을 위에 보인다. */
-  const act = useCallback(async (label: string, fn: () => Promise<PurchaseRow>) => {
+  // ask = 완료로 기록하거나 취소·되돌리는 버튼 — UND Cortex 팝업으로 한 번 더 묻는다(사용자 2026-11-18, 실수로 눌려 완료·취소되지 않게)
+  const act = useCallback(async (label: string, fn: () => Promise<PurchaseRow>, ask?: ConfirmAsk): Promise<boolean> => {
+    if (ask && !(await askConfirm(ask))) return false;
     setBusy(label);
     setErr(null);
     try {
       setP(await fn());
       onChanged();
+      return true;
     } catch (e) {
       setErr(e instanceof Error ? e.message : "처리하지 못했습니다.");
+      const go = e instanceof PurchaseApiError ? e.data : null;
+      setErrGo(go?.step ? { step: go.step, label: go.label ?? "그" } : null);
+      return false;
     } finally {
       setBusy(null);
     }
   }, [onChanged]);
+  // 닫기(Esc·바깥 누름·×) — 저장 안 한 작성 칸이 있으면 먼저 묻는다(사용자 2026-11-18)
+  const tryClose = useCallback(() => { void confirmLeave().then((ok) => { if (ok) onClose(); }); }, [onClose]);
+  // Esc 로 상세 닫기(사용자 2026-11-18 — 영업 건 상세와 같게, 안 닫혀서 다른 버튼을 누르게 됐음).
+  // 팝업·발주서 작성 창이 떠 있으면 그것만 닫히게 상세는 그대로 둔다
+  useEffect(() => {
+    if (poOpen || issuedSave) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (document.querySelector('[aria-modal="true"], [role="alertdialog"]')) return;     // 확인 팝업 등이 떠 있음
+      tryClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [poOpen, issuedSave, tryClose]);
 
   if (!p) {
     return (
@@ -90,11 +113,12 @@ export function PurchaseDetail({ id, onClose, onChanged }: {
   const recAt = (index: number) => ({ expect: p.receipt.records[index]?.at ? { at: p.receipt.records[index].at } : null });
   const lock = (k: string) => !step[k].ready && !step[k].done;
   // 첨부가 없어도 버튼으로 넘어가기(사용자 2026-11-11 — 영업팀이 아무것도 안 하고도 다음 단계를 테스트할 수 있게)
-  const skipQuote = () => act("quote-skip", () => purchaseRequest(`/${id}/quote/skip`, { value: true }));
+  const skipQuote = () => act("quote-skip", () => purchaseRequest(`/${id}/quote/skip`, { value: true }),
+                              { title: "견적서 없이 다음 단계로 넘어갈까요?", message: "견적서는 나중에 올려도 됩니다. 변경 이력에 남습니다.", confirmLabel: "넘어가기" });
   const afterOrder = over ? "발주서를 발행한 뒤에 기록합니다." : AFTER_ORDER;
 
   return (
-    <div className="fixed inset-0 z-40 flex justify-end bg-black/25" onClick={onClose}>
+    <div className="fixed inset-0 z-40 flex justify-end bg-black/25" onClick={tryClose}>
       <aside role="dialog" aria-label={`${p.supplier} 구매 건 상세`} onClick={(e) => e.stopPropagation()}
              className="scroll-thin h-full w-full max-w-[800px] overflow-y-auto bg-background shadow-2xl">
         <div className="sticky top-0 z-10 border-b border-border bg-background/95 px-6 py-4 backdrop-blur">
@@ -118,15 +142,17 @@ export function PurchaseDetail({ id, onClose, onChanged }: {
                 </span>
                 {p.stage_note && <span className="text-[11.5px] text-foreground-muted">{p.stage_note}</span>}
               </span>
-              <button type="button" onClick={onClose} aria-label="닫기" className="h-8 w-8 rounded-lg text-[18px] hover:bg-foreground/8">×</button>
+              <button type="button" onClick={tryClose} aria-label="닫기" className="h-8 w-8 rounded-lg text-[18px] hover:bg-foreground/8">×</button>
             </div>
           </div>
           <ProgressBand p={p} marks={marks} />
         </div>
         {/* 막힘·오류는 맨 위 빨간 줄 대신 팝업(사용자 2026-11-17 — 아래 칸에서 저장하면 안 보였음, 영업 건 상세와 같게) */}
-        <ConfirmDialog open={!!err} icon="help" variant="default" title="처리하지 못했습니다"
+        <ConfirmDialog open={!!err} icon="help" variant="default" title={errGo ? "먼저 뒤 단계를 되돌려 주세요" : "처리하지 못했습니다"}
                        description={<span className="block whitespace-pre-line rounded-lg bg-foreground/[0.04] px-3 py-2 text-foreground">{err}</span>}
-                       confirmLabel="확인" hideCancel onClose={() => setErr(null)} onConfirm={() => setErr(null)} />
+                       confirmLabel={errGo ? `${errGo.label} 칸으로 가기` : "확인"} cancelLabel="닫기" hideCancel={!errGo}
+                       onClose={() => { setErr(null); setErrGo(null); }}
+                       onConfirm={() => { const g = errGo; setErr(null); setErrGo(null); if (g) setTimeout(() => flashStep(g.step), 150); }} />
 
         <div className="space-y-5 px-6 py-5 text-[13px]">
           {p.alerts.length > 0 && (
@@ -138,7 +164,7 @@ export function PurchaseDetail({ id, onClose, onChanged }: {
             <div className="rounded-lg bg-foreground/5 px-3 py-2">
               취소한 구매 건입니다{p.drop_reason ? ` — ${p.drop_reason}` : ""}.
               {admin && <button type="button" className={cn(BTN, "ml-2")} disabled={!!busy}
-                                onClick={() => act("drop", () => purchaseRequest(`/${id}/drop`, { dropped: false }))}>되살리기</button>}
+                                onClick={() => act("drop", () => purchaseRequest(`/${id}/drop`, { dropped: false }), { title: "취소한 구매 건을 되살릴까요?", message: "원래 단계로 돌아갑니다. 변경 이력에 남습니다.", confirmLabel: "되살리기" })}>되살리기</button>}
             </div>
           )}
           <InfoEditor p={p} busy={!!busy} onSave={(v) => act("info", () => purchaseRequest(`/${id}/info`, v))} />
@@ -163,7 +189,7 @@ export function PurchaseDetail({ id, onClose, onChanged }: {
                 <span className="text-foreground-muted">{p.approval.quote_skip.by} · {stamp(p.approval.quote_skip.at)} — 견적서는 나중에 올려도 됩니다</span>
                 {!p.approval.done_at && !p.dropped && (
                   <button type="button" className="ml-auto text-[12px] text-foreground-subtle hover:underline" disabled={!!busy}
-                          onClick={() => act("quote-skip", () => purchaseRequest(`/${id}/quote/skip`, { value: false }))}>되돌리기</button>
+                          onClick={() => act("quote-skip", () => purchaseRequest(`/${id}/quote/skip`, { value: false }), { title: "'견적서 없이 넘어감'을 되돌릴까요?", confirmLabel: "되돌리기" })}>되돌리기</button>
                 )}
               </p>
             )}
@@ -184,13 +210,13 @@ export function PurchaseDetail({ id, onClose, onChanged }: {
             {p.approval.done_at ? (
               <Stamp label="재가 완료" date={p.approval.date} by={p.approval.done_by} tag={p.approval.no_file && !p.approval.files.length ? "첨부 없이" : undefined}
                      action={admin && !p.po.no && !p.dropped && <button type="button" className={UNDO} disabled={!!busy}
-                                              onClick={() => act("unapprove", () => purchaseRequest(`/${id}/unapprove`, {}))}>재가 취소</button>} />
+                                              onClick={() => act("unapprove", () => purchaseRequest(`/${id}/unapprove`, {}), { title: "재가 완료를 취소할까요?", message: "변경 이력에 남습니다.", confirmLabel: "재가 취소", danger: true })}>재가 취소</button>} />
             ) : (
               <div className="flex flex-wrap items-center gap-2">
                 <UploadButton label="재가 서류 첨부" busy={busy === "file-approval"} disabled={p.dropped || !!busy} onFile={(f) => upload("approval", f)} />
                 <DateAction label={p.approval.files.length ? "재가 완료" : "재가 완료(첨부 없이)"} busy={busy === "approve"} disabled={p.dropped || !!busy}
                             title={p.approval.files.length ? undefined : "재가 서류 없이 넘어갑니다 — '첨부 없이'로 기록됩니다"}
-                            onRun={(date) => act("approve", () => purchaseRequest(`/${id}/approve`, { date }))} />
+                            onRun={(date) => act("approve", () => purchaseRequest(`/${id}/approve`, { date }), { title: "재가 완료로 기록할까요?", message: `재가일 ${date}`, confirmLabel: "재가 완료" })} />
               </div>
             )}
           </Section>
@@ -201,15 +227,24 @@ export function PurchaseDetail({ id, onClose, onChanged }: {
                    hint={`회사 ${over ? "해외(Purchasing order, 달러)" : "국내(원화, VAT 별도)"} 양식으로 작성·발행합니다. 엑셀에서 고친 발주서는 작성 창의 [고친 파일로 발행]으로 올립니다. ${over ? "납기일은 알면 적습니다(선택)." : "입고 예정일을 적어야 다음 단계로 넘어갑니다."}`}>
             {p.po.no ? (
               <div className="space-y-2">
-                <PoDocs id={id} p={p} onEdit={p.dropped ? undefined : () => setPoOpen(true)} />
+                <PoDocs id={id} p={p} onEdit={p.dropped ? undefined : () => setPoOpen(true)}
+                        onCancel={p.dropped ? undefined : () => void act("po-cancel", () => purchaseRequest(`/${id}/po/cancel`, {}), {
+                          title: `발주서 ${p.po.no} 발행을 취소할까요?`, danger: true, confirmLabel: "발행 취소", cancelLabel: "닫기",
+                          message: p.po.history.length
+                            ? "바로 전 판이 다시 지금 발주서가 됩니다. 이 번호는 다시 쓸 수 있습니다(오늘 다시 발행하면 같은 번호부터). 취소한 내용은 변경 이력에 남습니다."
+                            : "발주 전으로 되돌립니다. 내용은 작성 중인 발주서로 돌아가 고쳐 다시 발행할 수 있고, 이 번호는 다시 쓸 수 있습니다(오늘 다시 발행하면 같은 번호부터).",
+                        })} />
                 <PoItems p={p} over={over} />
                 <ExpectedDateEditor p={p} over={over} busy={!!busy}
                                     onSave={(date, reason) => act("expected", () => purchaseRequest(`/${id}/expected-date`, { date: date || null, reason }))} />
               </div>
             ) : (
-              <button type="button" className={PRIMARY} disabled={!step.order.ready || !!busy} onClick={() => setPoOpen(true)}>
-                {p.po.has_draft ? "작성 중인 발주서 이어서 쓰기" : "발주서 작성"}
-              </button>
+              <div className="space-y-2">
+                <button type="button" className={PRIMARY} disabled={!step.order.ready || !!busy} onClick={() => setPoOpen(true)}>
+                  {p.po.has_draft ? "작성 중인 발주서 이어서 쓰기" : "발주서 작성"}
+                </button>
+                {p.po.history.length > 0 && <PoDocs id={id} p={p} />}
+              </div>
             )}
           </Section>
 
@@ -241,14 +276,15 @@ export function PurchaseDetail({ id, onClose, onChanged }: {
               <div className="flex flex-wrap items-center gap-2">
                 <UploadButton label="송금 확인증 첨부(선택)" busy={busy === "file-remit"} disabled={!step.pay.ready || !!busy} onFile={(f) => upload("remit", f)} />
                 <DateNoteAction label={payLabel} placeholder="메모(송금 방식·금액 등, 선택)" busy={busy === "paid"} disabled={!step.pay.ready || !!busy}
-                                onRun={(date, note) => act("paid", () => purchaseRequest(`/${id}/paid`, { date, note }))} />
+                                onRun={(date, note) => act("paid", () => purchaseRequest(`/${id}/paid`, { date, note }), { title: `${payLabel}으로 기록할까요?`, message: `송금일 ${date}`, confirmLabel: payLabel })} />
               </div>
             ) : (
               <>
                 <TermsEditor key={JSON.stringify(p.pay_terms) + p.terms.filter((t) => t.confirmed).length} p={p} busy={!!busy}
                              onSave={(terms) => act("terms", () => purchaseRequest(`/${id}/terms`, { terms }))} />
                 <TermList p={p} busy={busy} ready={step.pay.ready}
-                          onConfirm={(i, date) => act(`confirm-${i}`, () => purchaseRequest(`/${id}/terms/${i}/confirm`, { date, mismatch_note: null }))}
+                          onConfirm={(i, date) => act(`confirm-${i}`, () => purchaseRequest(`/${id}/terms/${i}/confirm`, { date, mismatch_note: null }),
+                                                     { title: `${p.terms[i]?.label ?? "회차"} 송금 확인으로 기록할까요?`, message: `송금일 ${date} · ${won(p.terms[i]?.amount ?? null)}원`, confirmLabel: "송금 확인" })}
                           onUnconfirm={(i) => act(`un-${i}`, () => purchaseRequest(`/${id}/terms/${i}/unconfirm`, {}))} />
               </>
             )}
@@ -267,7 +303,7 @@ export function PurchaseDetail({ id, onClose, onChanged }: {
               <Muted>배송 시작 기록 없이 입고됐습니다 — 배송 단계는 끝난 것으로 봅니다.</Muted>
             ) : (
               <DateNoteAction label="배송 시작" placeholder="메모(운송사·연락 받은 내용 등, 선택)" busy={busy === "ship"} disabled={!step.ship.ready || !!busy}
-                              onRun={(date, note) => act("ship", () => purchaseRequest(`/${id}/ship`, { date, note }))} />
+                              onRun={(date, note) => act("ship", () => purchaseRequest(`/${id}/ship`, { date, note }), { title: "배송 시작으로 기록할까요?", message: `배송 시작일 ${date} · 상태가 '배송 중'으로 바뀝니다.`, confirmLabel: "배송 시작" })} />
             )}
           </Section>
 
@@ -280,13 +316,15 @@ export function PurchaseDetail({ id, onClose, onChanged }: {
                        hint="1순위는 원산지 증명서입니다. 없으면 [증빙 자료 없음]을 누르고 CI·Packing List 같은 통관 기타 서류를 항목별로 올리세요. 첨부가 없어도 [통관 서류 제출 완료]로 넘어갈 수 있습니다.">
                 <CustomsDocs id={id} p={p} admin={admin} busy={busy} ready={step.customs.ready}
                              onUpload={(kind, f, label) => upload(kind, f, label)} onRemove={removeFile}
-                             onNoOrigin={(value) => act("no-origin", () => purchaseRequest(`/${id}/customs/no-origin`, { value }))} />
+                             onNoOrigin={(value) => act("no-origin", () => purchaseRequest(`/${id}/customs/no-origin`, { value }),
+                                                           value ? { title: "원산지 증명서 없이 진행할까요?", message: "CI·Packing List 같은 통관 기타 서류를 올리게 됩니다.", confirmLabel: "증빙 자료 없음" }
+                                                                 : { title: "'원산지 증명서 없음'을 되돌릴까요?", confirmLabel: "되돌리기" })} />
                 {p.customs.done_at ? (
                   <Stamp label="통관 서류 제출 완료" date={p.customs.date} by={p.customs.done_by} note={p.customs.note}
-                         action={admin && !p.dropped && <button type="button" className={UNDO} disabled={!!busy} onClick={() => act("undo-c", () => purchaseRequest(`/${id}/undo/customs`, {}))}>취소</button>} />
+                         action={admin && !p.dropped && <button type="button" className={UNDO} disabled={!!busy} onClick={() => act("undo-c", () => purchaseRequest(`/${id}/undo/customs`, {}), { title: "통관 서류 제출 완료를 취소할까요?", message: "변경 이력에 남습니다.", confirmLabel: "취소하기", danger: true })}>취소</button>} />
                 ) : (
                   <DateNoteAction label="통관 서류 제출 완료" placeholder="메모(선택)" busy={busy === "customs"} disabled={!step.customs.ready || !!busy}
-                                  onRun={(date, note) => act("customs", () => purchaseRequest(`/${id}/customs`, { date, note }))} />
+                                  onRun={(date, note) => act("customs", () => purchaseRequest(`/${id}/customs`, { date, note }), { title: "통관 서류 제출 완료로 기록할까요?", message: `제출일 ${date}`, confirmLabel: "제출 완료" })} />
                 )}
               </Section>
 
@@ -300,7 +338,7 @@ export function PurchaseDetail({ id, onClose, onChanged }: {
                                               .then((ok) => { if (ok) void act("unbroker", () => purchaseRequest(`/${id}/broker/undo`, {})); })}>확인 취소</button>} />
                 ) : (
                   <DateNoteAction label="관세사 송금 확인" placeholder="메모(관세사·금액 등, 선택)" busy={busy === "broker"} disabled={!step.broker.ready || !!busy}
-                                  onRun={(date, note) => act("broker", () => purchaseRequest(`/${id}/broker`, { date, note }))} />
+                                  onRun={(date, note) => act("broker", () => purchaseRequest(`/${id}/broker`, { date, note }), { title: "관세사 송금 확인으로 기록할까요?", message: `송금일 ${date}`, confirmLabel: "송금 확인" })} />
                 )}
               </Section>
             </>
@@ -311,7 +349,12 @@ export function PurchaseDetail({ id, onClose, onChanged }: {
                    hint="출하 기록처럼 입고 기록(입고일·운송·받은 사람·보관 위치·품목별 수량·사진·S/N)을 남깁니다. 입고 기록은 한 건 — 나중에 더 들어오면(품목 추가 등) [남은 품목 받기]로 그 기록을 고쳐 수량을 채웁니다. 발주 수량을 다 받거나 '입고 완료'로 남기면 끝. S/N 은 기록을 남긴 뒤에도 [S/N 등록]으로 따로 적을 수 있습니다.">
             <ReceiptSection id={id} p={p} admin={admin} busy={busy} ready={step.receipt.ready}
                             onSave={(index, body) => act("receipt", () => purchaseRequest(index == null ? `/${id}/receipt` : `/${id}/receipt/${index}/edit`,
-                                                                             index == null ? body : { ...body, ...recAt(index) }))}
+                                                                             index == null ? body : { ...body, ...recAt(index) }),
+                                                    // 새 입고 기록·[남은 품목 받기]는 입고를 기록하는 일이라 한 번 더 묻는다(고치기는 묻지 않음, 사용자 2026-11-18)
+                                                    index == null || body.reclose
+                                                      ? { title: index == null ? "입고 기록을 저장할까요?" : "남은 품목 입고를 저장할까요?",
+                                                          message: `입고일 ${body.date}${body.final ? " · 이번 입고로 입고 완료" : ""}`, confirmLabel: "저장" }
+                                                      : undefined)}
                             onSerials={(index, lines) => act("receipt-sn", () => purchaseRequest(`/${id}/receipt/${index}/serials`, { lines, ...recAt(index) }))}
                             onRemove={(index) => act("receipt", () => purchaseRequest(`/${id}/receipt/${index}/remove`, recAt(index)))} />
           </Section>
@@ -323,18 +366,19 @@ export function PurchaseDetail({ id, onClose, onChanged }: {
                      hint="받으면 첨부하세요. 전달에 미리 지불(선결제)했거나 먼저 발행(선발행)돼 이번에 못 끊는 건은 그 사유만 기록합니다. 구매 완료와는 상관없는 선택 서류입니다.">
               <DocBox id={id} kind={kind} p={p} busy={busy} disabled={!step[kind].ready || !!busy}
                       onUpload={(f) => upload(kind, f)} onRemove={(n) => removeFile(kind, n)}
-                      onSkip={(mode, date, note) => act(kind, () => purchaseRequest(`/${id}/${kind}`, { mode, date, note }))}
-                      onUndo={() => act(`undo-${kind}`, () => purchaseRequest(`/${id}/undo/${kind}`, {}))} />
+                      onSkip={(mode, date, note) => act(kind, () => purchaseRequest(`/${id}/${kind}`, { mode, date, note }),
+                                                       { title: `${kind === "statement" ? "거래명세서" : "세금계산서"}를 ${mode === "prepaid" ? "선결제" : "선발행"}로 기록할까요?`, message: `${date}${note ? ` · ${note}` : ""}`, confirmLabel: "기록" })}
+                      onUndo={() => act(`undo-${kind}`, () => purchaseRequest(`/${id}/undo/${kind}`, {}),
+                                        { title: `${kind === "statement" ? "거래명세서" : "세금계산서"} 사유 기록을 되돌릴까요?`, confirmLabel: "되돌리기" })} />
             </Section>
           ))}
 
           {!p.dropped && (
             <div className="flex justify-end pt-1">
               <button type="button" className="rounded-md px-2 py-1 text-[12px] text-foreground-subtle hover:bg-red-500/8 hover:text-red-600 disabled:opacity-40"
-                      disabled={!!busy} onClick={() => {
-                const reason = window.prompt("구매를 취소하는 이유를 적어 주세요(되살리기는 관리자).");
-                if (reason !== null) void act("drop", () => purchaseRequest(`/${id}/drop`, { dropped: true, reason }));
-              }}>구매 취소</button>
+                      disabled={!!busy} onClick={() => void askText({ title: "이 구매 건을 취소할까요?", message: "취소하는 이유를 적어 주세요. 나중에 [되살리기]로 되돌릴 수 있습니다.",
+                                                                  placeholder: "예: 공급사 재고 없음으로 취소", confirmLabel: "구매 취소", danger: true })
+                .then((reason) => { if (reason !== null) void act("drop", () => purchaseRequest(`/${id}/drop`, { dropped: true, reason })); })}>구매 취소</button>
             </div>
           )}
 
@@ -439,17 +483,18 @@ function flashStep(step: string): void {
 /** 발주서 카드(사용자 2026-11-11 — 견적서 카드와 같게): [발주서 고치기 →] + 발행한 판마다 발행 시각·금액·[보기]·[다시 다운로드].
  *  판 = 발행·재발행(새 번호)마다 하나 — 번호 하나 = 발주서 하나. 같은 번호로 고친 파일을 올리면 그 판이 바뀌고(견적서 '파일 교체'와 같음),
  *  교체 전 파일은 판 아래 '교체 전'으로 남아 다시 받을 수 있다(사용자 2026-11-16). */
-function PoDocs({ id, p, onEdit }: { id: number; p: PurchaseRow; onEdit?: () => void }) {
+function PoDocs({ id, p, onEdit, onCancel }: { id: number; p: PurchaseRow; onEdit?: () => void; onCancel?: () => void }) {
   type Ver = { no: string; revision: number; total: number | null; issued_at: string | null; issued_by: string | null;
                file_name: string | null; upload: PurchaseRow["po"]["upload"]; current: boolean; replaced: PoReplaced[];
                /** 교체 전 파일 순번(이 판의 replaced) — 있으면 그 파일을 보기·받기 */
-               rep?: number };
+               rep?: number; cancelled_at?: string | null; cancelled_by?: string | null };
   const [viewing, setViewing] = useState<Ver | null>(null);
   const [saving, setSaving] = useState<Ver | null>(null);
   const po = p.po;
+  // 지금 발주서가 없으면(발행 취소, 사용자 2026-11-18) 예전 판만
   const vers: Ver[] = [
-    { no: po.no ?? "", revision: po.revision ?? 1, total: po.total, issued_at: po.issued_at, issued_by: po.issued_by,
-      file_name: po.file_name, upload: po.upload, current: true, replaced: po.replaced ?? [] },
+    ...(po.no ? [{ no: po.no, revision: po.revision ?? 1, total: po.total, issued_at: po.issued_at, issued_by: po.issued_by,
+                   file_name: po.file_name, upload: po.upload, current: true, replaced: po.replaced ?? [] }] : []),
     ...[...po.history].reverse().map((h) => ({ ...h, current: false, replaced: h.replaced ?? [] })),
   ];
   const fileUrlOf = (v: Ver, fmt: string) => `/api/purchases/${id}/po/file?fmt=${fmt}&revision=${v.revision}${v.rep != null ? `&replaced=${v.rep}` : ""}`;
@@ -460,12 +505,22 @@ function PoDocs({ id, p, onEdit }: { id: number; p: PurchaseRow; onEdit?: () => 
     <div className="relative overflow-hidden rounded-xl border border-border bg-surface px-4 py-3.5 pl-5">
       <span aria-hidden className="und-grad absolute inset-y-0 left-0 w-1" />
       <div className="mb-3 flex flex-wrap items-center gap-2.5 border-b border-border/70 pb-3">
-        <span className="text-[11px] font-bold uppercase tracking-[0.08em] text-foreground-subtle">Order No.</span>
-        <b className="font-mono text-[15px] tracking-tight">{po.no}</b>
-        <span className="rounded-full bg-foreground/[0.06] px-2 py-0.5 text-[11px] font-semibold text-foreground-muted">최신 v{po.revision ?? 1}</span>
+        {po.no ? (
+          <>
+            <span className="text-[11px] font-bold uppercase tracking-[0.08em] text-foreground-subtle">Order No.</span>
+            <b className="font-mono text-[15px] tracking-tight">{po.no}</b>
+            <span className="rounded-full bg-foreground/[0.06] px-2 py-0.5 text-[11px] font-semibold text-foreground-muted">최신 v{po.revision ?? 1}</span>
+          </>
+        ) : <span className="text-[12px] font-semibold text-foreground-muted">이전 발주서</span>}
+        {onCancel && po.no && (
+          <button type="button" onClick={onCancel}
+                  className="ml-auto rounded-lg border border-red-500/40 px-2.5 py-1 text-[12px] font-semibold text-red-600 hover:bg-red-500/10">
+            발행 취소
+          </button>
+        )}
         {onEdit && (
           <button type="button" onClick={onEdit}
-                  className="ml-auto rounded-lg border border-accent/50 px-2.5 py-1 text-[12px] font-semibold text-accent hover:bg-accent/5">
+                  className="rounded-lg border border-accent/50 px-2.5 py-1 text-[12px] font-semibold text-accent hover:bg-accent/5">
             발주서 고치기 →
           </button>
         )}
@@ -478,6 +533,9 @@ function PoDocs({ id, p, onEdit }: { id: number; p: PurchaseRow; onEdit?: () => 
             <span className="font-mono font-medium">{v.no}</span>
             <span className="text-[11.5px] text-foreground-muted">v{v.revision}</span>
             {v.revision === 1 && <span className="text-foreground-subtle">(최초 발행)</span>}
+            {v.cancelled_at && (
+              <span className="rounded bg-red-500/10 px-1.5 text-[11px] font-semibold text-red-600" title={`${stamp(v.cancelled_at)}${v.cancelled_by ? ` · ${v.cancelled_by}` : ""}`}>발행 취소</span>
+            )}
             {v.current && (
               <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-500/12 px-2 py-0.5 text-[11px] font-semibold text-blue-700 dark:text-blue-300">
                 <span className="relative flex h-1.5 w-1.5"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-500/60" /><span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-blue-500" /></span>
@@ -656,7 +714,7 @@ function Section({ id, n, title, done, mark, locked, lockText, hint, optional, c
  *  [항목 추가]로 서류 이름을 적고 하나씩 올린다. 첨부는 모두 선택(완료 버튼은 첨부 없이도 됨). */
 function CustomsDocs({ id, p, admin, busy, ready, onUpload, onRemove, onNoOrigin }: {
   id: number; p: PurchaseRow; admin: boolean; busy: string | null; ready: boolean;
-  onUpload: (kind: FileKind, f: File, label?: string) => Promise<void>; onRemove: (kind: FileKind, n: number) => void;
+  onUpload: (kind: FileKind, f: File, label?: string) => Promise<unknown>; onRemove: (kind: FileKind, n: number) => void;
   onNoOrigin: (value: boolean) => void;
 }) {
   const cu = p.customs;
@@ -1009,6 +1067,9 @@ function DateNoteAction({ label, placeholder, busy, disabled, title, onRun }: {
   );
 }
 
+/** 보관한 입고 기록 작성 내용 — index null 이면 새 기록, 아니면 그 기록 고치기 */
+type ReceiptDraft = { index: number | null; fillRest: boolean; body: ReceiptBody };
+
 type ReceiptBody = {
   date: string; carrier: string; tracking: string; receiver: string; location: string; note: string; final: boolean;
   /** [남은 품목 받기] — 입고 완료를 지금 발주 수량 기준으로 다시 닫음 */
@@ -1021,18 +1082,45 @@ const photoUrl = (id: number, name: string) => `/api/purchases/${id}/receipt-pho
 /** 입고 — 기록 목록(품목·수량·사진·S/N, [수정]·[S/N 등록]) + 새 입고 기록 칸(출하 기록 작성과 같은 꼴). */
 function ReceiptSection({ id, p, admin, busy, ready, onSave, onSerials, onRemove }: {
   id: number; p: PurchaseRow; admin: boolean; busy: string | null; ready: boolean;
-  onSave: (index: number | null, body: ReceiptBody) => void; onRemove: (index: number) => void;
+  onSave: (index: number | null, body: ReceiptBody) => Promise<boolean>; onRemove: (index: number) => void;
   onSerials: (index: number, lines: { line_no: number; serials: string[] }[]) => void;
 }) {
   const [editing, setEditing] = useState<number | null>(null);
+  // 적던 입고 기록(이 PC 브라우저 보관) — 실수로 닫혀도 다시 열면 이어서(사용자 2026-11-18)
+  const key = `purchase:${id}:receipt`;
+  const [draft, setDraft] = useState(() => {
+    const d = readDraft<ReceiptDraft>(key);
+    return d && (d.value.index == null ? p.receipt.records.length === 0 : d.value.index < p.receipt.records.length) ? d : null;
+  });
+  const [resume, setResume] = useState<ReceiptBody | undefined>(undefined);
+  const keep = (index: number | null, fill: boolean) => (b: ReceiptBody | null) => {
+    if (b) writeDraft<ReceiptDraft>(key, { index, fillRest: fill, body: b });
+    else clearDraft(key);
+  };
+  const done = () => { clearDraft(key); setDraft(null); setResume(undefined); };
   // [남은 품목 받기] — 입고 기록은 한 건으로 관리(사용자 2026-11-17: 나눠 들어오는 일이 거의 없음). 더 들어오면 그 기록을 고쳐 수량을 채운다
   const [fillRest, setFillRest] = useState(false);
   const [snEdit, setSnEdit] = useState<number | null>(null);
   const [adding, setAdding] = useState(false);
   const recs = p.receipt.records;
   const last = recs.length - 1;
+  const formOpen = adding || editing !== null;
   return (
     <div className="space-y-2">
+      {draft && !formOpen && !p.dropped && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-accent/40 bg-accent/[0.06] px-3 py-2 text-[12.5px]">
+          <span><b>작성하던 입고 기록</b>이 있습니다 <span className="text-foreground-subtle">({draftTime(draft.at)} · 저장 안 함)</span></span>
+          <span className="ml-auto flex gap-1.5">
+            <button type="button" className={BTN} disabled={!!busy}
+                    onClick={() => void askConfirm({ title: "작성하던 입고 기록을 버릴까요?", confirmLabel: "버리기", danger: true }).then((ok) => { if (ok) done(); })}>버리기</button>
+            <button type="button" className={PRIMARY} disabled={!!busy} onClick={() => {
+              setResume(draft.value.body);
+              if (draft.value.index == null) setAdding(true);
+              else { setFillRest(draft.value.fillRest); setEditing(draft.value.index); }
+            }}>이어서 쓰기</button>
+          </span>
+        </div>
+      )}
       {p.receipt.lines.length > 0 && (
         <div className="flex flex-wrap gap-1.5 text-[12px]">
           {p.receipt.lines.map((ln) => {
@@ -1046,9 +1134,13 @@ function ReceiptSection({ id, p, admin, busy, ready, onSave, onSerials, onRemove
         </div>
       )}
       {recs.map((r, i) => (editing === i ? (
-        <ReceiptForm key={i} p={p} id={id} initial={r} fillRest={fillRest && i === last} busy={busy === "receipt"}
-                     onCancel={() => { setEditing(null); setFillRest(false); }}
-                     onSave={(b) => { onSave(i, fillRest && i === last ? { ...b, reclose: true } : b); setEditing(null); setFillRest(false); }} />
+        <ReceiptForm key={i} p={p} id={id} initial={r} fillRest={fillRest && i === last} busy={busy === "receipt"} resume={resume}
+                     onDraft={keep(i, fillRest && i === last)}
+                     onCancel={() => { done(); setEditing(null); setFillRest(false); }}
+                     onSave={async (b) => {
+                       if (!(await onSave(i, fillRest && i === last ? { ...b, reclose: true } : b))) return;
+                       done(); setEditing(null); setFillRest(false);
+                     }} />
       ) : (
         <div key={i} className="rounded-lg border border-border px-3 py-2">
           <div className="flex flex-wrap items-center gap-2">
@@ -1063,7 +1155,7 @@ function ReceiptSection({ id, p, admin, busy, ready, onSave, onSerials, onRemove
                 <SnToggle count={r.lines.reduce((n, ln) => n + snCount(ln.serials), 0)} need={r.lines.reduce((n, ln) => n + Math.ceil(ln.qty), 0)}
                           open={snEdit === i} disabled={!!busy} onClick={() => setSnEdit(snEdit === i ? null : i)} />
               )}
-              {!p.dropped && <button type="button" className={BTN} disabled={!!busy} onClick={() => { setFillRest(false); setEditing(i); }}>수정</button>}
+              {!p.dropped && <button type="button" className={BTN} disabled={!!busy} onClick={() => { setResume(undefined); setFillRest(false); setEditing(i); }}>수정</button>}
               {admin && !p.dropped && <button type="button" className={BTN} disabled={!!busy}
                                 onClick={() => void askConfirm({ title: `${recs.length > 1 ? `${i + 1}차 ` : ""}입고 기록을 지울까요?`, message: "품목별 받은 수량·사진·S/N 이 함께 지워집니다. 변경 이력에는 남습니다.", confirmLabel: "지우기", danger: true })
                                   .then((ok) => { if (ok) onRemove(i); })}>지우기</button>}
@@ -1096,17 +1188,18 @@ function ReceiptSection({ id, p, admin, busy, ready, onSave, onSerials, onRemove
       {/* 입고 기록은 한 건(사용자 2026-11-17) — 처음엔 [입고 기록 작성], 그 뒤 더 받을 것이 생기면(품목 추가·덜 받음) 새 기록 대신
           [남은 품목 받기]로 그 기록을 고쳐 수량을 채운다. 예전에 나눠 남긴 기록(2차 …)은 그대로 보인다 */}
       {!p.receipt.done && !p.dropped && (recs.length === 0 ? (adding ? (
-        <ReceiptForm p={p} id={id} busy={busy === "receipt"} onCancel={() => setAdding(false)}
-                     onSave={(b) => { onSave(null, b); setAdding(false); }} />
+        <ReceiptForm p={p} id={id} busy={busy === "receipt"} resume={resume} onDraft={keep(null, false)}
+                     onCancel={() => { done(); setAdding(false); }}
+                     onSave={async (b) => { if (await onSave(null, b)) { done(); setAdding(false); } }} />
       ) : (
-        <button type="button" className={PRIMARY} disabled={!ready || !!busy} onClick={() => setAdding(true)}>입고 기록 작성</button>
+        <button type="button" className={PRIMARY} disabled={!ready || !!busy} onClick={() => { setResume(undefined); setAdding(true); }}>입고 기록 작성</button>
       )) : editing === null && (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/[0.06] px-3 py-2 text-[12.5px]">
           <span className="text-amber-800 dark:text-amber-200">
             아직 받을 품목이 있습니다({p.receipt.lines.filter((ln) => ln.ordered != null && ln.received < ln.ordered)
               .map((ln) => `${ln.name} ${(ln.ordered ?? 0) - ln.received}개`).join(", ") || "남은 수량"}). 들어오면 입고 기록을 고쳐 수량을 채우세요.
           </span>
-          <button type="button" className={cn(PRIMARY, "ml-auto")} disabled={!!busy} onClick={() => { setFillRest(true); setEditing(last); }}>
+          <button type="button" className={cn(PRIMARY, "ml-auto")} disabled={!!busy} onClick={() => { setResume(undefined); setFillRest(true); setEditing(last); }}>
             남은 품목 받기 (입고 기록 고치기)
           </button>
         </div>
@@ -1115,14 +1208,18 @@ function ReceiptSection({ id, p, admin, busy, ready, onSave, onSerials, onRemove
   );
 }
 
-function ReceiptForm({ id, p, initial, fillRest = false, busy, onSave, onCancel }: {
+function ReceiptForm({ id, p, initial, fillRest = false, busy, resume, onDraft, onSave, onCancel }: {
   id: number; p: PurchaseRow; initial?: PurchaseRow["receipt"]["records"][number]; busy: boolean;
   /** [남은 품목 받기] — 그 기록의 수량에 아직 안 받은 수량을 더해 채워 연다(사용자 2026-11-17, 입고 기록 한 건) */
   fillRest?: boolean;
+  /** [이어서 쓰기] — 실수로 닫히기 전에 적던 내용 */
+  resume?: ReceiptBody;
+  /** 적은 내용이 바뀔 때마다(시작값과 같으면 null) — 이 PC 브라우저에 보관 */
+  onDraft: (b: ReceiptBody | null) => void;
   onSave: (b: ReceiptBody) => void; onCancel: () => void;
 }) {
   // 기본 수량 = 남은 수량(새 기록) · 그 기록의 수량(수정) · 그 기록 수량 + 남은 수량(남은 품목 받기)
-  const [b, setB] = useState<ReceiptBody>(() => ({
+  const [start] = useState<ReceiptBody>(() => ({
     date: initial?.date ?? todayIso(), carrier: initial?.carrier ?? "", tracking: initial?.tracking.join(" ") ?? "",
     receiver: initial?.receiver ?? "", location: initial?.location ?? "", note: initial?.note ?? "", final: initial?.final ?? false,
     lines: p.receipt.lines.map((ln) => {
@@ -1132,6 +1229,14 @@ function ReceiptForm({ id, p, initial, fillRest = false, busy, onSave, onCancel 
       return { line_no: ln.line_no, qty, photos: mine?.photos ?? [], serials: mine?.serials ?? [] };
     }),
   }));
+  const [b, setB] = useState<ReceiptBody>(() => resume ?? start);
+  // 저장 안 한 내용 — 닫을 때 묻고(useUnsaved), 적는 대로 보관(onDraft)
+  const dirty = JSON.stringify(b) !== JSON.stringify(start);
+  const saveRef = useRef<UnsavedSave>(null);   // [입고 기록 저장]과 같은 일 — 아래에서 필수 칸을 본 뒤 채운다
+  useUnsaved("입고 기록", dirty, () => saveRef.current?.() ?? false);
+  const report = useRef(onDraft);
+  useEffect(() => { report.current = onDraft; }, [onDraft]);
+  useEffect(() => { report.current(dirty ? b : null); }, [b, dirty]);
   const [uploading, setUploading] = useState<number | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [snOpen, setSnOpen] = useState<number | null>(null);
@@ -1161,6 +1266,9 @@ function ReceiptForm({ id, p, initial, fillRest = false, busy, onSave, onCancel 
   // 필수 — 입고일, 품목 수량(한 줄 이상, '입고 완료'만 남길 때는 없어도 됨 — 서버와 같게)
   const anyQty = b.lines.some((x) => (x.qty ?? 0) > 0);
   const qtyOk = anyQty || b.final;
+  const canSave = !busy && !!b.date && qtyOk && uploading == null;
+  const submit = () => onSave({ ...b, lines: b.lines.map((x) => ({ ...x, serials: x.serials.map((v) => v.trim()).filter(Boolean) })) });
+  useEffect(() => { saveRef.current = canSave ? submit : null; });
   return (
     <div className="space-y-3 rounded-xl border border-dashed border-accent/50 bg-accent/[0.03] px-4 py-3.5">
       <div className="grid grid-cols-2 gap-x-3 gap-y-2.5 text-[12px] text-foreground-muted">
@@ -1212,9 +1320,9 @@ function ReceiptForm({ id, p, initial, fillRest = false, busy, onSave, onCancel 
       {err && <p className="text-[12px] text-red-600">{err}</p>}
       <div className="flex justify-end gap-1.5">
         {(!b.date || !qtyOk) && <span className="mr-auto self-center text-[12px] font-semibold text-red-600 dark:text-red-400">빨간 칸(필수)을 채워야 저장됩니다</span>}
-        <button type="button" className={BTN} onClick={onCancel}>취소</button>
-        <button type="button" className={PRIMARY} disabled={busy || !b.date || !qtyOk || uploading != null}
-                onClick={() => onSave({ ...b, lines: b.lines.map((x) => ({ ...x, serials: x.serials.map((v) => v.trim()).filter(Boolean) })) })}>
+        <button type="button" className={BTN}
+                onClick={() => { if (!dirty) onCancel(); else void askConfirm({ title: "적은 입고 기록을 버리고 닫을까요?", confirmLabel: "버리고 닫기", cancelLabel: "계속 작성", danger: true }).then((ok) => { if (ok) onCancel(); }); }}>취소</button>
+        <button type="button" className={PRIMARY} disabled={!canSave} onClick={submit}>
           {busy ? "저장 중…" : initial ? "입고 기록 고치기" : "입고 기록 저장"}
         </button>
       </div>
@@ -1228,7 +1336,10 @@ function SerialEditor({ record, busy, onSave, onCancel }: {
   onSave: (lines: { line_no: number; serials: string[] }[]) => void; onCancel: () => void;
 }) {
   const lines = record.lines.filter((ln) => ln.qty > 0);
-  const [v, setV] = useState<Record<number, string[]>>(() => Object.fromEntries(lines.map((ln) => [ln.line_no, ln.serials ?? []])));
+  const [v0] = useState<Record<number, string[]>>(() => Object.fromEntries(lines.map((ln) => [ln.line_no, ln.serials ?? []])));
+  const [v, setV] = useState(v0);
+  const submit = () => onSave(lines.map((ln) => ({ line_no: ln.line_no, serials: (v[ln.line_no] ?? []).map((x) => x.trim()).filter(Boolean) })));
+  useUnsaved("S/N", JSON.stringify(v) !== JSON.stringify(v0), busy ? null : submit);
   return (
     <div className="mt-2 space-y-2 rounded-lg border border-dashed border-accent/50 bg-accent/[0.03] px-3 py-2">
       <p className="text-[12px] text-foreground-muted">S/N 을 한 칸에 하나씩 적습니다. 여러 줄을 복사해 붙여 넣으면 아래 칸으로 나눠 들어갑니다. 비운 칸은 미등록.</p>
@@ -1240,8 +1351,7 @@ function SerialEditor({ record, busy, onSave, onCancel }: {
       ))}
       <div className="flex justify-end gap-1.5">
         <button type="button" className={BTN} onClick={onCancel}>취소</button>
-        <button type="button" className={PRIMARY} disabled={busy}
-                onClick={() => onSave(lines.map((ln) => ({ line_no: ln.line_no, serials: (v[ln.line_no] ?? []).map((x) => x.trim()).filter(Boolean) })))}>
+        <button type="button" className={PRIMARY} disabled={busy} onClick={submit}>
           {busy ? "저장 중…" : "S/N 저장"}
         </button>
       </div>
@@ -1249,11 +1359,18 @@ function SerialEditor({ record, busy, onSave, onCancel }: {
   );
 }
 
+type InfoValue = { supplier: string; title: string; owner: string; note: string; reason: string; region: PurchaseRow["region"] };
+
+/** [기본 정보 수정] — 새 구매 건 작성과 같은 항목·순서(사용자 2026-11-18): 국내·해외 · 공급사 · 품목·건명 · 담당자 · 구매 사유 · 메모 */
 function InfoEditor({ p, busy, onSave }: {
-  p: PurchaseRow; busy: boolean; onSave: (v: { supplier: string; title: string; owner: string; note: string; region: PurchaseRow["region"] }) => void;
+  p: PurchaseRow; busy: boolean; onSave: (v: InfoValue) => void;
 }) {
+  const start: InfoValue = { supplier: p.supplier, title: p.title, owner: p.owner, note: p.note, reason: p.reason ?? "", region: p.region };
   const [edit, setEdit] = useState(false);
-  const [v, setV] = useState({ supplier: p.supplier, title: p.title, owner: p.owner, note: p.note, region: p.region });
+  const [v, setV] = useState<InfoValue>(start);
+  const canSave = !busy && !!v.supplier.trim();
+  const submit = () => { onSave(v); setEdit(false); };
+  useUnsaved("기본 정보", edit && JSON.stringify(v) !== JSON.stringify(start), canSave ? submit : null);
   if (!edit) {
     return (
       <div className="flex items-center gap-3 text-[12.5px] text-foreground-muted">
@@ -1261,30 +1378,39 @@ function InfoEditor({ p, busy, onSave }: {
           <span className="mr-2 rounded bg-foreground/[0.06] px-1.5 py-0.5 text-[11px] font-semibold text-foreground-muted">메모</span>
           {p.note || <span className="text-foreground-subtle">없음</span>}
         </span>
-        {!p.dropped && <button type="button" className={BTN} onClick={() => setEdit(true)}>기본 정보 수정</button>}
+        {!p.dropped && <button type="button" className={BTN} onClick={() => { setV(start); setEdit(true); }}>기본 정보 수정</button>}
       </div>
     );
   }
+  const locked = !!p.po.no;                     // 발주서를 발행하면 국내·해외는 못 바꾼다(양식·통화)
   return (
-    <div className="grid grid-cols-2 gap-2 rounded-lg border border-dashed border-border p-3">
-      <label className={cn("grid gap-1", REQ_SCOPE)}><ReqLabel>공급사</ReqLabel>
-        <input {...REQ} className={cn(INPUT, "font-semibold")} value={v.supplier} placeholder="공급사" onChange={(e) => setV({ ...v, supplier: e.target.value })} /></label>
-      <label className="grid gap-1"><span className="text-[12px] text-foreground-muted">담당자</span>
-        <input className={INPUT} value={v.owner} placeholder="담당자" onChange={(e) => setV({ ...v, owner: e.target.value })} /></label>
-      <input className={cn(INPUT, "col-span-2")} value={v.title} placeholder="품목·건명" onChange={(e) => setV({ ...v, title: e.target.value })} />
-      <textarea className={cn(INPUT, "col-span-2 h-16 py-2")} value={v.note} placeholder="메모" onChange={(e) => setV({ ...v, note: e.target.value })} />
-      {!p.po.no && (
-        <div className="col-span-2 flex items-center gap-2 text-[12.5px]">
-          국내 · 해외
+    <div className="grid gap-3 rounded-lg border border-dashed border-border p-4 text-[13px]">
+      <div className="grid gap-1">
+        <span className="font-medium">국내 · 해외</span>
+        <div className="flex gap-2">
           {(["domestic", "overseas"] as const).map((k) => (
-            <label key={k} className="inline-flex items-center gap-1"><input type="radio" checked={v.region === k} onChange={() => setV({ ...v, region: k })} />{REGION_LABEL[k]}</label>
+            <button key={k} type="button" disabled={locked && v.region !== k} onClick={() => setV({ ...v, region: k })} aria-pressed={v.region === k}
+                    className={cn("h-9 flex-1 rounded-lg border text-[13px] font-semibold disabled:opacity-40",
+                      v.region === k ? "border-accent bg-accent/10 text-accent" : "border-border text-foreground-muted")}>
+              {REGION_LABEL[k]}
+            </button>
           ))}
-          <span className="text-[11.5px] text-foreground-subtle">(발주서를 발행하면 바꿀 수 없습니다)</span>
         </div>
-      )}
-      <div className="col-span-2 flex justify-end gap-1.5">
+        {locked && <span className="text-[11.5px] text-foreground-subtle">발주서를 발행한 건은 국내·해외를 바꿀 수 없습니다(발주서 양식·통화가 달라짐).</span>}
+      </div>
+      <label className={cn("grid gap-1", REQ_SCOPE)}><ReqLabel>공급사</ReqLabel>
+        <input {...REQ} className={cn(INPUT, "font-semibold")} value={v.supplier} placeholder="예: ㈜크레켄" onChange={(e) => setV({ ...v, supplier: e.target.value })} /></label>
+      <label className="grid gap-1">
+        <span>품목·건명 <span className="text-[12px] font-normal text-foreground-subtle">(선택)</span></span>
+        <input className={INPUT} value={v.title} placeholder="예: M8 패널마운트 커넥터" onChange={(e) => setV({ ...v, title: e.target.value })} />
+      </label>
+      <label className="grid gap-1">담당자<input className={INPUT} value={v.owner} onChange={(e) => setV({ ...v, owner: e.target.value })} /></label>
+      <label className="grid gap-1">구매 사유<textarea className={cn(INPUT, "h-20 py-2")} maxLength={1000} value={v.reason}
+                placeholder="예: ○○ 고객사 납품용 재고 확보" onChange={(e) => setV({ ...v, reason: e.target.value })} /></label>
+      <label className="grid gap-1">메모<textarea className={cn(INPUT, "h-28 py-2")} value={v.note} onChange={(e) => setV({ ...v, note: e.target.value })} /></label>
+      <div className="flex justify-end gap-1.5">
         <button type="button" className={BTN} onClick={() => setEdit(false)}>취소</button>
-        <button type="button" className={PRIMARY} disabled={busy || !v.supplier.trim()} onClick={() => { onSave(v); setEdit(false); }}>저장</button>
+        <button type="button" className={PRIMARY} disabled={!canSave} onClick={submit}>저장</button>
       </div>
     </div>
   );
@@ -1319,6 +1445,9 @@ function TermsEditor({ p, busy, onSave }: {
   const used = rows.filter((r) => Number(r.pct) > 0);
   const sum = Math.round(used.reduce((s, r) => s + Number(r.pct), 0) * 1000) / 1000;
   const okSum = Math.abs(sum - 100) < 0.01;
+  const canSave = !busy && used.length > 0 && okSum;
+  const submit = () => onSave(used.map((r) => ({ label: r.label, pct: Number(r.pct), when: r.when.trim(), expected_date: r.expected_date || null })));
+  useUnsaved("결제 조건", editing && JSON.stringify(rows) !== JSON.stringify(termRows(saved)), canSave ? submit : null);
   const setRow = (i: number, patch: Partial<TermDraft>) => setRows((xs) => xs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
   const amountOf = (r: TermDraft) => {
     const k = used.indexOf(r);
@@ -1394,8 +1523,7 @@ function TermsEditor({ p, busy, onSave }: {
         )}
         <span className={cn("ml-auto", okSum ? "text-foreground-muted" : "font-semibold text-red-600")}>합계 {sum}%{okSum ? "" : " — 100% 가 되게"}</span>
         {saved.length > 0 && <button type="button" className={secondaryBtn} disabled={busy} onClick={() => { setRows(termRows(saved)); setEditing(false); }}>취소</button>}
-        <button type="button" className={primaryBtn} disabled={busy || !used.length || !okSum}
-                onClick={() => onSave(used.map((r) => ({ label: r.label, pct: Number(r.pct), when: r.when.trim(), expected_date: r.expected_date || null })))}>
+        <button type="button" className={primaryBtn} disabled={!canSave} onClick={submit}>
           <Icon name="check" className="h-4 w-4" /> 결제 조건 저장
         </button>
       </div>

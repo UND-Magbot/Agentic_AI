@@ -3,6 +3,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { askConfirm } from "@/components/shared/ui/confirm-host";
 import { Icon } from "@/components/shared/ui/icon";
 import { GroupHead } from "@/components/domains/sales/deal-flow";
 import { INPUT, Muted, todayIso, UnitStateBadge } from "@/components/domains/sales/deal-format";
@@ -637,13 +638,20 @@ function CaseRow({ c, onSaved }: { c: AsCase; onSaved: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // 진행은 버튼으로만(사용자 2026-10-22): 접수 → [A/S 들어감 확인] → 진행 중 → [A/S 완료] → 완료
-  const [asking, setAsking] = useState<"진행 중" | "완료" | null>(null);
+  // 묻는 것은 UND Cortex 팝업으로(사용자 2026-11-18 — 완료·취소 버튼은 모두 팝업으로 한 번 더)
   const move = async (status: "진행 중" | "완료") => {
+    const ok = await askConfirm(status === "진행 중"
+      ? { title: "이 제품이 A/S 에 들어갔나요?", confirmLabel: "네, A/S 진행 중으로",
+          message: c.charge === "유상"
+            ? "유상 A/S 입니다 — 영업이 수기로 쓴 A/S 견적서에 고객이 동의하고(필요하면 입금까지) 확인한 뒤 누르세요. 누르면 'A/S 진행 중'이 되고, 제품 영업 건 관리에서 이 건의 줄이 연하게 보입니다."
+            : "제품을 받아 A/S 를 시작했으면 누르세요. 누르면 'A/S 진행 중'이 되고, 제품 영업 건 관리에서 이 건의 줄이 연하게 보입니다." }
+      : { title: "A/S 가 끝났나요?", confirmLabel: "네, 완료",
+          message: "누르면 '완료'가 되고 오늘이 완료일로 남습니다. 기록은 A/S 목록에 그대로 남습니다. 조치 내용은 [내용 고치기]로 적어 두세요." });
+    if (!ok) return;
     setBusy(true);
     setError(null);
     try {
       await call(`/as-cases/${c.id}`, { status });
-      setAsking(null);
       onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : "저장하지 못했습니다.");
@@ -677,36 +685,17 @@ function CaseRow({ c, onSaved }: { c: AsCase; onSaved: () => void }) {
         {!edit && (
           <span className="ml-auto flex items-center gap-2">
             {c.status === "접수" && (
-              <button type="button" disabled={busy} onClick={() => setAsking("진행 중")}
+              <button type="button" disabled={busy} onClick={() => void move("진행 중")}
                       className="h-7 rounded-lg bg-accent px-3 text-[12px] font-semibold text-white disabled:opacity-60">A/S 들어감 확인</button>
             )}
             {c.status === "진행 중" && (
-              <button type="button" disabled={busy} onClick={() => setAsking("완료")}
+              <button type="button" disabled={busy} onClick={() => void move("완료")}
                       className="h-7 rounded-lg bg-emerald-600 px-3 text-[12px] font-semibold text-white disabled:opacity-60">A/S 완료</button>
             )}
             <button type="button" onClick={() => setEdit(true)} className="text-[12px] font-semibold text-foreground-muted hover:text-accent hover:underline">내용 고치기</button>
           </span>
         )}
       </div>
-      {asking && (
-        <div className="mt-2 rounded-lg border border-accent/40 bg-accent/[0.05] p-2.5">
-          <p className="font-semibold">{asking === "진행 중" ? "이 제품이 A/S 에 들어갔나요?" : "A/S 가 끝났나요?"}</p>
-          <p className="mt-0.5 text-[11.5px] text-foreground-muted">
-            {asking === "진행 중"
-              ? (c.charge === "유상"
-                ? "유상 A/S 입니다 — 영업이 수기로 쓴 A/S 견적서에 고객이 동의하고(필요하면 입금까지) 확인한 뒤 누르세요. 누르면 'A/S 진행 중'이 되고, 제품 영업 건 관리에서 이 건의 줄이 연하게 보입니다."
-                : "제품을 받아 A/S 를 시작했으면 누르세요. 누르면 'A/S 진행 중'이 되고, 제품 영업 건 관리에서 이 건의 줄이 연하게 보입니다.")
-              : "누르면 '완료'가 되고 오늘이 완료일로 남습니다. 기록은 A/S 목록에 그대로 남습니다. 조치 내용은 [내용 고치기]로 적어 두세요."}
-          </p>
-          <div className="mt-2 flex justify-end gap-2">
-            <button type="button" disabled={busy} onClick={() => setAsking(null)} className="h-7 rounded-lg border border-border px-3 text-[12px] font-semibold text-foreground-muted">취소</button>
-            <button type="button" disabled={busy} onClick={() => void move(asking)}
-                    className={cn("h-7 rounded-lg px-3 text-[12px] font-semibold text-white disabled:opacity-60", asking === "완료" ? "bg-emerald-600" : "bg-accent")}>
-              {busy ? "저장 중…" : asking === "진행 중" ? "네, A/S 진행 중으로" : "네, 완료"}
-            </button>
-          </div>
-        </div>
-      )}
       {!edit && error && <p className="mt-1 text-red-600">{error}</p>}
       {!edit && (
         <>

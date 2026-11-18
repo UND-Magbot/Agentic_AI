@@ -12,7 +12,7 @@
  * GET  /api/sales-deals/{id}/po/{index}      → 발주서 파일 보기·내려받기(바이트·헤더 그대로)
  * 수주 뒤 진행(거래명세서 → 결제 조건 → 회차별 입금 확인 → 출하):
  * GET  /api/sales-deals/{id}/statement/draft · /statement/file?fmt=pdf|xlsx · /ship-photos/{pid}
- * POST /api/sales-deals/{id}/statement · /terms · /confirm-term · /unconfirm-term (JSON) · /ship-photos (multipart)
+ * POST /api/sales-deals/{id}/statement · /statement/cancel · /terms · /terms/clear · /confirm-term · /unconfirm-term (JSON) · /ship-photos (multipart)
  * 수주 진행 탭(AI 대화): GET /{id}/order · POST /{id}/order/draft · /order/ship · /order/note (JSON)
  *                      · /order/agent (생각·단계·답을 NDJSON 으로 흘려 보냄 — 모으지 않고 그대로 잇는다)
  * 제품 시리얼·A/S(사용자 2026-10-19):
@@ -30,7 +30,7 @@ export const runtime = "nodejs";
 const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:8002";
 const TOKEN_COOKIE = "und_cortex_token";
 const BASE = "/v1/sales-deals";
-const ACTIONS = new Set(["won", "rental-return", "rental-start", "invoices", "payments", "paid-full", "shipments", "shipment-edit", "remove", "review", "statement", "terms", "confirm-term", "unconfirm-term", "drop", "meeting", "reset-to-quote",
+const ACTIONS = new Set(["won", "rental-return", "rental-start", "invoices", "payments", "paid-full", "shipments", "shipment-edit", "remove", "review", "statement", "terms", "confirm-term", "unconfirm-term", "drop", "meeting", "reset-to-quote", "info",
   // 입금 예정일 연장 — 관리자 바로 · 일반 직원 요청(사용자 2026-10-13)
   "due-extend", "due-request"]);
 // 파일을 올리는 동작 — 본문·경계를 그대로 넘긴다
@@ -145,7 +145,7 @@ export async function POST(req: NextRequest, { params }: Params) {
   const isOrder = path.length === 3 && /^\d+$/.test(path[0]) && path[1] === "order";
   if (isOrder && !["draft", "note", "agent", "ship"].includes(path[2])) return notFound();
   // 리스트에서 체크한 건들 삭제(JSON {ids}, 관리자) · 담당자 이니셜 저장
-  const isBatch = path.length === 1 && (path[0] === "delete" || path[0] === "initials");
+  const isBatch = path.length === 1 && (path[0] === "delete" || path[0] === "initials" || path[0] === "new");   // new = 새 건(뼈대, 2026-11-18)
   const isUpload = (path.length === 2 && /^\d+$/.test(path[0]) && UPLOADS.has(path[1]))
     || (path.length === 1 && path[0] === "as-photos");          // A/S 접수서 사진(사용자 2026-10-19)
   const isPoCompare = path.length === 4 && /^\d+$/.test(path[0]) && path[1] === "po" && /^\d+$/.test(path[2]) && path[3] === "compare";
@@ -160,7 +160,10 @@ export async function POST(req: NextRequest, { params }: Params) {
     || (path.length === 3 && /^\d+$/.test(path[0]) && path[1] === "rental" && path[2] === "serials")
     || (path.length === 1 && (path[0] === "as-cases" || path[0] === "warranty-policies"))
     || (path.length === 2 && path[0] === "as-cases" && (/^\d+$/.test(path[1]) || path[1] === "delete" || path[1] === "batch"));   // 지우기는 관리자(사용자 2026-10-22)
-  const ok = path.length === 0 || isUpload || isOrder || isBatch || isPoCompare || isQuoteConfirm || isDecide || isUnits
+  // 앞 단계로 되돌리기 — 거래명세서 발급 취소 · 결제 조건 지우기(사용자 2026-11-18)
+  const isUndo = path.length === 3 && /^\d+$/.test(path[0])
+    && ((path[1] === "statement" && path[2] === "cancel") || (path[1] === "terms" && path[2] === "clear"));
+  const ok = path.length === 0 || isUpload || isOrder || isBatch || isPoCompare || isQuoteConfirm || isDecide || isUnits || isUndo
     || (path.length === 2 && /^\d+$/.test(path[0]) && ACTIONS.has(path[1]));
   if (!ok) return notFound();
   const tok = await token();

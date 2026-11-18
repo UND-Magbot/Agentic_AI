@@ -5,9 +5,9 @@
 import { useCallback, useEffect, useState } from "react";
 import type { DealFocus } from "@/components/domains/sales/deal-detail";
 import { DealList } from "@/components/domains/sales/deal-list";
-import type { DealBiz, DealListData } from "@/lib/shared/sales-deals";
+import type { DealBiz, DealListData, DealRow } from "@/lib/shared/sales-deals";
 
-export function DealsTab({ biz, openDealId = null, openFocus, onMeeting, onOrder, onQuote }: {
+export function DealsTab({ biz, openDealId = null, openFocus, onMeeting, onOrder, onQuote, onRecommend }: {
   /** 열자마자 상세를 띄울 건(제품·A/S 탭에서 넘어올 때) */
   openDealId?: number | null;
   /** 그 건 상세에서 강조할 칸 */
@@ -15,6 +15,8 @@ export function DealsTab({ biz, openDealId = null, openFocus, onMeeting, onOrder
   /** 비우면 판매·대여 모두(제품 영업 건 관리 — 사용자 2026-10-30: 대여도 여기서) · sale·rental = 그것만 */
   biz?: DealBiz;
   onMeeting?: (proposalId: number) => void; onOrder?: (dealId: number) => void; onQuote?: (quoteId: number) => void;
+  /** '견적 전' 건의 [AI 제품 추천으로 시작 →](사용자 2026-11-18) */
+  onRecommend?: (deal: DealRow) => void;
 }) {
   const [data, setData] = useState<DealListData | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -46,5 +48,5 @@ export function DealsTab({ biz, openDealId = null, openFocus, onMeeting, onOrder
 
   if (error) return <p className="py-16 text-center text-[13px] text-foreground-muted">{error}</p>;
   if (!data) return <p className="py-16 text-center text-[13px] text-foreground-subtle">제품 영업 건을 불러오는 중…</p>;
-  return <DealList data={data} biz={biz} initialOpenId={openDealId} initialFocus={openFocus} onRefresh={() => void load()} onMeeting={onMeeting} onOrder={onOrder} onQuote={onQuote} />;
+  return <DealList data={data} biz={biz} initialOpenId={openDealId} initialFocus={openFocus} onRefresh={() => void load()} onMeeting={onMeeting} onOrder={onOrder} onQuote={onQuote} onRecommend={onRecommend} />;
 }

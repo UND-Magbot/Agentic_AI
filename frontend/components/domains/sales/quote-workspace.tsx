@@ -157,7 +157,7 @@ export function DownloadDialog({ urlFor, fileName, title, onClose, formats }: {
   return (
     <div className="fixed inset-0 z-40 grid place-items-center bg-black/30 p-4" onClick={busy ? undefined : onClose}>
       <div className="flex w-full max-w-lg flex-col gap-3 rounded-xl border border-border bg-surface p-5 shadow-xl" onClick={(e) => e.stopPropagation()}
-           role="dialog" aria-label="견적서 내려받기">
+           role="dialog" aria-modal="true" aria-label="견적서 내려받기">
         <div>
           <h3 className="text-[15px] font-semibold text-foreground">{title}</h3>
           <p className="text-[12px] text-foreground-subtle">형식을 고르고, 필요하면 파일 이름을 바꿔 저장하세요.</p>
@@ -212,7 +212,7 @@ export function PreviewDialog({ url: src0, title, sub, onClose, onLoaded, movabl
     <div className={cn("fixed inset-0 z-50 grid place-items-center p-4", movable ? "pointer-events-none" : "bg-black/40")} onClick={movable ? undefined : onClose}>
       <div className={cn("flex h-[92svh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-xl",
                          movable && "pointer-events-auto shadow-[0_30px_70px_-20px_rgba(15,30,70,0.6)]")} onClick={(e) => e.stopPropagation()}
-           role="dialog" aria-label={title} style={movable ? drag.style : undefined}>
+           role="dialog" aria-modal={!movable} aria-label={title} style={movable ? drag.style : undefined}>
         <div className={cn("flex items-center gap-2 border-b border-border px-4 py-2.5", movable && drag.handleClass)} {...(movable ? drag.handle : {})}
              title={movable ? "잡고 끌어 옮기기 · 두 번 누르면 가운데로" : undefined}>
           <h3 className="text-[14px] font-semibold text-foreground">{title}</h3>
@@ -563,6 +563,11 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
   const [wonIssueAsk, setWonIssueAsk] = useState(false);
   // 수주한 견적서를 고칠 때 발급한 거래명세서도 다시 발급할지(같은 번호로 교체 / 새 번호 / 견적서만, 사용자 2026-11-17)
   const [stAsk, setStAsk] = useState(false);
+  // [번호 정해서 발행](사용자 2026-11-18 — '다른 이름으로 저장'처럼): 적은 번호 · 그 번호가 이 견적서에 이미 있으면 덮어쓸지 묻기
+  const [noOpen, setNoOpen] = useState(false);
+  const pickRef = useRef<{ doc_no: string; overwrite?: boolean } | null>(null);
+  const [noExists, setNoExists] = useState<{ message: string; mode?: "replace" | "new"; statement?: "same" | "new" | "keep" } | null>(null);
+  const lastIssue = useRef<{ mode?: "replace" | "new"; statement?: "same" | "new" | "keep" }>({});
   const [notice, setNotice] = useState<string | null>(null);
   // 입금 확인 때문에 막힌 발행 — 팝업으로 알리고 [예]면 그 영업 건의 입금 확인 칸으로 이동(사용자 2026-11-17: 직접 찾아가게 하지 말 것)
   const [payLock, setPayLock] = useState<{ message: string; dealId: number | null } | null>(null);
@@ -605,6 +610,7 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
       return await f();
     } catch (e) {
       if (e instanceof ApiError && e.code === "PAY_LOCKED") setPayLock({ message: e.message, dealId: e.dealId ?? q?.deal_id ?? null });
+      else if (e instanceof ApiError && e.code === "QUOTE_NO_EXISTS") setNoExists({ message: e.message, ...lastIssue.current });
       else setErr((e as Error).message);
       return null;
     } finally {
@@ -724,13 +730,23 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
       return;
     }
     setEnNote(null);
+    lastIssue.current = { mode, statement };
+    const pick = pickRef.current;              // [번호 정해서 발행]에서 적은 번호(없으면 자동 번호)
     const s = await run("발행 중", () => api<QuoteSession>(`/quotes/${id}/issue`, {
-      replace_won: mode === "replace", statement: mode === "replace" && (statement === "same" || statement === "new") ? statement : null }));
+      replace_won: mode === "replace", statement: mode === "replace" && (statement === "same" || statement === "new") ? statement : null,
+      ...(pick ? { doc_no: pick.doc_no, overwrite: !!pick.overwrite } : {}) }));
+    if (s) pickRef.current = null;
     if (s) {
       load(s);
       rememberContact(s.state.form);
-      if (s.replaced_won) {                     // 수주한 견적서를 같은 번호로 고침 — 그 판을 내려받기
-        const wh = s.history.find((x) => x.quote_no === s.won_issue?.quote_no) ?? s.history[s.history.length - 1];
+      if (s.replaced_rev != null && !s.replaced_won) {   // 이 견적서에서 낸 번호를 덮어씀 — 그 판을 내려받기
+        const oh = s.history.find((x) => x.revision === s.replaced_rev);
+        if (oh) setSaving({ revision: oh.revision, fileName: oh.file_name, title: `${oh.quote_no ?? ""} 를 덮어썼습니다 · 내려받기` });
+        return;
+      }
+      if (s.replaced_won) {                     // 수주한 견적서를 고침(같은 번호 또는 정한 번호) — 그 판을 내려받기
+        const wh = (s.replaced_rev != null ? s.history.find((x) => x.revision === s.replaced_rev) : undefined)
+          ?? s.history.find((x) => x.quote_no === s.won_issue?.quote_no) ?? s.history[s.history.length - 1];
         const sr = s.statement_reissued;
         const stLine = sr ? `거래명세서도 ${sr.same_no ? "같은 번호" : "새 번호"}(${sr.no})로 다시 발급했습니다 — 수주 진행 화면에서 받을 수 있습니다.` : "";
         setNotice(s.sn_note || stLine ? ["수주한 견적서를 고쳤습니다.", stLine, s.sn_note ?? ""].filter(Boolean).join(" ") : null);
@@ -1315,7 +1331,12 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
                     title={dirty ? "먼저 변경을 저장해 주세요" : "엑셀에서 고쳤거나 따로 만든 견적서 파일로 발행합니다(새 번호)"}>
               <Icon name="paperclip" className="h-4 w-4" /> 고친 파일로 발행
             </button>
-            <button type="button" className={primaryBtn} disabled={dirty || !!busy || blocked} onClick={() => void issue()}
+            {/* '다른 이름으로 저장'처럼 — 번호를 적어 발행(다음 번호 이어가기·다른 규칙·이 견적서에서 낸 번호 덮어쓰기, 사용자 2026-11-18) */}
+            <button type="button" className={secondaryBtn} disabled={dirty || !!busy || blocked} onClick={() => setNoOpen(true)}
+                    title={dirty ? "먼저 변경을 저장해 주세요" : "발행번호를 직접 정해 발행합니다"}>
+              <Icon name="edit" className="h-4 w-4" /> 번호 정해서 발행
+            </button>
+            <button type="button" className={primaryBtn} disabled={dirty || !!busy || blocked} onClick={() => { pickRef.current = null; void issue(); }}
                     title={q.problems.length ? "발행 전에 위의 확인할 것을 채워 주세요"
                       : hangul.some((c) => c.en == null && !c.keep) ? "한글 칸을 AI 가 영어로 바꾼 뒤 미리보기로 먼저 보여 드립니다"
                       : dirty ? "먼저 변경을 저장해 주세요" : ""}>
@@ -1397,6 +1418,21 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
                       b={{ label: "새 견적서로 발행", sub: "새 번호로 견적서 목록에만 추가 — 영업 건은 그대로", run: () => { setWonIssueAsk(false); void issue(false, "new"); } }}
                       onCancel={() => setWonIssueAsk(false)} />
       )}
+      {noOpen && (
+        <IssueNoDialog quoteId={q.id} won={q.won_issue?.quote_no ?? null}
+                       onCancel={() => setNoOpen(false)}
+                       onIssue={(docNo, mode) => { setNoOpen(false); pickRef.current = { doc_no: docNo }; void issue(false, mode); }} />
+      )}
+      <ConfirmDialog open={!!noExists} icon="help" variant="default" title="이미 발행한 번호입니다"
+                     description={<span className="block whitespace-pre-line rounded-lg bg-foreground/[0.04] px-3 py-2 text-foreground">{noExists?.message}</span>}
+                     confirmLabel="덮어쓰기" cancelLabel="아니요(번호 다시 정하기)"
+                     onClose={() => { setNoExists(null); pickRef.current = null; setNoOpen(true); }}
+                     onConfirm={() => {
+                       const a = noExists;
+                       setNoExists(null);
+                       if (pickRef.current) pickRef.current = { ...pickRef.current, overwrite: true };
+                       void issue(true, a?.mode ?? "new", a?.statement);
+                     }} />
       {stAsk && q.won_issue?.statement_no && (
         <ChoiceDialog title="거래명세서도 새 금액으로 다시 발급할까요?"
                       text={`이 건은 거래명세서(${q.won_issue.statement_no})를 이미 발급했습니다. 견적서를 고치면 명세서도 같은 품목·금액으로 맞출 수 있습니다. 공급받는자·발행자 이니셜은 그대로입니다.`}
@@ -1518,6 +1554,68 @@ function PricePicker({ disabled, onPick }: { disabled: boolean; onPick: (p: { mo
 }
 
 /** 두 가지 중 고르기(수주한 견적서 — 사용자 2026-11-16). onCancel 이 없으면 둘 중 하나는 꼭 고른다. */
+/** [번호 정해서 발행] — 발행번호를 적어 발행(사용자 2026-11-18, '다른 이름으로 저장'처럼). 기본값 = 다음 자동 번호.
+ *  수주한 건이면 수주한 견적서를 이 번호로 고칠지(수주 판이 이 번호로) 새 견적서로 낼지도 고른다. 적은 번호가 이 견적서에서 이미 낸
+ *  번호면 발행할 때 덮어쓸지 묻고, 다른 견적서·건에서 쓴 번호면 서버가 막는다. */
+function IssueNoDialog({ quoteId, won, onCancel, onIssue }: {
+  quoteId: number; won: string | null; onCancel: () => void; onIssue: (docNo: string, mode?: "replace" | "new") => void;
+}) {
+  const [info, setInfo] = useState<{ next: string | null; won_no: string | null; issued: { no: string; revision: number; issued_at: string }[] } | null>(null);
+  const [no, setNo] = useState("");
+  const [mode, setMode] = useState<"replace" | "new">("new");
+  useEffect(() => {
+    let alive = true;
+    api<{ next: string | null; won_no: string | null; issued: { no: string; revision: number; issued_at: string }[] }>(`/quotes/${quoteId}/next-no`)
+      .then((d) => { if (alive) { setInfo(d); setNo((x) => x || d.next || ""); } })
+      .catch(() => { if (alive) setInfo({ next: null, won_no: null, issued: [] }); });
+    return () => { alive = false; };
+  }, [quoteId]);
+  const ok = /^[A-Za-z0-9][A-Za-z0-9 ._()\-]{0,39}$/.test(no.trim());
+  const opt = (on: boolean) => cn("flex-1 rounded-lg border px-3 py-2 text-left text-[12.5px]", on ? "border-accent bg-accent/10" : "border-border hover:bg-foreground/5");
+  return (
+    <div role="dialog" aria-modal="true" aria-label="번호 정해서 발행" className="fixed inset-0 z-[70] grid place-items-center bg-black/30 px-4"
+         onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
+      <div className="anim-fade-in-up w-full max-w-[480px] rounded-2xl border border-border bg-surface-raised p-5 text-[13px] shadow-[0_30px_70px_-30px_rgba(15,30,70,0.55)]">
+        <h3 className="text-[15px] font-semibold">번호 정해서 발행</h3>
+        <p className="mt-1 text-[12.5px] leading-relaxed text-foreground-muted">
+          적은 번호로 발행합니다. 다음 번호로 이어 가거나 다른 규칙의 번호를 적을 수 있습니다. 이 견적서에서 이미 낸 번호를 적으면 덮어쓸지 묻습니다.
+        </p>
+        {won && (
+          <div className="mt-3 flex gap-2">
+            <button type="button" className={opt(mode === "replace")} onClick={() => setMode("replace")}>
+              <b>수주한 견적서({won}) 고치기</b>
+              <span className="block text-[11.5px] text-foreground-muted">이 번호의 견적서가 수주 견적서가 됩니다(영업 건 금액·품목 반영)</span>
+            </button>
+            <button type="button" className={opt(mode === "new")} onClick={() => setMode("new")}>
+              <b>새 견적서로 발행</b>
+              <span className="block text-[11.5px] text-foreground-muted">견적서 목록에만 추가 — 영업 건은 그대로</span>
+            </button>
+          </div>
+        )}
+        <label className="mt-3 grid gap-1">
+          <span className="text-[12px] font-semibold text-foreground-muted">발행번호</span>
+          <input value={no} autoFocus onChange={(e) => setNo(e.target.value)} maxLength={40} placeholder={info ? "예: QT-LU20261118-01" : "불러오는 중…"}
+                 className="h-10 rounded-lg border border-border bg-surface px-3 font-mono text-[14px] outline-none focus:border-accent" />
+        </label>
+        <ul className="mt-2 space-y-0.5 text-[11.5px] text-foreground-subtle">
+          {info?.next && <li>다음 자동 번호: <button type="button" className="font-mono text-accent hover:underline" onClick={() => setNo(info.next ?? "")}>{info.next}</button></li>}
+          {!!info?.issued.length && (
+            <li>이 견적서에서 낸 번호(적으면 덮어쓰기): {info.issued.map((x) => (
+              <button key={x.revision} type="button" className="mr-1.5 font-mono text-accent hover:underline" onClick={() => setNo(x.no)}>{x.no}</button>
+            ))}</li>
+          )}
+        </ul>
+        {no.trim() && !ok && <p className="mt-1 text-[12px] text-red-600">영문·숫자·-_.() 로 40자까지 적어 주세요.</p>}
+        <div className="mt-4 flex justify-end gap-2">
+          <button type="button" onClick={onCancel} className={cn("h-9 rounded-lg border border-border px-4 text-[13px]", POPUP_BTN_HOVER)}>취소</button>
+          <button type="button" disabled={!ok} onClick={() => onIssue(no.trim(), won ? mode : undefined)}
+                  className="h-9 rounded-lg bg-accent px-4 text-[13px] font-semibold text-white disabled:opacity-40">이 번호로 발행</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ChoiceDialog({ title, text, a, b, c, onCancel }: {
   title: string; text: string; onCancel?: () => void;
   a: { label: string; sub: string; run: () => void }; b: { label: string; sub: string; run: () => void };

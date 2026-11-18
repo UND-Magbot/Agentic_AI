@@ -26,6 +26,7 @@ export const STAGE_DONE: DealStage = "완료 (출하·완납)";
 export const STAGE_SHIP_ONLY: DealStage = "출하 기록만 (이전)";
 
 export const STAGE_TONE: Record<DealStage, string> = {
+  "견적 전": "bg-amber-500/12 text-amber-700 dark:text-amber-300",       // [+ 새 건 등록]으로 만든 뼈대 건(사용자 2026-11-18)
   "제품 추천 확정": "bg-teal-500/12 text-teal-700 dark:text-teal-300",
   견적: "bg-slate-500/12 text-slate-700 dark:text-slate-300",
   수주: "bg-blue-500/12 text-blue-700 dark:text-blue-300",
@@ -72,7 +73,7 @@ export const ACTION_LABEL: Record<string, string> = {
   import: "엑셀에서 이관", create: "새 건 등록", units: "S/N 등록", as_case: "A/S 접수", won: "수주 상태 변경", invoice: "세금계산서 기록", rental_return: "대여 회수", rental_start: "대여 시작일", as_case_delete: "A/S 기록 삭제",
   as_case_status: "A/S 진행",
   payment: "입금 확인", paid_full: "완납 표시 변경", shipment: "출하 기록", remove_invoice: "계산서 기록 삭제",
-  remove_payment: "입금 기록 삭제", remove_shipment: "출하 기록 삭제", review_done: "확인 완료", review_reopen: "확인 되돌리기",
+  remove_payment: "입금 기록 삭제", remove_shipment: "출하 기록 삭제", statement_cancel: "거래명세서 발급 취소", info: "고객사·프로젝트명 수정", pay_terms_clear: "결제 조건 지움", review_done: "확인 완료", review_reopen: "확인 되돌리기",
   po_upload: "발주서 첨부", remove_po_file: "발주서 삭제", po_compare: "발주서 품목 대조", shipment_edit: "출하 기록 수정",
   reset_to_quote: "견적 상태로 되돌림(테스트)",
   statement: "거래명세서 발급", pay_case: "결제 방식 선택", pay_terms: "결제 조건 저장", drop: "드랍", undrop: "드랍 되살리기", recommend: "제품 추천 확정", recommend_new: "제품 추천 확정", quote: "견적서 발행", quote_revision: "견적서 재발행", quote_upload: "견적서 첨부(외부 수정본)", quote_replace: "견적서 파일 교체", sn_rebind: "S/N 품목 다시 짝짓기",
@@ -109,7 +110,9 @@ export function eventDetail(e: DealEvent): string {
   if (e.action === "po_upload" || e.action === "remove_po_file") return String(d.filename ?? "");
   if (e.action === "statement") return `합계 ${won(d.total as number)}원${d.same_no ? " · 같은 번호로 교체" : d.again ? " · 다시 발급" : ""}${d.from_quote ? " (견적서 고치기)" : ""}`;
   if (e.action === "pay_case") return `→ ${PAY_CASE_KO[String(d.to)] ?? d.to}`;
-  if (e.action === "pay_terms") return Array.isArray(d.terms) ? d.terms.join(" · ") : "";
+  if (e.action === "pay_terms" || e.action === "pay_terms_clear") return Array.isArray(d.terms) ? d.terms.join(" · ") : "";
+  if (e.action === "info") return Object.entries(d).map(([k, v]) => `${k === "customer" ? "고객사" : "프로젝트명"}: ${(v as { from?: string })?.from ?? "-"} → ${(v as { to?: string })?.to ?? "-"}`).join(" · ");
+  if (e.action === "statement_cancel") return `${d.no ?? ""}${d.total != null ? ` · 합계 ${won(d.total as number)}원` : ""}`;
   if (e.action === "drop") return d.reason ? String(d.reason) : "";
   if (e.action === "remove_payment" && d.term != null) return `${Number(d.term) + 1}회차 입금 확인 취소`;
   if (e.action === "quote_replace") return `v${d.revision} · ${String(d.file ?? "")}`;

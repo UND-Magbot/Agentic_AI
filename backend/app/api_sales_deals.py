@@ -115,6 +115,20 @@ class DealIn(BaseModel):
         return self
 
 
+class SkeletonIn(BaseModel):
+    """[+ 새 건 등록] — 품목 없이 뼈대만(사용자 2026-11-18). 견적서는 상세의 [견적서 수기 작성]으로."""
+    customer: str = Field(min_length=1, max_length=200)
+    title: str = Field(min_length=1, max_length=200)
+    contact: str | None = Field(default=None, max_length=200)
+    owner: str | None = Field(default=None, max_length=50)
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class InfoIn(BaseModel):
+    customer: str = Field(min_length=1, max_length=200)
+    title: str = Field(min_length=1, max_length=200)
+
+
 class WonIn(BaseModel):
     won: bool | None
     date: dt.date | None = None
@@ -695,6 +709,35 @@ async def set_terms(deal_id: int, body: TermsIn, user: User = Depends(require_sa
     """결제 조건 — 선금·중도금·잔금 %(합 100)·시점·예정 입금일(사용자 2026-10-08)."""
     raw = [{**t.model_dump(), "expected_date": t.expected_date.isoformat() if t.expected_date else None} for t in body.terms]
     return await _act(db, deal_id, svc.set_terms(db, deal_id, user.id, raw, admin=is_admin(user)))
+
+
+@router.post("/new")
+async def create_skeleton(body: SkeletonIn, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    """[+ 새 건 등록] — 뼈대(고객사·프로젝트명·담당)만, 단계 '견적 전'(사용자 2026-11-18)."""
+    try:
+        new_id = await svc.create_skeleton(db, user.id, body.model_dump())
+    except svc.DealError as e:
+        await db.rollback()
+        raise _fail(e) from e
+    return await svc.get_deal(db, new_id, svc.kst_today())
+
+
+@router.post("/{deal_id}/info")
+async def set_info(deal_id: int, body: InfoIn, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    """고객사·프로젝트명 고치기 — 영업팀 누구나(사용자 2026-11-18). 견적서·명세서의 고객사명과는 연동하지 않는다."""
+    return await _act(db, deal_id, svc.set_info(db, deal_id, user.id, body.model_dump()))
+
+
+@router.post("/{deal_id}/terms/clear")
+async def clear_terms(deal_id: int, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    """결제 조건 지우기 → 정하기 전으로 — 영업팀 누구나(사용자 2026-11-18, 이력에 남음)."""
+    return await _act(db, deal_id, svc.clear_terms(db, deal_id, user.id))
+
+
+@router.post("/{deal_id}/statement/cancel")
+async def cancel_statement(deal_id: int, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    """거래명세서 발급 취소 → 발급 전으로 — 영업팀 누구나(사용자 2026-11-18, 취소한 발급본은 이력에 남음)."""
+    return await _act(db, deal_id, svc.cancel_statement(db, deal_id, user.id))
 
 
 @router.post("/{deal_id}/due-extend")

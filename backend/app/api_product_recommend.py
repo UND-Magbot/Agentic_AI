@@ -80,8 +80,9 @@ class ReviewIn(BaseModel):
 
 
 def _bad(e: pr.RecommendError) -> HTTPException:
-    if getattr(e, "code", None) == "PAY_LOCKED":   # 화면이 따로 처리하는 오류(입금 확인 잠금 → 팝업·입금 확인 칸으로 이동)
-        return HTTPException(status.HTTP_409_CONFLICT, detail={"message": str(e), "code": e.code, "deal_id": e.deal_id})
+    if getattr(e, "code", None) in ("PAY_LOCKED", "QUOTE_NO_EXISTS"):   # 화면이 따로 처리하는 오류(입금 확인 잠금·같은 번호 덮어쓰기 묻기)
+        return HTTPException(status.HTTP_409_CONFLICT, detail={"message": str(e), "code": e.code, "deal_id": e.deal_id,
+                                                               **getattr(e, "extra", {})})
     return HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
@@ -349,11 +350,16 @@ async def quote_draft(body: QuoteDraftIn, current_user: User = Depends(get_curre
 class QuoteManualIn(BaseModel):
     """[견적서 수기 작성] — AI 추천 없이 빈 견적서. form: 브라우저에 기억한 담당자 정보 등."""
     form: dict[str, str] = Field(default_factory=dict, max_length=20)
+    # [+ 새 건 등록]으로 만든 '견적 전' 영업 건의 상세에서 열었으면 그 건(사용자 2026-11-18)
+    deal_id: int | None = Field(default=None, ge=1)
 
 
 @router.post("/quotes/manual", status_code=status.HTTP_201_CREATED)
 async def quote_manual(body: QuoteManualIn, current_user: User = Depends(get_current_user)):
-    return await pr.quote_manual(user_id=current_user.id, form=body.form)
+    try:
+        return await pr.quote_manual(user_id=current_user.id, form=body.form, deal_id=body.deal_id)
+    except pr.RecommendError as e:
+        raise _bad(e) from e
 
 
 @router.get("/quotes/price-list")
@@ -405,6 +411,19 @@ class QuoteIssueIn(BaseModel):
     replace_won: bool = False
     # 수주한 견적서를 고칠 때 발급한 거래명세서도 — same 같은 번호로 교체 · new 새 번호 · None 그대로(사용자 2026-11-17)
     statement: Literal["same", "new"] | None = None
+    # [번호 정해서 발행](사용자 2026-11-18) — 비우면 자동 번호(수주한 견적서 고치기면 같은 번호). 이 견적서에서 낸 번호면
+    # overwrite=true 일 때만 그 판을 덮어쓴다(아니면 409 QUOTE_NO_EXISTS 로 묻는다)
+    doc_no: str | None = Field(default=None, max_length=40)
+    overwrite: bool = False
+
+
+@router.get("/quotes/{qid}/next-no")
+async def quote_next_no(qid: int, current_user: User = Depends(require_sales)):
+    """[번호 정해서 발행] 창 — 다음 자동 번호·수주한 번호·이 견적서에서 낸 번호들."""
+    try:
+        return await pr.quote_next_no(qid, user_id=current_user.id)
+    except pr.RecommendError as e:
+        raise _bad(e) from e
 
 
 @router.post("/quotes/{qid}/issue")
@@ -413,7 +432,8 @@ async def quote_issue(qid: int, body: QuoteIssueIn | None = None, current_user: 
     발행은 영업 건을 만들므로 영업부만(검증 QT-036, 2026-10-15) — 작성·미리보기는 그대로."""
     try:
         return await pr.quote_issue(qid, user_id=current_user.id, replace_won=bool(body and body.replace_won),
-                                    statement=body.statement if body else None)
+                                    statement=body.statement if body else None, doc_no=body.doc_no if body else None,
+                                    overwrite=bool(body and body.overwrite))
     except pr.RecommendError as e:
         raise _bad(e) from e
 
@@ -542,6 +562,8 @@ async def quote_preview(qid: int, current_user: User = Depends(get_current_user)
 class FinalizeIn(BaseModel):
     history: list[dict[str, str]] = Field(default_factory=list, max_length=200)
     memo: str = Field(default="", max_length=1000)
+    # '견적 전' 영업 건 상세의 [AI 제품 추천으로 시작]에서 연 추천이면 그 건 — 새 건 대신 그 건에 붙인다(사용자 2026-11-18)
+    deal_id: int | None = Field(default=None, ge=1)
 
 
 @router.post("/recommendations/{rid}/finalize", status_code=status.HTTP_201_CREATED)
@@ -550,7 +572,7 @@ async def finalize(rid: int, body: FinalizeIn, current_user: User = Depends(requ
     from .sales_deals.service import DealError
 
     try:
-        return await pr.finalize_recommendation(rid, user_id=current_user.id, history=body.history, memo=body.memo)
+        return await pr.finalize_recommendation(rid, user_id=current_user.id, history=body.history, memo=body.memo, deal_id=body.deal_id)
     except pr.RecommendError as e:
         raise _bad(e) from e
     except DealError as e:                     # 영업 건 번호 이니셜을 아직 안 정한 담당자 등 — 화면이 이니셜을 물어 다시 시도

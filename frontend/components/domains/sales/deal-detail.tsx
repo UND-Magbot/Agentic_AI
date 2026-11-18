@@ -3,15 +3,18 @@
 // 삭제·되돌리기·취소(기록을 지우는 일)는 관리자만 — 버튼을 관리자에게만 보이고, 실제 막는 것은 backend(사용자 2026-10-08).
 "use client";
 
-import { Fragment, createContext, useContext, useEffect, useRef, useState } from "react";
+import { Fragment, createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { DealMeetingDialog, hasMeeting } from "@/components/domains/sales/deal-meeting";
 import { DownloadDialog, PreviewDialog, savedContact } from "@/components/domains/sales/quote-workspace";
+import { QuotePurposeDialog } from "@/components/domains/sales/quote-purpose-dialog";
+import type { QuotePurpose } from "@/lib/shared/product-recommend";
 import { ConfirmDialog } from "@/components/shared/ui/confirm-dialog";
-import { askConfirm } from "@/components/shared/ui/confirm-host";
+import { askConfirm, type ConfirmAsk } from "@/components/shared/ui/confirm-host";
+import { clearDraft, confirmLeave, draftTime, readDraft, useUnsaved, writeDraft } from "@/components/shared/ui/unsaved";
 import { Icon } from "@/components/shared/ui/icon";
 import { QuoteUploadDialog } from "@/components/domains/sales/quote-upload-dialog";
 import { DealAsIntake } from "@/components/domains/sales/product-units-tab";
-import { ShipForm, TermsEditor, shipmentDraft } from "@/components/domains/sales/deal-flow";
+import { ShipForm, TERMS_CLEAR_ASK, TermsEditor, shipCancelAsk, shipmentDraft, statementCancelAsk, type ShipDraft } from "@/components/domains/sales/deal-flow";
 import { SnButton, SnPanel, flatName, loadSnView, shipmentSnLines } from "@/components/domains/sales/unit-register";
 import { DealRequestError, Field, INPUT, Muted, RegionBadge, StageChip, UnitStateBadge, dealRequest, eventDetail, eventLabel, quoteVer, shortDate, stamp, termExpect, todayIso, won } from "@/components/domains/sales/deal-format";
 import type { ApprovalAdmin, ApprovalRequest, DealEvent, DealRow, IssueUnits, DealShipment, PoCompare, ProductUnit } from "@/lib/shared/sales-deals";
@@ -28,7 +31,7 @@ const AdminCtx = createContext(false);
 /** 상세를 열며 강조할 칸 — pay: 견적서 발행이 입금 확인 때문에 막혀 넘어옴(quoteId = 돌아갈 견적서, 사용자 2026-11-17) */
 export type DealFocus = { what: "pay"; quoteId?: number | null };
 
-export function DealDetail({ row, admin = false, focus, onClose, onChanged, onMeeting, onOrder, onQuote }: {
+export function DealDetail({ row, admin = false, focus, onClose, onChanged, onMeeting, onOrder, onQuote, onRecommend }: {
   row: DealRow;
   focus?: DealFocus;
   /** 관리자 — 삭제·되돌리기·입금 확인 취소·드랍 되살리기 버튼을 보인다 */
@@ -41,6 +44,8 @@ export function DealDetail({ row, admin = false, focus, onClose, onChanged, onMe
   onOrder?: (dealId: number) => void;
   /** [견적서 고치기 →] — 견적서 탭 작업 화면으로(고쳐서 재발행 — 새 발행번호). */
   onQuote?: (quoteId: number) => void;
+  /** '견적 전' 건의 [AI 제품 추천으로 시작 →] — 제품 추천 탭을 이 건에 이어서 연다(확정하면 이 건에 붙음, 사용자 2026-11-18) */
+  onRecommend?: (deal: DealRow) => void;
 }) {
   const [deal, setDeal] = useState<DealRow>(row);
   const [busy, setBusy] = useState(false);
@@ -48,6 +53,7 @@ export function DealDetail({ row, admin = false, focus, onClose, onChanged, onMe
   const setError = (m: string | null) => setBlocked(m ? { message: m } : null);
   const [photo, setPhoto] = useState<string | null>(null);
   const [meetingOpen, setMeetingOpen] = useState(false);
+  const [naming, setNaming] = useState(false);
   /** 지금 AI 가 품목을 대조 중인 발주서 순번 */
   const [comparing, setComparing] = useState<number | null>(null);
   const reload = () => { dealRequest(`/${deal.id}`).then(setDeal).catch(() => {}); onChanged(); };
@@ -59,15 +65,20 @@ export function DealDetail({ row, admin = false, focus, onClose, onChanged, onMe
     return () => { alive = false; };
   }, [row.id]);
 
+  // 닫기(Esc·바깥 누름·✕) — 저장 안 한 작성 칸이 있으면 먼저 묻는다(사용자 2026-11-18)
+  const tryClose = () => { void confirmLeave().then((ok) => { if (ok) onClose(); }); };
+  const closeRef = useRef(tryClose);
+  useEffect(() => { closeRef.current = tryClose; });
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (document.querySelector('[aria-modal="true"], [role="alertdialog"]')) return;     // 확인 팝업 등이 떠 있으면 그것만 닫힘(2026-11-18)
       if (photo) setPhoto(null);
-      else onClose();
+      else closeRef.current();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [photo, onClose]);
+  }, [photo]);
 
   // S/N 을 새 판 품목으로 다시 짝지은 안내(수주 판 바꾸기·같은 번호 교체, QA 2026-11-16)
   const [snNote, setSnNote] = useState<string | null>(null);
@@ -140,6 +151,7 @@ export function DealDetail({ row, admin = false, focus, onClose, onChanged, onMe
   const steps: readonly string[] = STEPS;
   const done = [!!deal.proposal_id, !!deal.quote, !!deal.won, !!deal.statement, deal.shipped, deal.paid_full];
   const isShipOnly = deal.kind === "shipment_only";
+  const beforeQuote = deal.kind === "recommend";      // 견적서 발행 전(견적 전·제품 추천 확정)
   const free = freeRental;                  // 무상 대여(합계 0원) — 결제·입금 칸 없이 출하만
 
   // 패널 폭 — 리스트의 [담당] 칸 오른쪽 끝까지 넓힌다(사용자 2026-10-23). 화면이 좁아 그보다 작으면 원래 680px
@@ -156,7 +168,7 @@ export function DealDetail({ row, admin = false, focus, onClose, onChanged, onMe
 
   return (
     <AdminCtx.Provider value={admin}>
-    <div className="fixed inset-0 z-40 flex justify-end bg-black/25" onClick={onClose}>
+    <div className="fixed inset-0 z-40 flex justify-end bg-black/25" onClick={tryClose}>
       <aside role="dialog" aria-label={`${deal.display_no ?? deal.deal_no ?? "번호 미부여"} 상세`} onClick={(e) => e.stopPropagation()}
              className="scroll-thin h-full w-full max-w-[680px] overflow-y-auto bg-background shadow-2xl"
              style={panelW ? { maxWidth: panelW } : undefined}>
@@ -171,6 +183,12 @@ export function DealDetail({ row, admin = false, focus, onClose, onChanged, onMe
               <p className="mt-0.5 flex items-center gap-1.5 text-[13px] text-foreground-muted">
                 {deal.quote && <RegionBadge overseas={deal.quote.currency === "USD"} className="py-0.5" />}
                 <span className="min-w-0 truncate">{deal.title}</span>
+                {!isShipOnly && (
+                  <button type="button" onClick={() => setNaming(true)} title="고객사·프로젝트명 고치기"
+                          className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[12px] text-foreground-subtle hover:bg-foreground/8 hover:text-accent">
+                    <Icon name="edit" className="h-3.5 w-3.5" /> 이름 고치기
+                  </button>
+                )}
               </p>
               {!deal.imported && deal.kind !== "shipment_only" && (
                 <button type="button" onClick={() => (deal.proposal_id && onMeeting ? onMeeting(deal.proposal_id) : setMeetingOpen(true))}
@@ -182,7 +200,7 @@ export function DealDetail({ row, admin = false, focus, onClose, onChanged, onMe
             </div>
             <div className="flex shrink-0 items-center gap-2">
               <StageChip stage={deal.stage} version={quoteVer(deal.stage, deal.quote?.revision)} className="px-2.5 py-1" />
-              <button type="button" onClick={onClose} aria-label="닫기"
+              <button type="button" onClick={tryClose} aria-label="닫기"
                       className="grid h-8 w-8 place-items-center rounded-lg text-foreground-muted hover:bg-foreground/8">✕</button>
             </div>
           </div>
@@ -216,7 +234,7 @@ export function DealDetail({ row, admin = false, focus, onClose, onChanged, onMe
                 ))}
               </ul>
               {reviews.length > 0 && (
-                <button type="button" disabled={busy} onClick={() => act("review", { done: true })}
+                <button type="button" disabled={busy} onClick={() => void askConfirm({ title: "이관 내용 확인 완료로 기록할까요?", confirmLabel: "확인 완료" }).then((ok) => { if (ok) void act("review", { done: true }); })}
                         className="mt-2 rounded-lg border border-sky-500/40 px-3 py-1.5 text-[12.5px] font-semibold text-sky-700 hover:bg-sky-500/10 dark:text-sky-300">
                   ✓ 확인 완료 (이관 내용 맞음)
                 </button>
@@ -226,12 +244,14 @@ export function DealDetail({ row, admin = false, focus, onClose, onChanged, onMe
           {deal.review_done && deal.review_alerts.length > 0 && (
             <p className="-mt-3 text-[12px] text-foreground-subtle">
               이관 확인 완료됨 ·{" "}
-              <button type="button" className="underline" disabled={busy} onClick={() => act("review", { done: false })}>되돌리기</button>
+              <button type="button" className="underline" disabled={busy} onClick={() => void askConfirm({ title: "이관 확인 완료를 되돌릴까요?", confirmLabel: "되돌리기" }).then((ok) => { if (ok) void act("review", { done: false }); })}>되돌리기</button>
             </p>
           )}
 
           {!isShipOnly && <DropBlock deal={deal} busy={busy} act={act} />}
-          {!isShipOnly && !deal.dropped && <WonBlock deal={deal} busy={busy} act={act} uploadPo={uploadPo} comparing={comparing} comparePo={comparePo} />}
+          {naming && <DealInfoDialog deal={deal} onClose={() => setNaming(false)} onSaved={(d) => { setNaming(false); setDeal(d); onChanged(); }} />}
+          {/* 견적서 발행 전('견적 전'·'제품 추천 확정') 건은 수주 확인 칸을 두지 않는다 — 견적서부터(사용자 2026-11-18) */}
+          {!isShipOnly && !deal.dropped && deal.kind !== "recommend" && <WonBlock deal={deal} busy={busy} act={act} uploadPo={uploadPo} comparing={comparing} comparePo={comparePo} />}
           {isRental && !deal.dropped && <RentalTerms deal={deal} />}
           {!isShipOnly && deal.won && onOrder && deal.kind !== "sales_only" && (
             <button type="button" onClick={() => onOrder(deal.id)}
@@ -267,11 +287,15 @@ export function DealDetail({ row, admin = false, focus, onClose, onChanged, onMe
           {deal.kind === "recommend" && !deal.quotes?.length && !deal.dropped && deal.recommendation_id && onQuote && (
             <StartQuote recommendationId={deal.recommendation_id} onQuote={onQuote} />
           )}
-          {deal.statement && <StatementDoc deal={deal} />}
+          {deal.kind === "recommend" && !deal.recommendation_id && !deal.dropped && onQuote && (
+            <StartManualQuote dealId={deal.id} onQuote={onQuote} onRecommend={onRecommend ? () => onRecommend(deal) : undefined} />
+          )}
+          {deal.statement && <StatementDoc deal={deal} busy={busy} act={act} />}
 
           {focus?.what === "pay" && !free && !isShipOnly && <PayFocusNote deal={deal} quoteId={focus.quoteId ?? null} onQuote={onQuote} />}
           {/* 무상 대여(합계 0원, 사용자 2026-10-30) — 받을 돈이 없어 결제 회차·입금 칸 없음 */}
-          {free ? null : !isShipOnly && deal.flow?.terms.length ? <TermsView deal={deal} busy={busy} act={act} /> : !isShipOnly && (
+          {/* 견적서 발행 전(견적 전·제품 추천 확정)은 결제·입금·출하 칸을 두지 않는다 — 견적서부터(사용자 2026-11-18) */}
+          {free || beforeQuote ? null : !isShipOnly && deal.flow?.terms.length ? <TermsView deal={deal} busy={busy} act={act} /> : !isShipOnly && (
             <Section title="결제 회차">
               {deal.pay_terms.length ? (
                 <ul className="flex flex-wrap gap-2">
@@ -294,8 +318,8 @@ export function DealDetail({ row, admin = false, focus, onClose, onChanged, onMe
           )}
 
           {!isShipOnly && <InvoiceHistory deal={deal} />}
-          {!isShipOnly && !free && <div id={`deal-pay-${deal.id}`} className="scroll-mt-28"><PaymentBlock deal={deal} busy={busy} act={act} /></div>}
-          <ShipmentBlock deal={deal} busy={busy} act={act} onPhoto={setPhoto} onReload={reload} editReq={shipEditReq} />
+          {!isShipOnly && !free && !beforeQuote && <div id={`deal-pay-${deal.id}`} className="scroll-mt-28"><PaymentBlock deal={deal} busy={busy} act={act} /></div>}
+          {!beforeQuote && <ShipmentBlock deal={deal} busy={busy} act={act} onPhoto={setPhoto} onReload={reload} editReq={shipEditReq} />}
           <ConfirmDialog open={!!blocked} icon="help" variant="default" title={blocked?.title ?? "처리하지 못했습니다"}
                          description={<>
                            <span className="block whitespace-pre-line rounded-lg bg-foreground/[0.04] px-3 py-2 text-foreground">{blocked?.message}</span>
@@ -350,8 +374,12 @@ export function DealDetail({ row, admin = false, focus, onClose, onChanged, onMe
 function DropForm({ busy, act, onDone }: { busy: boolean; act: Act; onDone: () => void }) {
   const [reason, setReason] = useState("");
   return (
-    <FormBox onCancel={onDone} busy={busy} canSave={!busy}
-             onSave={async () => { if (await act("drop", { dropped: true, reason: reason.trim() || null })) onDone(); }}>
+    <FormBox onCancel={onDone} busy={busy} canSave={!busy} label="드랍 사유"
+             onSave={async () => {
+               if (!(await askConfirm({ title: "이 건을 드랍할까요?", message: reason.trim() ? `사유: ${reason.trim()}` : "드랍한 건은 '드랍' 단계로 따로 모입니다. 나중에 [되살리기]로 되돌릴 수 있습니다.",
+                                        confirmLabel: "드랍", danger: true }))) return;
+               if (await act("drop", { dropped: true, reason: reason.trim() || null })) onDone();
+             }}>
       <Field label="드랍 사유 (선택) — 수주까지 못 간 건·진행을 접은 건은 '드랍' 단계로 따로 모입니다">
         <input value={reason} maxLength={200} onChange={(e) => setReason(e.target.value)} placeholder="예: 경쟁사 수주, 고객사 일정 무기한 연기" className={INPUT} />
       </Field>
@@ -369,7 +397,8 @@ function DropBlock({ deal, busy, act }: { deal: DealRow; busy: boolean; act: Act
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-zinc-400/50 bg-zinc-500/[0.06] px-4 py-2.5 text-[12.5px]">
         <b>드랍한 건</b>
         <span className="text-foreground-muted">{deal.drop_reason ? `사유: ${deal.drop_reason}` : "사유 없음"}</span>
-        <GhostBtn disabled={busy} onClick={() => act("drop", { dropped: false })}>되살리기</GhostBtn>{/* 영업팀 누구나(2026-11-17) */}
+        <GhostBtn disabled={busy} onClick={() => void askConfirm({ title: "드랍한 건을 되살릴까요?", message: "원래 단계로 돌아갑니다. 변경 이력에 남습니다.", confirmLabel: "되살리기" })
+          .then((ok) => { if (ok) void act("drop", { dropped: false }); })}>되살리기</GhostBtn>{/* 영업팀 누구나(2026-11-17) */}
       </div>
     );
   }
@@ -521,6 +550,12 @@ function TermsView({ deal, busy, act }: { deal: DealRow; busy: boolean; act: Act
                    </label>
                  )}
                  {!deal.dropped && <AddBtn onClick={() => setEditing(true)} disabled={busy}>결제 조건 고치기</AddBtn>}
+                 {/* 결제 조건 지우기 → 정하기 전으로(사용자 2026-11-18) */}
+                 {!deal.dropped && (
+                   <button type="button" disabled={busy}
+                           onClick={() => void askConfirm(TERMS_CLEAR_ASK).then((ok) => { if (ok) void act("terms/clear", {}); })}
+                           className="text-[12px] text-foreground-subtle hover:text-red-600 hover:underline disabled:opacity-40">결제 조건 지우기</button>
+                 )}
                </span>
              )}>
       {editing && (
@@ -532,8 +567,8 @@ function TermsView({ deal, busy, act }: { deal: DealRow; busy: boolean; act: Act
       <table className="w-full border-collapse text-[12.5px]">
         <thead>
           <tr className="border-b border-border text-left text-[11.5px] text-foreground-muted">
-            {["회차", "시점", "금액", "입금기한", "입금", ...(showCol ? ["기한 조정"] : [])].map((h) => (
-              <th key={h} className={cn("whitespace-nowrap px-3 py-1.5 font-semibold", h === "금액" && "text-right")}>{h}</th>
+            {["회차", "시점", "공급가액", "입금기한", "입금", ...(showCol ? ["기한 조정"] : [])].map((h) => (
+              <th key={h} className={cn("whitespace-nowrap px-3 py-1.5 font-semibold", h === "공급가액" && "text-right")}>{h}</th>
             ))}
           </tr>
         </thead>
@@ -560,7 +595,8 @@ function TermsView({ deal, busy, act }: { deal: DealRow; busy: boolean; act: Act
                   </span>
                 ) : canPay(t.index) ? (
                   <button type="button" disabled={busy}
-                          onClick={() => void act("confirm-term", { index: t.index, date: payDate || todayIso(), expect: termExpect(t) })}
+                          onClick={() => void askConfirm({ title: `${t.label} 입금 확인으로 기록할까요?`, message: `입금일 ${payDate || todayIso()} · 공급가액 ${won(t.amount)}원 (VAT 별도)`, confirmLabel: "입금 확인" })
+                            .then((ok) => { if (ok) void act("confirm-term", { index: t.index, date: payDate || todayIso(), expect: termExpect(t) }); })}
                           className="h-7 rounded-md bg-accent px-2.5 text-[12px] font-semibold text-white hover:opacity-90 disabled:opacity-50">입금 확인</button>
                 ) : "입금 전"}
               </td>
@@ -688,6 +724,7 @@ function WonBlock({ deal, busy, act, uploadPo, comparing, comparePo }: {
   };
   // 수주 확정 → (발주서가 있으면) 이어서 올린다. 올리기에 실패해도 수주는 확정된 상태로 두고 아래에서 다시 첨부할 수 있다.
   const confirm = async () => {
+    if (!(await askConfirm({ title: "수주 확정으로 기록할까요?", message: `수주일 ${date}${chosen ? ` · 수주 견적서 ${chosen.no ?? ""}` : ""}`, confirmLabel: "수주 확정" }))) return;
     if (!(await act("won", { won: true, date, ...(chosen ? { quote_id: chosen.quote_id, revision: chosen.revision } : {}) }))) return;
     if (file) await uploadPo(file);
     setOpen(false);
@@ -722,13 +759,19 @@ function WonBlock({ deal, busy, act, uploadPo, comparing, comparePo }: {
         <div className="mt-2 rounded-xl border border-amber-500/40 bg-amber-500/[0.06] p-3 text-[12.5px]">
           <p className="mb-2 font-semibold">미확인으로 되돌리기</p>
           <div className="flex flex-col gap-1.5">
-            <button type="button" disabled={busy} onClick={async () => { if (await act("won", { won: null })) setReset(false); }}
+            <button type="button" disabled={busy} onClick={async () => {
+              if (!(await askConfirm({ title: "수주 표시를 미확인으로 되돌릴까요?", message: "거래명세서·입금·출하 기록은 그대로 둡니다. 변경 이력에 남습니다.", confirmLabel: "되돌리기" }))) return;
+              if (await act("won", { won: null })) setReset(false);
+            }}
                     className="rounded-lg border border-border px-3 py-1.5 text-left hover:bg-foreground/5 disabled:opacity-40">
               <b>수주 표시만 되돌리기</b>
               <span className="block text-[11.5px] text-foreground-muted">거래명세서·입금·출하 기록은 그대로 둡니다.</span>
             </button>
             {!deal.imported && admin && (   /* 기록을 통째로 지우는 테스트용 — 관리자만 */
-              <button type="button" disabled={busy} onClick={async () => { if (await act("reset-to-quote", {})) setReset(false); }}
+              <button type="button" disabled={busy} onClick={async () => {
+                if (!(await askConfirm({ title: "(테스트용) 견적 상태로 전부 되돌릴까요?", message: "수주 이후 기록과 파일을 모두 지웁니다. 되돌릴 수 없습니다.", confirmLabel: "전부 되돌리기", danger: true }))) return;
+                if (await act("reset-to-quote", {})) setReset(false);
+              }}
                       className="rounded-lg border border-red-500/40 px-3 py-1.5 text-left text-red-700 hover:bg-red-500/5 disabled:opacity-40 dark:text-red-300">
                 <b>(테스트용) 견적 상태로 전부 되돌리기</b>
                 <span className="block text-[11.5px] opacity-80">
@@ -743,7 +786,7 @@ function WonBlock({ deal, busy, act, uploadPo, comparing, comparePo }: {
       )}
 
       {open && deal.won === null && (
-        <FormBox onCancel={() => setOpen(false)} onSave={confirm} canSave={!!date && !fileError && !busy} busy={busy}>
+        <FormBox onCancel={() => setOpen(false)} onSave={confirm} canSave={!!date && !fileError && !busy} busy={busy} label="수주 확정">
           <div className="grid gap-2 md:grid-cols-[160px_1fr]">
             <Field label="수주일"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={INPUT} /></Field>
             <Field label="발주서 (고객사 주문서 · 선택)">
@@ -948,6 +991,7 @@ function PaymentBlock({ deal, busy, act }: { deal: DealRow; busy: boolean; act: 
     setFull(expected > 0 && paid + (Number(v.replaceAll(",", "")) || 0) >= expected);
   };
   const save = async () => {
+    if (!(await askConfirm({ title: "입금 확인으로 기록할까요?", message: `입금일 ${date} · 공급가액 ${won(Number(amount.replaceAll(",", "")))}원 (VAT 별도)${full ? " · 이 입금으로 완납" : ""}`, confirmLabel: "입금 확인" }))) return;
     if (await act("payments", { date, amount: Number(amount.replaceAll(",", "")), full })) setOpen(false);
   };
 
@@ -957,25 +1001,27 @@ function PaymentBlock({ deal, busy, act }: { deal: DealRow; busy: boolean; act: 
         {deal.paid_full
           ? <span className="rounded-lg bg-emerald-500/12 px-2.5 py-1 font-semibold text-emerald-700 dark:text-emerald-300">완납 ✓</span>
           : <span className="text-foreground-muted">
-              {expected ? `${deal.statement || deal.pay_case ? "공급가액" : "받을 금액"} ${won(expected)}원 중 입금 ${won(paid)}원` : "완납 전"}
+              {expected ? `${deal.statement || deal.pay_case ? "공급가액" : "받을 금액"} ${won(expected)}원 중 입금 ${won(paid)}원 (VAT 별도)` : "완납 전"}
             </span>}
         {(deal.payments.length > 0 || deal.paid_full) && !byTerms && (   /* 완납 해제도 영업팀 누구나(2026-11-17) */
-          <button type="button" disabled={busy} onClick={() => act("paid-full", { full: !deal.paid_full })}
+          <button type="button" disabled={busy} onClick={() => void askConfirm(deal.paid_full
+                    ? { title: "완납 표시를 해제할까요?", message: "변경 이력에 남습니다.", confirmLabel: "완납 해제", danger: true }
+                    : { title: "완납으로 표시할까요?", confirmLabel: "완납으로 표시" }).then((ok) => { if (ok) void act("paid-full", { full: !deal.paid_full }); })}
                   className="text-foreground-subtle underline">{deal.paid_full ? "완납 해제" : "완납으로 표시"}</button>
         )}
       </div>
       {deal.payments.length === 0 && !open && <Muted>입금 기록 없음</Muted>}
       {deal.payments.map((p, i) => (
         <EntryCard key={i} onRemove={p.term != null ? undefined : () => act("remove", { kind: "payments", index: i, expect: p })} busy={busy}>
-          <Grid rows={[["입금일", p.date ?? "날짜 없음"], ["입금액", p.amount != null ? `${won(p.amount)}원` : null], ["메모", p.note]]} />
+          <Grid rows={[["입금일", p.date ?? "날짜 없음"], ["입금액", p.amount != null ? `${won(p.amount)}원 (공급가액, VAT 별도)` : null], ["메모", p.note]]} />
         </EntryCard>
       ))}
       {open && (
-        <FormBox onCancel={() => setOpen(false)} onSave={save} busy={busy}
+        <FormBox onCancel={() => setOpen(false)} onSave={save} busy={busy} label="입금 기록"
                  canSave={Number(amount.replaceAll(",", "")) > 0 && !!date && !busy}>
           <div className="grid gap-2 md:grid-cols-3">
             <Field label="입금일"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={INPUT} /></Field>
-            <Field label="입금액"><input value={amount} onChange={(e) => changeAmount(e.target.value)} inputMode="numeric" className={cn(INPUT, "text-right")} /></Field>
+            <Field label="입금액 (공급가액 · VAT 별도)"><input value={amount} onChange={(e) => changeAmount(e.target.value)} inputMode="numeric" className={cn(INPUT, "text-right")} /></Field>
             <label className="flex items-end gap-1.5 pb-2">
               <input type="checkbox" checked={full} onChange={(e) => setFull(e.target.checked)} /> 이 입금으로 완납
             </label>
@@ -1020,6 +1066,11 @@ function blockedOf(e: unknown, body: unknown, to: { editShipment: (i: number) =>
       ask: "화면을 새로 고칠까요?", sub: "바뀐 내용을 다시 불러온 뒤 다시 해 주세요.", label: "새로 고치기", run: to.reload } };
   }
   if (code === "DROP_LOCKED") return { message, title: "드랍할 수 없습니다" };
+  if (code === "STATEMENT_PAID") {
+    return { message, title: "먼저 입금 기록을 되돌려 주세요", go: {
+      ask: "입금 칸으로 안내해 드릴까요?", sub: "회차마다 [확인 취소](직접 남긴 입금은 [잘못 입력함])로 되돌린 뒤 다시 누르면 됩니다.",
+      label: "입금 칸으로 가기", run: to.goPay } };
+  }
   return { message, title: "처리하지 못했습니다" };
 }
 
@@ -1033,6 +1084,36 @@ function ShipmentBlock({ deal, busy, act, onPhoto, onReload, editReq }: {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<number | null>(null);
   const boxRef = useRef<HTMLDivElement>(null);
+  // 적던 출하 기록(이 PC 브라우저 보관) — 실수로 닫혀도 다시 열면 이어서(사용자 2026-11-18). 품목 줄은 S/N 정보를 받으며
+  // 저절로 바뀌므로, 사람이 칸에 적거나 고른 뒤(touched)부터 저장 안 한 내용으로 본다
+  const shipKey = `deal:${deal.id}:shipment`;
+  const [shipDraft, setShipDraft] = useState(() => {
+    const d = readDraft<{ index: number | null; draft: ShipDraft }>(shipKey);
+    return d && (d.value.index == null || d.value.index < deal.shipments.length) ? d : null;
+  });
+  const [resume, setResume] = useState<ShipDraft | undefined>(undefined);
+  const [touched, setTouched] = useState(false);
+  // 입력 처리가 끝난 뒤에 표시 — 같은 입력 중에 상태를 바꾸면 첫 글자가 지워졌음(2026-11-18 확인)
+  const markTouched = () => { if (!touched) setTimeout(() => setTouched(true)); };
+  // 닫을 때 [변경사항 저장] — 열린 출하 작성 칸의 [저장]과 같은 일(ShipForm 이 saveRef 에 넣어 둔다)
+  const shipSave = useRef<(() => Promise<boolean>) | null>(null);
+  useUnsaved("출하 기록", touched && (open || editing !== null), () => shipSave.current?.() ?? false);
+  // 적는 대로 보관 — 화면 상태는 바꾸지 않는다(한 글자마다 상세 전체를 다시 그리면 빠르게 칠 때 글자가 빠졌음).
+  // 첫 글자는 touched 가 바뀌기 전에 올 수 있어, 아직 손대지 않았어도 직전 내용을 들고 있다가 손댄 순간 쓴다
+  const pending = useRef<ShipDraft | null>(null);
+  const keepShip = useCallback((d: ShipDraft) => {
+    pending.current = d;
+    if (touched) writeDraft(shipKey, { index: open ? null : editing, draft: d });
+  }, [touched, shipKey, open, editing]);
+  const shipDone = () => { clearDraft(shipKey); setShipDraft(null); setResume(undefined); setTouched(false); };
+  const cancelShip = (close: () => void) => {
+    if (!touched) { shipDone(); close(); return; }
+    void askConfirm({ title: "적은 출하 기록을 버리고 닫을까요?", confirmLabel: "버리고 닫기", cancelLabel: "계속 작성", danger: true })
+      .then((ok) => { if (ok) { shipDone(); close(); } });
+  };
+  useEffect(() => {
+    if (touched && pending.current && (open || editing !== null)) writeDraft(shipKey, { index: open ? null : editing, draft: pending.current });
+  }, [touched, open, editing, shipKey]);
   // 새 요청이 오면(렌더 중에 한 번) 그 카드를 고치기 칸으로 — 이펙트에서 상태를 바꾸지 않게
   const [seenReq, setSeenReq] = useState(editReq?.at ?? 0);
   if (editReq && editReq.at !== seenReq) {
@@ -1065,20 +1146,35 @@ function ShipmentBlock({ deal, busy, act, onPhoto, onReload, editReq }: {
                  <Icon name="plus" className="h-3.5 w-3.5" /> A/S 접수
                </button>
              )}
-             action={!open && editing === null && deal.kind !== "shipment_only" && !deal.pay_case && <AddBtn onClick={() => setOpen(true)} disabled={busy}>+ 출하 기록</AddBtn>}>
+             action={!open && editing === null && deal.kind !== "shipment_only" && !deal.pay_case && <AddBtn onClick={() => { setResume(undefined); setTouched(false); setOpen(true); }} disabled={busy}>+ 출하 기록</AddBtn>}>
       {asOpen && <DealAsIntake units={shipped} onDone={(changed) => { setAsOpen(false); if (changed) onReload(); }} />}
       {deal.shipments.length === 0 && !open && (
         <Muted>{deal.shipped ? "비고에 '출하완료'만 적혀 있음(출하시트에서 짝을 찾지 못함)" : "출하 기록 없음"}</Muted>
       )}
+      {shipDraft && !open && editing === null && (
+        <div className="mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-accent/40 bg-accent/[0.06] px-3 py-2 text-[12.5px]">
+          <span><b>작성하던 출하 기록</b>이 있습니다 <span className="text-foreground-subtle">({draftTime(shipDraft.at)} · 저장 안 함)</span></span>
+          <span className="ml-auto flex gap-1.5">
+            <GhostBtn disabled={busy} onClick={() => void askConfirm({ title: "작성하던 출하 기록을 버릴까요?", confirmLabel: "버리기", danger: true })
+              .then((ok) => { if (ok) shipDone(); })}>버리기</GhostBtn>
+            <PrimaryBtn disabled={busy} onClick={() => {
+              setResume(shipDraft.value.draft);
+              if (shipDraft.value.index == null) setOpen(true); else setEditing(shipDraft.value.index);
+            }}>이어서 쓰기</PrimaryBtn>
+          </span>
+        </div>
+      )}
       {deal.shipments.map((s, i) => editing === i ? (
         // 남긴 출하 기록 고치기(사용자 2026-10-23) — 품목 이름·수량·사진·배송 정보·S/N, 수주 진행과 같은 작성 칸
-        <div key={i} ref={boxRef} className="mb-2 scroll-mt-28 rounded-xl border border-accent/40 bg-accent/[0.02] p-3">
-          <ShipForm deal={deal} busy={busy} act={act} initial={shipmentDraft(s)} editIndex={i}
-                    onSaved={() => { setEditing(null); onReload(); }} onCancel={() => setEditing(null)} />
+        <div key={i} ref={boxRef} className="mb-2 scroll-mt-28 rounded-xl border border-accent/40 bg-accent/[0.02] p-3"
+             onInputCapture={markTouched}>
+          <ShipForm deal={deal} busy={busy} act={act} initial={resume ?? shipmentDraft(s)} editIndex={i} onChange={keepShip} saveRef={shipSave}
+                    onSaved={() => { shipDone(); setEditing(null); onReload(); }} onCancel={() => cancelShip(() => setEditing(null))} />
         </div>
       ) : (
         <EntryCard key={i} onRemove={deal.kind === "shipment_only" ? undefined : () => act("remove", { kind: "shipments", index: i, expect: s })}
-                   onEdit={deal.kind === "shipment_only" || editing !== null || open ? undefined : () => setEditing(i)} busy={busy}>
+                   removeLabel="출하 취소" removeAsk={shipCancelAsk(deal, i)}
+                   onEdit={deal.kind === "shipment_only" || editing !== null || open ? undefined : () => { setResume(undefined); setTouched(false); setEditing(i); }} busy={busy}>
           <ShipmentInfo s={s} dealId={deal.id} onPhoto={onPhoto}
                         units={(deal.unit_list ?? []).filter((u) => u.shipment_index === i)} />
           {view && <ShipmentSn dealId={deal.id} view={view} lines={s.lines ?? []} index={i} shipment={s} busy={busy}
@@ -1087,8 +1183,9 @@ function ShipmentBlock({ deal, busy, act, onPhoto, onReload, editReq }: {
       ))}
       {/* 출하 기록 — 출하 목록·수주 진행과 같은 작성 칸. 품목은 수주 판에서 딸려 오고, 품목마다 [S/N 등록](사용자 2026-10-23) */}
       {open && (
-        <div className="rounded-xl border border-border p-3">
-          <ShipForm deal={deal} busy={busy} act={act} onSaved={() => setOpen(false)} onCancel={() => setOpen(false)} />
+        <div className="rounded-xl border border-border p-3" onInputCapture={markTouched}>
+          <ShipForm deal={deal} busy={busy} act={act} initial={resume} onChange={keepShip} saveRef={shipSave}
+                    onSaved={() => { shipDone(); setOpen(false); }} onCancel={() => cancelShip(() => setOpen(false))} />
         </div>
       )}
     </Section>
@@ -1375,6 +1472,94 @@ function StartQuote({ recommendationId, onQuote }: { recommendationId: number; o
   );
 }
 
+/** '견적 전' 건(새 건 등록으로 만든 뼈대) — [견적서 수기 작성]: 견적서 탭의 같은 버튼과 같은 창(판매/대여)을 열고, 이 건에 이어진
+ *  견적서 작성 화면으로 넘어간다. 발행하면 첫 발행번호가 건 번호가 되고 견적 단계로(사용자 2026-11-18). */
+function StartManualQuote({ dealId, onQuote, onRecommend }: { dealId: number; onQuote: (quoteId: number) => void; onRecommend?: () => void }) {
+  const [picking, setPicking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const start = async (purpose: QuotePurpose) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await fetch("/api/product-recommend/quotes/manual", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ form: { ...savedContact(), purpose }, deal_id: dealId }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(typeof d?.detail === "string" ? d.detail : d?.detail?.message ?? "견적서를 만들지 못했습니다.");
+      onQuote((d as { id: number }).id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "견적서를 만들지 못했습니다.");
+      setBusy(false);
+      setPicking(false);
+    }
+  };
+  return (
+    <Section title="견적서">
+      {/* 둘 중 하나로 시작(사용자 2026-11-18) — 추천이 있는 제품(툴체인저 등)은 AI 제품 추천, 그 밖은 수기 작성. 견적서 발행 전까지 바꿀 수 있다 */}
+      <div className="grid gap-2 sm:grid-cols-2">
+        {onRecommend && (
+          <button type="button" disabled={busy} onClick={onRecommend}
+                  className="flex items-center justify-between gap-2 rounded-xl border border-teal-500/50 bg-teal-500/[0.06] px-4 py-2.5 text-left hover:bg-teal-500/10 disabled:opacity-60">
+            <span>
+              <b className="text-[13.5px] text-teal-700 dark:text-teal-300">AI 제품 추천으로 시작 →</b>
+              <span className="block text-[12px] text-foreground-muted">제품 추천 탭에서 질문에 답하고 [최종 제안 확정]하면 이 건에 붙어 &apos;제품 추천 확정&apos;이 됩니다. 그다음 추천 결과로 견적서를 만듭니다.</span>
+            </span>
+            <Icon name="spark" className="h-5 w-5 shrink-0 text-teal-600" />
+          </button>
+        )}
+        <button type="button" disabled={busy} onClick={() => setPicking(true)}
+                className="flex items-center justify-between gap-2 rounded-xl border border-accent/50 bg-accent/[0.06] px-4 py-2.5 text-left hover:bg-accent/10 disabled:opacity-60">
+          <span>
+            <b className="text-[13.5px] text-accent">{busy ? "견적서 여는 중…" : "견적서 수기 작성 →"}</b>
+            <span className="block text-[12px] text-foreground-muted">추천 없이 빈 견적서로 만듭니다. 발행하면 발행번호가 건 번호가 되고 견적 단계로 넘어갑니다. 작성 중인 견적서가 있으면 그걸 다시 엽니다.</span>
+          </span>
+          <Icon name="file-spreadsheet" className="h-5 w-5 shrink-0 text-accent" />
+        </button>
+      </div>
+      {picking && <QuotePurposeDialog busy={busy} onPick={(p) => void start(p)} onClose={() => setPicking(false)} />}
+      {error && <p className="mt-2 rounded-lg bg-red-500/10 px-3 py-2 text-[12.5px] text-red-700 dark:text-red-300">{error}</p>}
+    </Section>
+  );
+}
+
+/** 고객사·프로젝트명 고치기(사용자 2026-11-18 — 리스트·상세). 건의 이름만 바뀌고 견적서·거래명세서의 고객사명은 그대로. */
+export function DealInfoDialog({ deal, onClose, onSaved }: { deal: DealRow; onClose: () => void; onSaved: (d: DealRow) => void }) {
+  const [v, setV] = useState({ customer: deal.customer ?? "", title: deal.title ?? "" });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      onSaved(await dealRequest(`/${deal.id}/info`, { customer: v.customer.trim(), title: v.title.trim() }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "저장하지 못했습니다.");
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="fixed inset-0 z-[60] grid place-items-center bg-black/30 p-4" onClick={busy ? undefined : onClose}>
+      <div role="dialog" aria-modal="true" aria-label="고객사·프로젝트명 고치기" onClick={(e) => e.stopPropagation()}
+           className="w-full max-w-md rounded-2xl bg-background p-5 shadow-2xl">
+        <h3 className="text-[15px] font-bold">고객사·프로젝트명 고치기</h3>
+        <p className="mt-1 text-[12px] text-foreground-muted">리스트·상세에 보이는 이름만 바뀝니다. 견적서·거래명세서에 적힌 고객사명은 그대로입니다(서로 따로 관리).</p>
+        <div className="mt-3 grid gap-3 text-[13px]">
+          <label className="grid gap-1">고객사<input className={INPUT} value={v.customer} autoFocus onChange={(e) => setV({ ...v, customer: e.target.value })} /></label>
+          <label className="grid gap-1">프로젝트명<input className={INPUT} value={v.title} onChange={(e) => setV({ ...v, title: e.target.value })} /></label>
+        </div>
+        {error && <p className="mt-2 text-[12.5px] text-red-600">{error}</p>}
+        <div className="mt-4 flex justify-end gap-2">
+          <button type="button" onClick={onClose} disabled={busy} className="h-9 rounded-lg border border-border px-4 text-[13px]">취소</button>
+          <button type="button" onClick={() => void save()} disabled={busy || !v.customer.trim() || !v.title.trim()}
+                  className="h-9 rounded-lg bg-accent px-4 text-[13px] font-semibold text-white disabled:opacity-40">{busy ? "저장 중…" : "저장"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── 거래명세서(발급본) — 영업 건에서 확인·다시 받기(사용자 2026-10-07). 고치기·다시 발급은 수주 진행에서. ──
 
 /** 서버 시각(UTC ISO) → 한국 시간 'YYYY-MM-DD HH:MM'(사용자 2026-11-17: 교체 시각이 9시간 이르게 보이던 것) */
@@ -1384,7 +1569,7 @@ function kst16(v?: string | null): string {
   return Number.isNaN(t.getTime()) ? v.slice(0, 16).replace("T", " ") : t.toLocaleString("sv-SE", { timeZone: "Asia/Seoul" }).slice(0, 16);
 }
 
-function StatementDoc({ deal }: { deal: DealRow }) {
+function StatementDoc({ deal, busy, act }: { deal: DealRow; busy: boolean; act: Act }) {
   const st = deal.statement!;
   const [view, setView] = useState<"preview" | "save" | null>(null);
   // 예전 발급본 보기·받기(사용자 2026-11-17) — history 순번
@@ -1396,7 +1581,16 @@ function StatementDoc({ deal }: { deal: DealRow }) {
   const items = st.items ?? [];
   const fileName = `(주)유엔디로보틱스_거래명세서_${buyer.name || deal.customer || ""}_${st.no}`;
   return (
-    <Section title="거래명세서">
+    <Section title="거래명세서"
+             action={!deal.dropped && (
+               // 발급 취소 → 발급 전으로(사용자 2026-11-18 — 영업팀 누구나 처음 단계까지 거슬러 다시 작성)
+               <button type="button" disabled={busy}
+                       onClick={() => void askConfirm(statementCancelAsk(st.no, !!st.history?.length))
+                         .then((ok) => { if (ok) void act("statement/cancel", {}); })}
+                       className="rounded-lg border border-red-500/40 px-2.5 py-1 text-[12px] font-semibold text-red-600 hover:bg-red-500/10 disabled:opacity-40">
+                 발급 취소
+               </button>
+             )}>
       <div className="rounded-xl border border-border p-3">
         <div className="mb-1.5 flex flex-wrap items-center gap-2">
           <b>{st.no}</b>
@@ -1502,32 +1696,31 @@ function QuoteTable({ deal }: { deal: DealRow }) {
   );
 }
 
-function EntryCard({ children, onRemove, onEdit, busy }: {
+function EntryCard({ children, onRemove, onEdit, busy, removeLabel = "잘못 입력함", removeAsk }: {
   /** onRemove — [잘못 입력함] 지우기, 영업팀 누구나(사용자 2026-11-17 — 실수·수정이 잦음, 지운 내용은 이력에 남음) */
   children: React.ReactNode; onRemove?: () => void; busy: boolean;
   /** [고치기] — 누구나 */
   onEdit?: () => void;
+  /** 지우기 버튼 글자·확인 팝업(출하는 [출하 취소] — 사용자 2026-11-18) */
+  removeLabel?: string; removeAsk?: ConfirmAsk;
 }) {
-  const [confirming, setConfirming] = useState(false);
+  const askRemove = () => void askConfirm(removeAsk ?? { title: "잘못 입력한 기록을 지울까요?", message: "지운 내용은 변경 이력에 남습니다.", confirmLabel: "지우기", danger: true })
+    .then((ok) => { if (ok) onRemove?.(); });
   return (
     <div className="relative mb-2 rounded-xl border border-border p-3">
       {(onEdit || onRemove) && (
         <div className="absolute right-2 top-2 flex gap-1 text-[12px]">
-          {onEdit && !confirming && (
+          {onEdit && (
             <button type="button" disabled={busy} onClick={onEdit}
                     className="inline-flex items-center gap-1 rounded-lg border border-border-strong bg-surface-raised px-2 py-0.5 font-semibold text-foreground-muted hover:bg-foreground/5 hover:text-foreground">
               <Icon name="edit" className="h-3 w-3" /> 고치기
             </button>
           )}
-          {!onRemove ? null : confirming ? (
-            <>
-              <button type="button" disabled={busy} onClick={() => { setConfirming(false); onRemove(); }}
-                      className="rounded px-2 py-0.5 font-semibold text-red-600 hover:bg-red-500/10">삭제</button>
-              <button type="button" onClick={() => setConfirming(false)} className="rounded px-2 py-0.5 text-foreground-muted hover:bg-foreground/8">취소</button>
-            </>
-          ) : (
-            <button type="button" onClick={() => setConfirming(true)} className="rounded px-2 py-0.5 text-foreground-subtle hover:bg-foreground/8">
-              잘못 입력함
+          {onRemove && (
+            <button type="button" disabled={busy} onClick={askRemove}
+                    className={removeAsk ? "rounded-lg border border-red-500/40 px-2 py-0.5 font-semibold text-red-600 hover:bg-red-500/10"
+                      : "rounded px-2 py-0.5 text-foreground-subtle hover:bg-foreground/8"}>
+              {removeLabel}
             </button>
           )}
         </div>
@@ -1537,11 +1730,17 @@ function EntryCard({ children, onRemove, onEdit, busy }: {
   );
 }
 
-function FormBox({ children, onCancel, onSave, canSave, busy }: {
+function FormBox({ children, onCancel, onSave, canSave, busy, label = "작성 중인 칸" }: {
   children: React.ReactNode; onCancel: () => void; onSave: () => void; canSave: boolean; busy: boolean;
+  /** 닫을 때 '저장 안 한 칸'으로 보일 이름 */
+  label?: string;
 }) {
+  // 칸에 무언가 적거나 고르면 저장 안 한 내용 — 상세를 닫을 때 묻는다(사용자 2026-11-18)
+  const [touched, setTouched] = useState(false);
+  useUnsaved(label, touched, canSave ? onSave : null);
+  // 입력 처리가 끝난 뒤에 표시 — 같은 입력 중에 상태를 바꾸면 첫 글자가 지워졌음(2026-11-18 확인)
   return (
-    <div className="rounded-xl border border-accent/40 bg-accent/[0.04] p-3">
+    <div className="rounded-xl border border-accent/40 bg-accent/[0.04] p-3" onInputCapture={() => { if (!touched) setTimeout(() => setTouched(true)); }}>
       {children}
       <div className="mt-3 flex justify-end gap-2">
         <button type="button" onClick={onCancel} className="h-8 rounded-lg border border-border px-3 text-[12.5px]">취소</button>

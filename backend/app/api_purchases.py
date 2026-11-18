@@ -144,7 +144,8 @@ class PurchaseIn(BaseModel):
     title: str = Field(default="", max_length=300)
     owner: str = Field(default="", max_length=100)
     note: str = Field(default="", max_length=2000)
-    reason: str = Field(default="", max_length=1000)                # 구매 사유(만들 때만 — 고치기는 /reason, 사용자 2026-11-17)
+    # 구매 사유 — 만들 때·[기본 정보 수정](사용자 2026-11-18: 등록 때와 같은 항목). 비우면(None) 고치기에서 그대로
+    reason: str | None = Field(default=None, max_length=1000)
 
 
 class ReasonIn(BaseModel):
@@ -450,6 +451,12 @@ async def po_preview(pid: int, body: PoIn, _: User = Depends(require_sales), db:
 @router.post("/{pid}/po/issue")
 async def po_issue(pid: int, body: PoIn, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
     return await _act(db, pid, svc.issue_po(db, pid, user.id, _name(user), body.model_dump()))
+
+
+@router.post("/{pid}/po/cancel")
+async def po_cancel(pid: int, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    """발주서 발행 취소 → 발주 전으로 — 영업팀 누구나(사용자 2026-11-18, 이력에 남음)."""
+    return await _act(db, pid, svc.cancel_po(db, pid, user.id, _name(user)))
 
 
 @router.post("/{pid}/po/chat")

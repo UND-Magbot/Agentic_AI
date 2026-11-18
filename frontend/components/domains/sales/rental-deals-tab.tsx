@@ -6,6 +6,7 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { askConfirm } from "@/components/shared/ui/confirm-host";
 import { Icon } from "@/components/shared/ui/icon";
 import { Muted, RegionBadge } from "@/components/domains/sales/deal-format";
 import { primaryBtn, secondaryBtn } from "@/components/domains/sales/proposal-actions";
@@ -441,21 +442,24 @@ function RentalPanel({ id, focusLine = null, highlight, onChanged, onOpenDeal, o
                 {phase === "대여 예정" && (
                   <button type="button" className={primaryBtn} disabled={!!busy}
                           title={`오늘(${kstToday()})을 대여 시작일로 — 반납일도 계산됩니다`}
-                          onClick={() => void act("대여 시작", async () => { await call(`/${id}/rental-start`, { date: kstToday() }); await refresh(); })}>
+                          onClick={() => void askConfirm({ title: "대여 시작으로 기록할까요?", message: `대여 시작일 ${kstToday()} · 상태가 '대여 중'으로 바뀝니다.`, confirmLabel: "대여 시작" })
+                            .then((ok) => { if (ok) void act("대여 시작", async () => { await call(`/${id}/rental-start`, { date: kstToday() }); await refresh(); }); })}>
                     {busy === "대여 시작" ? "처리 중…" : `대여 시작 (오늘 ${kstToday()})`}
                   </button>
                 )}
                 {!ret.started && !ret.done && (
                   <button type="button" className={secondaryBtn} disabled={!!busy || !det.started}
                           title={det.started ? "제품을 돌려받기 시작" : "대여 시작일이 지나야 회수할 수 있습니다"}
-                          onClick={() => void act("회수 시작", async () => { await call(`/${id}/rental-return`, { step: "start" }); await refresh(); })}>
+                          onClick={() => void askConfirm({ title: "회수 시작으로 기록할까요?", message: "상태가 '회수 중'으로 바뀝니다.", confirmLabel: "회수 시작" })
+                            .then((ok) => { if (ok) void act("회수 시작", async () => { await call(`/${id}/rental-return`, { step: "start" }); await refresh(); }); })}>
                     {busy === "회수 시작" ? "처리 중…" : "회수 시작"}
                   </button>
                 )}
                 {!ret.done && (
                   <button type="button" className={primaryBtn} disabled={!!busy || !det.started}
                           title={det.started ? "제품을 모두 돌려받음 — S/N 상태도 회수로" : "대여 시작일이 지나야 회수할 수 있습니다"}
-                          onClick={() => void act("회수 완료", async () => { await call(`/${id}/rental-return`, { step: "done" }); await refresh(); })}>
+                          onClick={() => void askConfirm({ title: "회수 완료로 기록할까요?", message: "제품을 모두 돌려받은 것으로 기록하고, S/N 상태도 '회수'로 바뀝니다.", confirmLabel: "회수 완료" })
+                            .then((ok) => { if (ok) void act("회수 완료", async () => { await call(`/${id}/rental-return`, { step: "done" }); await refresh(); }); })}>
                     {busy === "회수 완료" ? "처리 중…" : "회수 완료"}
                   </button>
                 )}

@@ -8,6 +8,8 @@ import { cn } from "@/lib/shared/utils";
 
 type Variant = "danger" | "default";
 
+const PRIMARY_BTN = "und-grad text-white shadow-[0_8px_18px_-8px_rgba(37,99,235,0.6),inset_0_1px_0_rgba(255,255,255,0.35)] hover:bg-none! hover:bg-blue-700!";
+
 /** 팝업 버튼에 마우스를 올리면 파란 배경으로 채워 어디를 가리키는지 보이게(사용자 2026-11-17) — 다른 팝업도 같이 쓴다 */
 export const POPUP_BTN_HOVER = "transition-colors hover:border-blue-600! hover:bg-blue-600! hover:text-white!";
 
@@ -29,8 +31,13 @@ type Props = {
   hideCancel?: boolean;
   /** 제목 위 작은 글자(예: "UND Cortex" — 브라우저 기본 창의 주소 줄 대신, 사용자 2026-11-17) */
   brand?: string;
+  /** 확인 버튼 막기(예: 사유를 아직 안 적음) */
+  confirmDisabled?: boolean;
   /** danger = 빨간 확인 버튼(파괴적 액션). default = 중립 톤. */
   variant?: Variant;
+  /** 세 번째 버튼(맨 오른쪽, 파란 버튼) — 예: 닫기 확인의 [변경사항 저장](사용자 2026-11-18) */
+  extraLabel?: string;
+  onExtra?: () => void;
   /** 확인 시 실행. async 가능. throw 시 에러 메시지가 모달 안에 표시되고 모달은 열린 상태 유지. */
   onConfirm: () => void | Promise<void>;
   onClose: () => void;
@@ -54,7 +61,10 @@ export function ConfirmDialog({
   cancelLabel = "취소",
   hideCancel = false,
   brand,
+  confirmDisabled = false,
   variant = "danger",
+  extraLabel,
+  onExtra,
   onConfirm,
   onClose,
 }: Props) {
@@ -163,17 +173,23 @@ export function ConfirmDialog({
           <button
             type="button"
             onClick={handleConfirm}
-            disabled={busy}
+            disabled={busy || confirmDisabled}
             className={cn(
               "inline-flex items-center gap-2 rounded-lg px-4 py-2 text-[13px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-60",
               isDanger
                 ? "bg-red-600 text-white shadow-[0_8px_18px_-8px_rgba(220,38,38,0.6)] hover:bg-red-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/40"
-                : "und-grad text-white shadow-[0_8px_18px_-8px_rgba(37,99,235,0.6),inset_0_1px_0_rgba(255,255,255,0.35)] hover:bg-none! hover:bg-blue-700!",
+                : PRIMARY_BTN,
             )}
           >
             {busy && <Icon name="refresh" className="h-3.5 w-3.5 animate-spin" />}
             <span>{busy ? "처리 중..." : confirmLabel}</span>
           </button>
+          {extraLabel && onExtra && (
+            <button type="button" onClick={onExtra} disabled={busy}
+                    className={cn("rounded-lg px-4 py-2 text-[13px] font-semibold transition disabled:opacity-60", PRIMARY_BTN)}>
+              {extraLabel}
+            </button>
+          )}
         </div>
       </div>
     </div>

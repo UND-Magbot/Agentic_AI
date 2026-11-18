@@ -3,7 +3,8 @@
 견적서 QT-LU20261012-01 · 거래명세서 TS-LU20261012-01 = 문서 종류 + 발행자 이니셜 + 발행일 + 일련번호.
 - 일련번호는 발행자의 그날 발행 순서(문서 종류별로 따로, 고객사·건과 무관). 다른 발행자 번호와는 상관없다.
 - 발행·재발행마다 새 번호. 다른 사람이 고쳐 다시 내면 그 사람의 그날 순서(첫 발행이면 01).
-- 한 번 나간 번호는 다시 쓰지 않는다(되돌리기 없음, 건을 지워도 doc_numbers 에 남음).
+- 지우거나 발행·발급을 취소한 문서의 번호는 다시 쓴다(사용자 2026-11-18 — 오늘 01 을 냈다가 지우고 다시 내면 01, 첫 이력으로).
+  번호 기록(doc_numbers)에서 빼면 그 발행자의 그날 다음 번호가 '남은 번호 중 가장 큰 것 + 1'로 돌아온다(release).
 """
 from __future__ import annotations
 
@@ -50,6 +51,24 @@ async def allocate(db: AsyncSession, doc_type: str, issuer: str, day: dt.date, *
                           "VALUES (:t, :i, :d, :s, :n, :deal, :q, :u)"),
                      {"t": doc_type, "i": ini, "d": day, "s": seq, "n": no, "deal": deal_id, "q": quote_id, "u": user_id})
     return no
+
+
+async def peek(db: AsyncSession, doc_type: str, issuer: str, day: dt.date) -> str | None:
+    """다음에 나갈 번호 미리 보기(잡지 않음) — [번호 정해서 발행] 창의 기본값(사용자 2026-11-18)."""
+    ini = clean_initials(issuer)
+    if not ini:
+        return None
+    seq = (await db.execute(text("SELECT COALESCE(MAX(seq), 0) + 1 FROM doc_numbers WHERE doc_type = :t AND issuer = :i AND issue_day = :d"),
+                            {"t": doc_type, "i": ini, "d": day})).scalar_one()
+    return format_no(doc_type, ini, day, seq)
+
+
+async def release(db: AsyncSession, nos: list[str | None]) -> None:
+    """지운 문서·취소한 발행의 번호를 번호 기록에서 뺀다 — 같은 발행자·날짜의 다음 발행이 이 번호를 다시 쓸 수 있게(사용자 2026-11-18).
+    커밋은 부르는 쪽(지우기·취소와 한 트랜잭션)."""
+    keys = sorted({str(n).strip().upper() for n in nos if n and str(n).strip()})
+    if keys:
+        await db.execute(text("DELETE FROM doc_numbers WHERE upper(doc_no) = ANY(:n)"), {"n": keys})
 
 
 async def link_deal(db: AsyncSession, doc_no: str, deal_id: int) -> None:

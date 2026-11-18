@@ -344,6 +344,8 @@ export type QuoteSession = {
                 statement_no?: string | null } | null;
   /** 수주한 견적서를 고쳐 낸 결과 — S/N 다시 짝짓기 안내 */
   sn_note?: string; replaced_won?: boolean;
+  /** 같은 번호로 고쳐 낸 판(수주 판 고치기·이 견적서에서 낸 번호 덮어쓰기, 사용자 2026-11-18) */
+  replaced_rev?: number | null;
   /** 수주한 견적서를 고치며 거래명세서도 다시 발급한 결과(같은 번호 교체·새 번호) */
   statement_reissued?: { no: string; same_no: boolean } | null;
   /** 견적서 수기 작성(AI 추천 없이, 사용자 2026-10-08) · 발행 뒤 이어진 영업 건 */

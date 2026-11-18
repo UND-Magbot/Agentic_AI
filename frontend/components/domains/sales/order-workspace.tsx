@@ -7,8 +7,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { AgentBubble, type AgentStep, streamNdjson } from "@/components/domains/sales/agent-chat";
-import { type Act, BUYER_HINT, GroupHead, ShipDialog, type ShipDraft, ShipForm, StatementDialog, StatementItems, TermsEditor, shipmentDraft } from "@/components/domains/sales/deal-flow";
-import { INPUT, Muted, STAGE_DONE, STAGE_SHIP_ONLY, STAGE_TONE, dealRequest, shortDate, termExpect, todayIso, won } from "@/components/domains/sales/deal-format";
+import { type Act, BUYER_HINT, GroupHead, ShipDialog, type ShipDraft, ShipForm, StatementDialog, StatementItems, TERMS_CLEAR_ASK, TermsEditor, shipCancelAsk, shipmentDraft, statementCancelAsk } from "@/components/domains/sales/deal-flow";
+import { DealRequestError, INPUT, Muted, STAGE_DONE, STAGE_SHIP_ONLY, STAGE_TONE, dealRequest, shortDate, termExpect, todayIso, won } from "@/components/domains/sales/deal-format";
 import { DownloadDialog, PreviewDialog } from "@/components/domains/sales/quote-workspace";
 import { askConfirm } from "@/components/shared/ui/confirm-host";
 import { Icon } from "@/components/shared/ui/icon";
@@ -106,6 +106,8 @@ function PayQueue({ onOpen }: { onOpen: (id: number) => void }) {
 
   async function confirmTerm(deal: DealRow, t: PayTerm) {
     const key = `${deal.id}-${t.index}`;
+    if (!(await askConfirm({ title: `${deal.customer ?? ""} ${t.label} 입금 확인으로 기록할까요?`, message: `입금일 ${dates[key] || todayIso()} · 공급가액 ${won(t.amount)}원 (VAT 별도)`,
+                             confirmLabel: "입금 확인" }))) return;
     setBusy(key);
     setErr(null);
     try {
@@ -450,7 +452,45 @@ export function OrderWorkspace({ id, onBack, openShip = false }: { id: number; o
   }
   const act: Act = (path, body) => confirm(path, body, path === "shipments" || path === "shipment-edit" ? "ship" : path === "confirm-term" ? "payment" : "case");
   /** 회차 입금 확인 — 회사가 따로 확인한 뒤 버튼으로(사용자 2026-10-08). 금액 = 그 회차 공급가액. */
-  const confirmTerm = (t: PayTerm) => confirm("confirm-term", { index: t.index, date: payDate || todayIso(), expect: termExpect(t) }, "payment");
+  const confirmTerm = async (t: PayTerm) => {
+    if (!(await askConfirm({ title: `${t.label} 입금 확인으로 기록할까요?`, message: `입금일 ${payDate || todayIso()} · 공급가액 ${won(t.amount)}원 (VAT 별도)`, confirmLabel: "입금 확인" }))) return false;
+    return confirm("confirm-term", { index: t.index, date: payDate || todayIso(), expect: termExpect(t) }, "payment");
+  };
+  /** [출하 취소] — 마지막 출하 기록을 지워 출하 전으로(사용자 2026-11-18). A/S 가 걸린 S/N 이 묶였으면 팝업 → [출하 기록 고치기] */
+  async function cancelShipment(deal: DealRow) {
+    const i = deal.shipments.length - 1;
+    if (i < 0 || !(await askConfirm(shipCancelAsk(deal, i)))) return;
+    setBusy("저장 중");
+    setErr(null);
+    try {
+      await dealRequest(`/${id}/remove`, { kind: "shipments", index: i, expect: deal.shipments[i] });
+      load(await getJson<Order>(`/api/sales-deals/${id}/order`));
+    } catch (e) {
+      if (e instanceof DealRequestError && e.code === "SHIP_HAS_AS") {
+        if (await askConfirm({ title: "출하를 취소할 수 없습니다", message: e.message, confirmLabel: "출하 기록 고치기", cancelLabel: "닫기" })) setShipOpen(true);
+      } else setErr((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  }
+  /** 거래명세서 발급 취소·결제 조건 지우기 — 앞 단계로 되돌리기(사용자 2026-11-18, 상세 탭과 같게). 입금 기록이 남아 막히면
+   *  팝업 → [입금 칸으로 가기] */
+  async function undoStep(path: string, ask: Parameters<typeof askConfirm>[0]) {
+    if (!(await askConfirm(ask))) return;
+    setBusy("저장 중");
+    setErr(null);
+    try {
+      await dealRequest(`/${id}/${path}`, {});
+      load(await getJson<Order>(`/api/sales-deals/${id}/order`));
+    } catch (e) {
+      if (e instanceof DealRequestError && e.code === "STATEMENT_PAID") {
+        if (await askConfirm({ title: "먼저 입금 기록을 되돌려 주세요", message: e.message, confirmLabel: "입금 칸으로 가기", cancelLabel: "닫기" }))
+          document.getElementById("order-pay")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      } else setErr((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  }
   /** 입금 확인 취소 — 누구나(이력에 남음). 대화에는 남기지 않고 화면만 다시 받는다. */
   const unconfirmTerm = (t: PayTerm) => run("저장 중", async () => {
     await dealRequest(`/${id}/unconfirm-term`, { index: t.index, expect: termExpect(t) });
@@ -478,6 +518,8 @@ export function OrderWorkspace({ id, onBack, openShip = false }: { id: number; o
   async function issue() {
     if (!draft || !(await ensureSaved())) return;
     const items = draft.items.filter((it) => it.name.trim());
+    if (!(await askConfirm({ title: st ? "거래명세서를 고쳐 다시 발급할까요?" : "거래명세서를 발급할까요?",
+                             message: st ? "새 발행번호가 붙고, 예전 번호는 이전 발급본으로 남습니다." : "발행번호가 붙고 PDF·엑셀로 받을 수 있습니다.", confirmLabel: "발급" }))) return;
     if (await confirm("statement", { ...draft, items }, "issue")) setSaving(true);
   }
   async function openPreview() {
@@ -612,6 +654,12 @@ export function OrderWorkspace({ id, onBack, openShip = false }: { id: number; o
                     title="파일로 만들기 전에 지금 초안 그대로 봅니다(빈 칸은 빈 채로)">
               <Icon name="eye" className="h-4 w-4" /> 미리보기
             </button>
+            {st && (
+              <button type="button" disabled={!!busy} onClick={() => void undoStep("statement/cancel", statementCancelAsk(st.no, !!st.history?.length))}
+                      className="h-9 rounded-lg border border-red-500/40 px-3 text-[12.5px] font-semibold text-red-600 hover:bg-red-500/10 disabled:opacity-40">
+                발급 취소
+              </button>
+            )}
             <button type="button" className={primaryBtn} disabled={!!busy} onClick={() => void issue()}
                     title={st ? "고친 초안으로 다시 발급합니다 — 새 발행번호가 붙고, 예전 번호는 히스토리에 남습니다" : ""}>
               <Icon name="file-spreadsheet" className="h-4 w-4" /> {st ? "고쳐서 다시 발급 (새 번호)" : "거래명세서 발급"}
@@ -624,6 +672,10 @@ export function OrderWorkspace({ id, onBack, openShip = false }: { id: number; o
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-[16px] font-extrabold tracking-tight">결제 조건 {fl?.pay_case_label && <span className="font-normal text-foreground-muted">· {fl.pay_case_label}</span>}</h3>
             {ready("case") && <NowBadge>지금 정할 차례</NowBadge>}
+            {deal.pay_terms.length > 0 && (
+              <button type="button" disabled={!!busy} onClick={() => void undoStep("terms/clear", TERMS_CLEAR_ASK)}
+                      className="ml-auto text-[12px] text-foreground-subtle hover:text-red-600 hover:underline disabled:opacity-40">결제 조건 지우기</button>
+            )}
           </div>
           {/* 순서대로 안내만 하고 막지 않는다 — 거래명세서 발급 전에도 정할 수 있음(사용자 2026-10-23, 상세 탭과 같게) */}
           {!st && <p className="text-[11.5px] text-foreground-subtle">보통은 거래명세서를 발급한 뒤에 정합니다.</p>}
@@ -633,10 +685,10 @@ export function OrderWorkspace({ id, onBack, openShip = false }: { id: number; o
 
         {/* 입금 확인 → 출하 — 정상 순서대로 보이되 막지는 않는다(출하는 입금 확인 없이도 기록, 사용자 2026-10-08·10-23) */}
         {(free ? ["ship"] as const : ["pay", "ship"] as const).map((k) => k === "pay" ? (
-          <section key="pay" className={cn("flex flex-col gap-2 rounded-2xl border bg-surface-raised p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04),0_16px_36px_-24px_rgba(15,30,70,0.30)] text-[12.5px]",
+          <section key="pay" id="order-pay" className={cn("scroll-mt-4", "flex flex-col gap-2 rounded-2xl border bg-surface-raised p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04),0_16px_36px_-24px_rgba(15,30,70,0.30)] text-[12.5px]",
             payReady ? HL : late.size ? "border-red-400" : "border-border")}>
             <div className="flex flex-wrap items-center gap-2">
-              <h3 className="text-[16px] font-extrabold tracking-tight">입금 확인</h3>
+              <h3 className="text-[16px] font-extrabold tracking-tight">입금 확인 <span className="text-[12px] font-normal text-foreground-muted">· 공급가액 기준(VAT 별도)</span></h3>
               {payReady && <NowBadge>지금 할 차례</NowBadge>}
               {payDone && <span className="text-emerald-700 dark:text-emerald-300">✓ 완납</span>}
               {payReady && (
@@ -654,7 +706,7 @@ export function OrderWorkspace({ id, onBack, openShip = false }: { id: number; o
                       t.confirmed ? "bg-emerald-500/8" : late.has(t.index) ? "bg-red-500/[0.08]" : now ? "bg-accent/8" : "bg-foreground/[0.03]")}>
                       <b>{t.label} {t.pct}%</b>
                       {t.when && <span className="text-foreground-subtle">{t.when}</span>}
-                      <b className="tabular-nums">{won(t.amount)}원</b>
+                      <span className="text-foreground-muted">공급가액</span><b className="-ml-1 tabular-nums">{won(t.amount)}원</b>
                       {t.expected_date && (
                         <span className={cn(late.has(t.index) ? "font-semibold text-red-600 dark:text-red-400" : "text-foreground-muted")}>
                           예정 {shortDate(t.expected_date)}{late.has(t.index) ? ` · ${fl?.overdue.find((x) => x.index === t.index)?.days}일 지남` : ""}
@@ -692,8 +744,14 @@ export function OrderWorkspace({ id, onBack, openShip = false }: { id: number; o
               <h3 className="text-[16px] font-extrabold tracking-tight">출하</h3>
               {shipNow && <NowBadge>지금 할 차례</NowBadge>}
               {stepDone("ship") && <span className="text-emerald-700 dark:text-emerald-300">✓ {deal.shipments.length}회 기록</span>}
+              {!shipOpen && stepDone("ship") && deal.shipments.length > 0 && deal.kind !== "shipment_only" && (
+                <button type="button" disabled={!!busy} onClick={() => void cancelShipment(deal)}
+                        className="ml-auto h-8 rounded-lg border border-red-500/40 px-3 text-[12.5px] font-semibold text-red-600 hover:bg-red-500/10 disabled:opacity-40">
+                  출하 취소
+                </button>
+              )}
               {!shipOpen && (
-                <button type="button" className={cn(shipNow ? primaryBtn : secondaryBtn, "ml-auto")} disabled={!!busy}
+                <button type="button" className={cn(shipNow ? primaryBtn : secondaryBtn, !(stepDone("ship") && deal.shipments.length > 0) && "ml-auto")} disabled={!!busy}
                         onClick={() => setShipOpen(true)}>
                   {stepDone("ship") ? "출하 기록 수정" : "출하 기록 작성"}
                 </button>
@@ -828,7 +886,7 @@ export function CompletionDialog({ deals, onClose }: { deals: DealRow[]; onClose
               <dd>{items.length ? items.slice(0, 4).map((it) => `${it.name} × ${it.qty ?? "-"}`).join(", ") + (items.length > 4 ? ` 외 ${items.length - 4}` : "") : d.title}</dd>
               <dt className="text-foreground-muted">공급가액</dt><dd className="font-semibold">{won(d.flow?.total)}원</dd>
               <dt className="text-foreground-muted">결제 조건</dt><dd>{d.flow?.pay_case_label ?? "-"}</dd>
-              <dt className="text-foreground-muted">입금</dt>
+              <dt className="text-foreground-muted">입금 (공급가액)</dt>
               <dd>{d.payments.map((p) => `${p.date} ${won(p.amount)}원`).join(" · ") || "-"}</dd>
               <dt className="text-foreground-muted">출하</dt>
               <dd>{ship ? [ship.date, ship.carrier, ship.tracking.length ? `운송장 ${ship.tracking.join(", ")}` : null].filter(Boolean).join(" · ") : "-"}</dd>

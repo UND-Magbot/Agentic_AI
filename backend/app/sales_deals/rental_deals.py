@@ -241,6 +241,7 @@ async def load_serials(db: AsyncSession, deal_id: int, user_id: int | None, toda
             picked[ln["line_no"]] = out
     # 다른 건·다른 판에 이미 등록된 S/N(제조사 UND) — 겹치면 저장이 막히므로 미리 빼고 알린다
     want = [s for xs in picked.values() for s in xs]
+    await units.purge_deleted(db, [("und", s) for s in want])     # 지운 건에 남아 있던 같은 S/N 은 치우고 다시 쓴다(2026-11-18)
     if want:
         dup = (await db.execute(text(
             "SELECT lower(u.serial) AS s, u.status, s.customer FROM product_units u LEFT JOIN sales_deals s ON s.id = u.deal_id "

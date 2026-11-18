@@ -1,194 +1,78 @@
-// 새 영업 건(견적) 등록 — 고객사·담당·견적일·품목·결제조건. 합계와 결제 회차는 저장할 때 backend 가 계산한다.
+// 새 영업 건 등록 — 뼈대만(사용자 2026-11-18: 새 구매 건과 같은 형식). 고객사·프로젝트명·담당·메모만 적고 '견적 전' 단계로 만든다.
+// 품목·금액·결제조건은 받지 않는다 — 견적서는 등록한 건의 상세에서 [견적서 수기 작성]으로 만들어 발행하고, 첫 발행번호가 건 번호가 된다
+// (예전에는 여기서 품목을 적어 저장하면 발행번호 없는 견적이 생겨, 견적서를 고쳐도 건이 따라가지 않았음).
 "use client";
 
 import { useState } from "react";
-import { Field, INPUT, dealRequest, todayIso, won } from "@/components/domains/sales/deal-format";
-import { InitialsPrompt } from "@/components/domains/sales/initials-prompt";
-import type { DealBiz, DealRow } from "@/lib/shared/sales-deals";
+import { dealRequest } from "@/components/domains/sales/deal-format";
+import { secondaryBtn } from "@/components/domains/sales/proposal-actions";
+import { REQ, REQ_SCOPE, ReqLabel } from "@/components/domains/sales/required";
+import { Icon } from "@/components/shared/ui/icon";
+import type { DealRow } from "@/lib/shared/sales-deals";
 import { cn } from "@/lib/shared/utils";
 
-// 기존 관리 시트에서 가장 많이 쓰던 결제조건 문구
-const PAY_TERM_PRESETS = [
-  "선금 : 발주 시 50% / 잔금 : 납품 전 50% (잔금 입금 확인 후 출고)",
-  "선금 : 발주 시 100% (입금 확인 후 출고)",
-  "대금 지급 조건 : 납품 후 익월말",
-  "별도 협의",
-];
+const INPUT = "h-10 w-full rounded-lg border border-border bg-surface px-3 text-[13px] outline-none focus:border-accent";
 
-type Line = { key: number; name: string; unit_price: string; qty: string };
-
-const num = (s: string) => {
-  const n = Number(s.replaceAll(",", ""));
-  return s.trim() && Number.isFinite(n) ? n : null;
-};
-
-export function DealNewForm({ owners, biz, onClose, onCreated }: {
+export function DealNewForm({ owners, onClose, onCreated }: {
   owners: string[];
-  /** rental = 대여 건으로 고정(대여 개월 수·시작일, 사용자 2026-10-22) · sale = 판매 고정 · 비우면 창에서 판매/대여 고른다
-   *  (사용자 2026-10-30: 대여 건도 제품 영업 건 관리에서 등록) */
-  biz?: DealBiz;
   onClose: () => void;
   onCreated: (row: DealRow) => void;
 }) {
-  const [customer, setCustomer] = useState("");
-  const [contact, setContact] = useState("");
-  const [owner, setOwner] = useState("");
-  const [quoteDate, setQuoteDate] = useState(todayIso());
-  const [title, setTitle] = useState("");
-  const [lines, setLines] = useState<Line[]>([{ key: 1, name: "", unit_price: "", qty: "1" }]);
-  const [vatIncluded, setVatIncluded] = useState(false);
-  const [currency, setCurrency] = useState<"KRW" | "USD">("KRW");
-  const [payTerms, setPayTerms] = useState(PAY_TERM_PRESETS[0]);
-  const [note, setNote] = useState("");
+  const [v, setV] = useState({ customer: "", title: "", contact: "", owner: "", note: "" });
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [needIni, setNeedIni] = useState(false);
-  const [kind, setKind] = useState<DealBiz>(biz ?? "sale");
-  const rental = kind === "rental";
-  const [months, setMonths] = useState("");
-  const [rentStart, setRentStart] = useState("");
-
-  const total = lines.reduce((sum, l) => sum + (num(l.unit_price) ?? 0) * (num(l.qty) ?? 0), 0);
-  const filled = lines.filter((l) => l.name.trim());
-  const canSave = customer.trim() && quoteDate && filled.length > 0 && !busy && (!rental || (num(months) ?? 0) >= 1);
-
-  const setLine = (key: number, patch: Partial<Line>) =>
-    setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
+  const [err, setErr] = useState<string | null>(null);
+  const canSave = !busy && !!v.customer.trim() && !!v.title.trim();
 
   async function save() {
     setBusy(true);
-    setError(null);
+    setErr(null);
     try {
-      const row = await dealRequest("", {
-        customer: customer.trim(), contact: contact.trim() || null, owner: owner.trim() || null,
-        title: title.trim() || null, quote_date: quoteDate, vat_included: vatIncluded, currency,
-        pay_terms_text: payTerms.trim() || null, note: note.trim() || null,
-        items: filled.map((l) => ({ name: l.name.trim(), unit_price: num(l.unit_price), qty: num(l.qty) })),
-        ...(rental ? { rental: { months: Math.round(num(months) ?? 0), start: rentStart || null } } : {}),
-      });
-      onCreated(row);
+      onCreated(await dealRequest("/new", {
+        customer: v.customer.trim(), title: v.title.trim(), contact: v.contact.trim() || null,
+        owner: v.owner.trim() || null, note: v.note.trim() || null,
+      }));
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "저장하지 못했습니다.";
-      // 새 건 번호 = 담당 이니셜 + 날짜 — 이니셜을 아직 모르는 담당자면 한 번 묻는다
-      if (msg.includes("이니셜") && owner.trim()) setNeedIni(true);
-      else setError(msg.includes("이니셜") ? "영업 담당을 적어 주세요 — 건 번호(담당 이니셜 + 날짜)에 씁니다." : msg);
+      setErr(e instanceof Error ? e.message : "등록하지 못했습니다.");
       setBusy(false);
     }
   }
 
   return (
-    <div className="fixed inset-0 z-40 grid place-items-center bg-black/30 p-4" onClick={onClose}>
-      <div role="dialog" aria-label={rental ? "새 제품 대여 건 등록" : "새 제품 판매 건 등록"} onClick={(e) => e.stopPropagation()}
-           className="scroll-thin max-h-full w-full max-w-[760px] overflow-y-auto rounded-2xl bg-background p-5 shadow-2xl">
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-[17px] font-bold">{rental ? "새 대여 건 등록 (견적)" : "새 건 등록 (견적)"}</h2>
-          <button type="button" onClick={onClose} aria-label="닫기"
-                  className="grid h-8 w-8 place-items-center rounded-lg text-foreground-muted hover:bg-foreground/8">✕</button>
-        </div>
-
-        {!biz && (
-          <div role="group" aria-label="판매·대여" className="mb-3 inline-flex overflow-hidden rounded-lg border border-border text-[13px]">
-            {(["sale", "rental"] as const).map((k) => (
-              <button key={k} type="button" aria-pressed={kind === k} onClick={() => setKind(k)}
-                      className={cn("px-4 py-1.5 font-semibold", kind === k ? (k === "rental" ? "bg-emerald-600 text-white" : "bg-accent text-white") : "text-foreground-muted hover:bg-foreground/5")}>
-                {k === "sale" ? "제품 판매" : "제품 대여"}
-              </button>
-            ))}
-          </div>
-        )}
-        <div className="grid gap-3 text-[13px] md:grid-cols-2">
-          <Field label="고객사 *"><input value={customer} onChange={(e) => setCustomer(e.target.value)} className={INPUT} /></Field>
-          <Field label="고객 담당자"><input value={contact} onChange={(e) => setContact(e.target.value)} className={INPUT} placeholder="예: 박기영 이사" /></Field>
-          <Field label="영업 담당">
-            <input value={owner} onChange={(e) => setOwner(e.target.value)} list="deal-owners" className={INPUT} />
-            <datalist id="deal-owners">{owners.map((o) => <option key={o} value={o} />)}</datalist>
-          </Field>
-          <Field label="견적일 *"><input type="date" value={quoteDate} onChange={(e) => setQuoteDate(e.target.value)} className={INPUT} /></Field>
-          <Field label="건명 (비우면 첫 품목으로)" wide>
-            <input value={title} onChange={(e) => setTitle(e.target.value)} className={INPUT} />
-          </Field>
-          {rental && (
-            <>
-              <Field label="대여 개월 수 *">
-                <input value={months} onChange={(e) => setMonths(e.target.value)} inputMode="numeric" placeholder="예: 36 (3년)" className={INPUT} />
-              </Field>
-              <Field label="대여 시작일 (모르면 비워 두기)">
-                <input type="date" value={rentStart} onChange={(e) => setRentStart(e.target.value)} className={INPUT} />
-              </Field>
-            </>
-          )}
-        </div>
-        {rental && (
-          <p className="mt-2 text-[11.5px] text-foreground-subtle">
-            대여 끝나는 날(시작일 + 개월 수)과 월 납입금(합계 ÷ 개월, 천 원 올림)은 저장할 때 계산합니다
-            {(num(months) ?? 0) >= 1 && total > 0 && currency === "KRW" ? ` — 지금 합계면 월 ${(Math.ceil(total / Math.round(num(months) ?? 1) / 1000) * 1000).toLocaleString("ko-KR")}원` : ""}.
-          </p>
-        )}
-
-        <h3 className="mb-2 mt-5 text-[12px] font-semibold uppercase tracking-[0.1em] text-foreground-subtle">견적 품목</h3>
-        <div className="flex flex-col gap-2">
-          {lines.map((l) => (
-            <div key={l.key} className="grid grid-cols-[1fr_130px_80px_32px] gap-2">
-              <input value={l.name} onChange={(e) => setLine(l.key, { name: e.target.value })} placeholder="품목·사양" className={INPUT} />
-              <input value={l.unit_price} onChange={(e) => setLine(l.key, { unit_price: e.target.value })} placeholder="단가"
-                     inputMode="numeric" className={cn(INPUT, "text-right")} />
-              <input value={l.qty} onChange={(e) => setLine(l.key, { qty: e.target.value })} placeholder="수량"
-                     inputMode="decimal" className={cn(INPUT, "text-right")} />
-              <button type="button" aria-label="품목 삭제" disabled={lines.length === 1}
-                      onClick={() => setLines((ls) => ls.filter((x) => x.key !== l.key))}
-                      className="rounded-lg text-foreground-muted hover:bg-foreground/8 disabled:opacity-30">✕</button>
-            </div>
-          ))}
-        </div>
-        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[13px]">
-          <button type="button" onClick={() => setLines((ls) => [...ls, { key: Date.now(), name: "", unit_price: "", qty: "1" }])}
-                  className="rounded-lg border border-border px-3 py-1.5 hover:bg-foreground/5">+ 품목 추가</button>
-          <div className="flex items-center gap-3">
-            <label className="flex items-center gap-1.5 whitespace-nowrap">
-              <input type="checkbox" checked={vatIncluded} onChange={(e) => setVatIncluded(e.target.checked)} /> 부가세 포함 단가
-            </label>
-            <select value={currency} onChange={(e) => setCurrency(e.target.value as "KRW" | "USD")} className={cn(INPUT, "w-auto")}>
-              <option value="KRW">원(KRW)</option>
-              <option value="USD">달러(USD)</option>
-            </select>
-            <span className="font-semibold">합계 {won(total, currency)}</span>
-          </div>
-        </div>
-
-        <h3 className="mb-2 mt-5 text-[12px] font-semibold uppercase tracking-[0.1em] text-foreground-subtle">결제조건</h3>
-        <div className="mb-2 flex flex-wrap gap-1.5">
-          {PAY_TERM_PRESETS.map((p) => (
-            <button key={p} type="button" onClick={() => setPayTerms(p)}
-                    className={cn("rounded-full border px-2.5 py-1 text-[12px]",
-                      payTerms === p ? "border-accent bg-accent/10 text-accent" : "border-border text-foreground-muted hover:text-foreground")}>
-              {p}
-            </button>
-          ))}
-        </div>
-        <input value={payTerms} onChange={(e) => setPayTerms(e.target.value)} className={INPUT}
-               placeholder="예: 선금 : 발주 시 50% / 잔금 : 납품 전 50%" />
-        <p className="mt-1 text-[11.5px] text-foreground-subtle">
-          &apos;선금·잔금·%&apos;를 읽어 결제 회차를 만듭니다. &apos;입금 확인 후 출고&apos;가 있으면 완납 확인 전 출하를 막습니다.
+    <section className="flex flex-col gap-3">
+      <button type="button" className={cn(secondaryBtn, "self-start")} disabled={busy} onClick={onClose}>
+        <Icon name="back" className="h-4 w-4" /> 영업 건 목록
+      </button>
+      <div className="w-full max-w-[720px] rounded-xl border border-border bg-surface p-5">
+        <h2 className="text-[16px] font-bold">새 영업 건 작성</h2>
+        <p className="mt-1 text-[12.5px] text-foreground-muted">
+          고객사·프로젝트명만 적어 등록합니다. 등록한 뒤 상세의 <b>[견적서 수기 작성]</b>으로 견적서를 만들어 발행하면
+          발행번호가 건 번호가 되고 견적 단계로 넘어갑니다.
         </p>
-
-        <Field label="비고" wide className="mt-4">
-          <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} className={cn(INPUT, "h-auto py-2")} />
-        </Field>
-
-        {error && <p className="mt-3 rounded-lg bg-red-500/10 px-3 py-2 text-[13px] text-red-700 dark:text-red-300">{error}</p>}
-        {needIni && (
-          <div className="mt-3">
-            <InitialsPrompt name={owner.trim()} onCancel={() => setNeedIni(false)} onSaved={() => { setNeedIni(false); void save(); }} />
-          </div>
-        )}
-        <div className="mt-5 flex justify-end gap-2">
-          <button type="button" onClick={onClose} className="h-9 rounded-lg border border-border px-4 text-[13px]">취소</button>
-          <button type="button" onClick={save} disabled={!canSave}
-                  className="h-9 rounded-lg bg-accent px-4 text-[13px] font-semibold text-white disabled:opacity-40">
-            {busy ? "저장 중…" : "등록"}
-          </button>
+        <div className="mt-4 grid gap-3 text-[13px]">
+          <label className={cn("grid gap-1", REQ_SCOPE)}><ReqLabel>고객사</ReqLabel>
+            <input {...REQ} className={INPUT} value={v.customer} autoFocus placeholder="예: LG이노텍"
+                   onChange={(e) => setV({ ...v, customer: e.target.value })} /></label>
+          <label className={cn("grid gap-1", REQ_SCOPE)}><ReqLabel>프로젝트명</ReqLabel>
+            <input {...REQ} className={INPUT} value={v.title} placeholder="예: Roller C AMR(RC1) 부자재"
+                   onChange={(e) => setV({ ...v, title: e.target.value })} />
+            <span className="text-[11.5px] text-foreground-subtle">리스트·상세에 보이는 이름입니다. 나중에 상세에서 고칠 수 있고, 견적서 내용과는 따로 관리됩니다.</span>
+          </label>
+          <label className="grid gap-1">고객 담당자<input className={INPUT} value={v.contact} placeholder="예: 박기영 이사"
+                                                    onChange={(e) => setV({ ...v, contact: e.target.value })} /></label>
+          <label className="grid gap-1">영업 담당
+            <input className={INPUT} value={v.owner} list="deal-owners" onChange={(e) => setV({ ...v, owner: e.target.value })} />
+            <datalist id="deal-owners">{owners.map((o) => <option key={o} value={o} />)}</datalist>
+          </label>
+          <label className="grid gap-1">메모<textarea className={cn(INPUT, "h-28 py-2")} maxLength={2000} value={v.note}
+                                                 onChange={(e) => setV({ ...v, note: e.target.value })} /></label>
+        </div>
+        {err && <p className="mt-3 text-[12.5px] text-red-600">{err}</p>}
+        <div className="mt-4 flex justify-end gap-2">
+          <button type="button" onClick={onClose} disabled={busy} className="h-9 rounded-lg border border-border px-4 text-[13px]">취소</button>
+          <button type="button" onClick={() => void save()} disabled={!canSave}
+                  className="h-9 rounded-lg bg-accent px-4 text-[13px] font-semibold text-white disabled:opacity-40">{busy ? "등록 중…" : "등록"}</button>
         </div>
       </div>
-    </div>
+    </section>
   );
 }

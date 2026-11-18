@@ -545,7 +545,7 @@ async def run() -> None:
         n = await svc.delete(db, [pid])
         left = (await db.execute(text("SELECT COUNT(*) FROM purchase_events WHERE purchase_id = :p"), {"p": pid})).scalar()
         kept = (await db.execute(text("SELECT COUNT(*) FROM doc_numbers WHERE doc_no = :n"), {"n": po["no"]})).scalar()
-        check(n == 1 and left == 0 and kept == 1, "삭제 — 이력도 지움, 발주 번호는 남김")
+        check(n == 1 and left == 0 and kept == 0, "삭제 — 이력도 지움, 발주 번호는 다시 쓰게 놓아 줌(사용자 2026-11-18)")
 
         # ── 국내 송금 = [송금 확인] 버튼 한 번(사용자 2026-11-11 — 지출내역 대조 뺌) ──
         kid = await svc.create(db, uid, {"supplier": SUP, "title": "버튼 송금"})

@@ -991,6 +991,8 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
   // 제품 종류 탭 — 종류마다 질문지가 다르다(ATC 는 영업부 질문지, 그 외는 임시 질문)
   const [product, setProduct] = useState<"atc" | "other">("atc");
   const [phase, setPhase] = useState<"form" | "session">("form");
+  // '견적 전' 영업 건에서 [AI 제품 추천으로 시작]으로 왔으면 그 건(사용자 2026-11-18) — [최종 제안 확정]하면 새 건 대신 이 건에 붙는다
+  const [forDeal, setForDeal] = useState<{ id: number; label: string } | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [atcIntake, setAtcIntake] = useState<AtcIntake>(() => emptyIntake(writer));
   const [atcStep, setAtcStep] = useState(0);
@@ -1672,8 +1674,15 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
     setError(null);
     setNeedIni(false);
     try {
-      const p = await post<ProductProposal & { deal_no: string | null }>(`/recommendations/${rec.id}/finalize`, { history: transcript() });
+      const p = await post<ProductProposal & { deal_no: string | null }>(`/recommendations/${rec.id}/finalize`,
+                                                                          { history: transcript(), ...(forDeal ? { deal_id: forDeal.id } : {}) });
       setFinalized({ recId: rec.id, id: p.id, dealNo: p.deal_no });
+      if (forDeal) {
+        say(`최종 제안으로 확정했습니다 — 영업 건 '${forDeal.label}'에 붙였습니다(제품 추천 확정). 그 건 상세의 [견적서 작성 →]으로 추천 결과로 견적서를 만들면 `
+          + "첫 발행번호가 건 번호가 됩니다.");
+        setForDeal(null);
+        return;
+      }
       // 건 번호는 견적서 첫 발행 때 부여(사용자 2026-10-08) — 확정만 한 건은 번호 없이 '제품 추천 확정'
       say(`최종 제안으로 확정했습니다 — 제품 영업 건${p.deal_no ? ` ${p.deal_no}` : ""}(제품 추천 확정)로 등록했습니다`
         + (p.deal_no ? ". " : "(건 번호는 견적서를 처음 발행할 때 붙습니다). ") + "미팅 내용·최종 추천·근거·대화는 "
@@ -1861,6 +1870,13 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
 
       {/* 고른 탭과 이어진 패널(사용자 2026-10-23) */}
       <div role="tabpanel" className="und-tabpanel flex flex-col gap-4">
+      {tab === "recommend" && forDeal && (
+        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-teal-500/40 bg-teal-500/[0.06] px-4 py-2.5 text-[12.5px]">
+          <span className="rounded bg-teal-500/15 px-1.5 py-0.5 text-[11px] font-semibold text-teal-700 dark:text-teal-300">영업 건에서 시작</span>
+          <span><b>{forDeal.label}</b> — [최종 제안 확정]하면 새 건을 만들지 않고 이 건에 붙습니다.</span>
+          <button type="button" className="ml-auto text-[12px] text-foreground-subtle hover:underline" onClick={() => setForDeal(null)}>연결 해제(새 건으로)</button>
+        </div>
+      )}
       {tab === "recommend" && phase === "form" && (
       <>
         {/* 제품 종류 — 누르면 질문지가 바뀐다 */}
@@ -2239,7 +2255,15 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
       {tab === "quote" && <QuoteTab openId={quoteId} onOpen={(id) => { setAskManual(false); setQuoteId(id); }} askManual={askManual} />}
       {tab === "order" && <OrderTab openId={orderId} focus={orderFocus} onOpen={(id) => { setOrderFocus(undefined); setOrderId(id); }} />}
       {tab === "deals" && <DealsTab openDealId={dealOpen} openFocus={dealOpen === initialDeal ? dealFocus : undefined} onMeeting={setMeetingId} onOrder={(id) => { setOrderId(id); setTab("order"); }}
-                                     onQuote={(id) => { setQuoteId(id); setTab("quote"); }} />}
+                                     onQuote={(id) => { setQuoteId(id); setTab("quote"); }}
+                                     onRecommend={(d) => {
+                                       resetAll();
+                                       // 질문지의 고객사·고객 담당자를 이 건 것으로 미리 채운다(고칠 수 있음)
+                                       const base = emptyIntake(writer);
+                                       setIntake({ ...base, project: { ...base.project, customer_name: d.customer ?? undefined, customer_contact: d.contact ?? undefined } } as AtcIntake);
+                                       setForDeal({ id: d.id, label: [d.customer, d.title].filter(Boolean).join(" · ") || "이 건" });
+                                       setTab("recommend");
+                                     }} />}
       {tab === "purchases" && <PurchasesTab />}
       {/* 대여 제품 목록(사용자 2026-11-10) — 대여 제품(유상·무상)을 품목마다 한 줄씩, 누르면 S/N·고객사·대여 건. 무상 대여 건은 여기서만 */}
       {tab === "rentals" && <RentalDealsTab key={rentalOpen ?? "list"} openDealId={rentalOpen} onOpenDeal={(id) => { setDealOpen(id); setTab("deals"); }}

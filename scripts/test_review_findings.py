@@ -172,20 +172,38 @@ async def deleted_deal_serial(db, tag: str) -> None:
     deal_id, qid = await new_deal(db, "QT-RV20261026-02")
     await units.save_units(db, deal_id, None, qid, 0, [{"line_no": 0, "units": [{"serial": f"RV-{tag}-2", "warranty_months": 12}]}])
     await svc.delete_deals(db, [deal_id], None)
-    left = (await db.execute(text("SELECT deal_id FROM product_units WHERE serial = :s"), {"s": f"RV-{tag}-2"})).all()
-    # 사용자 2026-10-26: 지운 건의 S/N 도 기록으로 남기고(어느 건·고객사였는지), S/N 은 겹치지 않으므로 다시 등록은 막는다
-    u = (await db.execute(text("SELECT deal_id, status, note FROM product_units WHERE serial = :s"), {"s": f"RV-{tag}-2"})).mappings().one()
-    check(u["deal_id"] is None and u["status"] == units.DELETED and "QT-RV20261026-02" in u["note"] and CUST in u["note"],
-          "S/N-5 건을 지워도 S/N 은 남고, 상태 '건 삭제' + 메모에 건번호·고객사", str(dict(u)))
-    found = await units.search_units(db, CUST, TODAY)
-    check(any(x["serial"] == f"RV-{tag}-2" for x in found), "S/N-5 지운 건의 고객사 이름으로 찾으면 나옴", str([x["serial"] for x in found]))
+    # 사용자 2026-11-18: 지운 건의 S/N 도 지운다 — 같은 S/N 을 다른 건에 다시 등록할 수 있다(예전 10-26: 남기고 다시 등록 막음)
+    left = (await db.execute(text("SELECT count(*) FROM product_units WHERE serial = :s"), {"s": f"RV-{tag}-2"})).scalar()
+    check(left == 0, "S/N-5 건을 지우면 S/N 도 지워짐", f"남은 줄 {left}")
     d2, q2 = await new_deal(db, "QT-RV20261026-03")
-    try:
-        await units.save_units(db, d2, None, q2, 0, [{"line_no": 0, "units": [{"serial": f"RV-{tag}-2", "warranty_months": 12}]}])
-        check(False, "S/N-5 지운 건의 S/N 을 다시 등록하면 막고 지운 건이라고 알려 줌", "등록됨")
-    except svc.DealError as e:
-        await db.rollback()
-        check("지운 영업 건" in str(e) and "QT-RV20261026-02" in str(e), "S/N-5 지운 건의 S/N 을 다시 등록하면 막고 지운 건이라고 알려 줌", str(e))
+    await units.save_units(db, d2, None, q2, 0, [{"line_no": 0, "units": [{"serial": f"RV-{tag}-2", "warranty_months": 12}]}])
+    again = (await db.execute(text("SELECT deal_id FROM product_units WHERE serial = :s"), {"s": f"RV-{tag}-2"})).scalar()
+    check(again == d2, "S/N-5 지운 건의 S/N 을 다른 건에 다시 등록할 수 있음", f"deal={again}")
+    # 예전에 '건 삭제'로 남겨 둔 S/N 도 다시 등록하면 옛 기록을 치우고 등록된다
+    await db.execute(text("INSERT INTO product_units (deal_id, part_name, maker, serial, status, purpose) VALUES (NULL, 'MG10', 'UND', :s, :g, 'S')"),
+                     {"s": f"RV-{tag}-OLD", "g": units.DELETED})
+    d3, q3 = await new_deal(db, "QT-RV20261026-04")
+    await units.save_units(db, d3, None, q3, 0, [{"line_no": 0, "units": [{"serial": f"RV-{tag}-OLD", "warranty_months": 12}]}])
+    rows = (await db.execute(text("SELECT deal_id, status FROM product_units WHERE serial = :s"), {"s": f"RV-{tag}-OLD"})).all()
+    check(len(rows) == 1 and rows[0][0] == d3, "S/N-5 예전 '건 삭제' S/N 도 다시 등록하면 옛 기록 치우고 등록", str(rows))
+    # 출하 취소 → 그 출하에 등록한 S/N 도 지워짐(사용자 2026-11-18)
+    ids = (await db.execute(text("SELECT id FROM product_units WHERE deal_id = :d"), {"d": d3})).scalars().all()
+    await units.ship_units(db, d3, 0, TODAY, list(ids), None)
+    await units.shipment_removed(db, d3, 0)
+    n = (await db.execute(text("SELECT count(*) FROM product_units WHERE deal_id = :d"), {"d": d3})).scalar()
+    check(n == 0, "S/N-6 출하 취소하면 그 출하에 등록한 S/N 도 지워짐", f"남은 줄 {n}")
+    # 건을 지우면 그 건의 A/S 기록도 같이 지워지고 보관함에 남음(사용자 2026-11-18)
+    d4, q4 = await new_deal(db, "QT-RV20261026-05")
+    await units.save_units(db, d4, None, q4, 0, [{"line_no": 0, "units": [{"serial": f"RV-{tag}-AS", "warranty_months": 12}]}])
+    u4 = (await db.execute(text("SELECT id FROM product_units WHERE deal_id = :d"), {"d": d4})).scalar()
+    await units.create_cases(db, None, [u4], {"status": "접수", "symptom": "삭제 점검"})
+    cid = (await db.execute(text("SELECT id FROM as_cases WHERE unit_id = :u"), {"u": u4})).scalar()
+    await svc.delete_deals(db, [d4], None)
+    left = (await db.execute(text("SELECT count(*) FROM as_cases WHERE id = :i"), {"i": cid})).scalar()
+    kept = (await db.execute(text("SELECT count(*) FROM trash_bin WHERE source_table = 'as_cases' AND source_id = :i"), {"i": cid})).scalar()
+    check(left == 0 and kept == 1, "S/N-7 건을 지우면 그 건의 A/S 기록도 지워지고 보관함에 남음", f"남음 {left} · 보관함 {kept}")
+    await db.execute(text("DELETE FROM trash_bin WHERE source_table = 'as_cases' AND source_id = :i"), {"i": cid})
+    await db.commit()
 
 
 async def replaced_after_confirm(db, tag: str) -> None:

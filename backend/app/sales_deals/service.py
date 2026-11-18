@@ -474,6 +474,41 @@ async def create_deal(db: AsyncSession, user_id: int | None, p: dict) -> int:
     return new_id
 
 
+async def create_skeleton(db: AsyncSession, user_id: int | None, p: dict) -> int:
+    """[+ 새 건 등록] — 품목·금액 없이 고객사·프로젝트명·담당만(사용자 2026-11-18, 새 구매 건과 같은 형식). 단계 '견적 전',
+    건 번호 없음. 견적서는 상세의 [견적서 수기 작성]으로 만들어 발행 — 첫 발행번호가 건 번호가 된다(번호 없는 견적을 만들지 않게)."""
+    customer = str(p.get("customer") or "").strip()[:200]
+    title = str(p.get("title") or "").strip()[:200]
+    if not customer:
+        raise DealError("고객사를 적어 주세요.")
+    if not title:
+        raise DealError("프로젝트명을 적어 주세요.")
+    new_id = (await db.execute(text(
+        "INSERT INTO sales_deals (deal_no, kind, customer, contact, owner, title, base_date, note, created_by) "
+        "VALUES (NULL, 'recommend', :c, :ct, :o, :t, :d, :n, :u) RETURNING id"),
+        {"c": customer, "ct": str(p.get("contact") or "").strip()[:200] or None, "o": str(p.get("owner") or "").strip()[:50] or None,
+         "t": title, "d": kst_today(), "n": str(p.get("note") or "").strip()[:2000], "u": user_id})).scalar_one()
+    await _log(db, new_id, user_id, "create", {"skeleton": True})
+    await db.commit()
+    return new_id
+
+
+async def set_info(db: AsyncSession, deal_id: int, user_id: int | None, p: dict) -> None:
+    """고객사·프로젝트명 고치기(사용자 2026-11-18) — 건의 이름만. 견적서·거래명세서에 적힌 고객사명은 그대로(서로 연동 없음)."""
+    d = await _lock(db, deal_id)
+    new = {"customer": str(p.get("customer") or "").strip()[:200], "title": str(p.get("title") or "").strip()[:200]}
+    if not new["customer"]:
+        raise DealError("고객사를 적어 주세요.")
+    if not new["title"]:
+        raise DealError("프로젝트명을 적어 주세요.")
+    changed = {k: {"from": d.get(k), "to": v} for k, v in new.items() if (d.get(k) or "") != v}
+    if not changed:
+        return
+    await _save(db, deal_id, **new)
+    await _log(db, deal_id, user_id, "info", changed)
+    await db.commit()
+
+
 async def insert_quote_deal(db: AsyncSession, user_id: int | None, p: dict) -> tuple[int, str]:
     """새 견적 건을 넣고 (id, 건 번호)를 돌려준다 — 커밋하지 않는다(견적서 발행처럼 다른 저장과 한 번에 커밋하려고).
     견적서 발행으로 만드는 건은 건 번호 = 첫 견적서 발행번호(p["doc_no"], QT-…). 직접 등록한 건은 예전처럼 이니셜+날짜."""
@@ -504,15 +539,32 @@ async def _proposal_deal(db: AsyncSession, proposal_id: int) -> Any:
                              {"p": proposal_id})).first()
 
 
-async def recommend_deal(db: AsyncSession, user_id: int | None, proposal_id: int, p: dict) -> tuple[int, str | None]:
+async def _skeleton(db: AsyncSession, deal_id: int) -> bool:
+    """[+ 새 건 등록]으로 만든 건인지 — 고객사·프로젝트명은 담당자가 정한 것이라 추천 확정이 덮지 않는다(사용자 2026-11-18)."""
+    return bool((await db.execute(text("SELECT 1 FROM sales_deal_events WHERE deal_id = :i AND action = 'create' "
+                                       "AND detail->>'skeleton' = 'true' LIMIT 1"), {"i": deal_id})).scalar())
+
+
+async def recommend_deal(db: AsyncSession, user_id: int | None, proposal_id: int, p: dict,
+                         attach: int | None = None) -> tuple[int, str | None]:
     """[최종 제안 확정] → 영업 건(단계 '제품 추천 확정'). 같은 확정을 다시 하면 그 건의 고객·건명만 고친다.
-    커밋하지 않는다(확정 저장과 한 번에). p: {day, customer, owner, title}. 반환 (id, 건 번호)."""
+    attach = '견적 전' 건 상세의 [AI 제품 추천으로 시작]에서 연 추천(사용자 2026-11-18) — 새 건을 만들지 않고 그 건에 붙인다
+    (고객사·프로젝트명은 건의 것 그대로). 커밋하지 않는다(확정 저장과 한 번에). p: {day, customer, owner, title}. 반환 (id, 건 번호)."""
     r = await _proposal_deal(db, proposal_id)
     if r is not None:
-        if r.kind == "recommend":
+        if r.kind == "recommend" and not await _skeleton(db, r.id):
             await _save(db, r.id, customer=p.get("customer") or None, title=p["title"])
         await _log(db, r.id, user_id, "recommend", {"title": p["title"]})
         return r.id, r.deal_no
+    if attach:
+        t = (await db.execute(text("SELECT id, kind, proposal_id FROM sales_deals WHERE id = :i FOR UPDATE"), {"i": attach})).first()
+        if t is None:
+            raise DealError("추천을 붙일 영업 건을 찾을 수 없습니다.", 404)
+        if t.kind != "recommend" or t.proposal_id is not None:
+            raise DealError("이 영업 건은 이미 견적서를 발행했거나 다른 제품 추천이 확정돼 있어 붙일 수 없습니다.", 409)
+        await _save(db, attach, proposal_id=proposal_id)
+        await _log(db, attach, user_id, "recommend", {"title": p["title"], "attached": True})
+        return attach, None
     # 건 번호는 견적서 첫 발행 때(quote_deal) — 확정만 한 건은 번호 없이 '제품 추천 확정' 단계로 관리(사용자 2026-10-08)
     new_id = (await db.execute(text(
         "INSERT INTO sales_deals (deal_no, kind, customer, owner, title, base_date, proposal_id, created_by) "
@@ -529,7 +581,7 @@ async def quote_deal(db: AsyncSession, user_id: int | None, proposal_id: int | N
     첫 견적서 발행번호가 건 번호. 발행번호(p["doc_no"], QT-LU20261012-01)는 발행마다 새로(사용자 2026-10-12). 건은 추천 기록
     (proposal_id) 또는 수기 견적이 이어 둔 건(deal_id)으로 찾고, 없으면 새 견적 건. 커밋하지 않는다. 반환 (id, 건 번호)."""
     if deal_id:
-        r = (await db.execute(text("SELECT id, deal_no, kind, won, paid_full FROM sales_deals WHERE id = :i FOR UPDATE"),
+        r = (await db.execute(text("SELECT id, deal_no, kind, won, paid_full, title, owner FROM sales_deals WHERE id = :i FOR UPDATE"),
                               {"i": deal_id})).first()
     else:
         r = await _proposal_deal(db, proposal_id) if proposal_id else None
@@ -550,7 +602,13 @@ async def quote_deal(db: AsyncSession, user_id: int | None, proposal_id: int | N
     first = (p["items"][0]["name"].split("\n")[0] if p["items"] else "")[:40]
     title = first + (f" 외 {len(p['items']) - 1}" if len(p["items"]) > 1 else "")
     # 견적서 판(첫 발행 1, 고쳐 다시 발행 2 …)은 quote.revision(사내용), 문서 번호는 quote.no
-    fields: dict[str, Any] = {"quote": quote, "customer": p["customer"], "contact": p.get("contact"), "title": title}
+    # 고객사·고객 담당자·프로젝트명은 첫 견적서 발행 때만 견적서를 따라간다(사용자 2026-11-18) — 그 뒤로는 건에서 고친 이름과
+    # 견적서에 적은 고객사명이 서로 따로(재발행이 건 이름을 덮지 않고, 건 이름을 고쳐도 견적서는 그대로). 프로젝트명은 비어 있을 때만
+    fields: dict[str, Any] = {"quote": quote}
+    if r.kind == "recommend":
+        fields.update(customer=p["customer"], contact=p.get("contact"))
+        if not (getattr(r, "title", None) or "").strip():
+            fields["title"] = title
     if r.won or r.paid_full:   # 완납한 건도 견적은 그대로(사용자 2026-10-26). 수주한 건 — 수주한 견적서(품목·금액·번호)는 그대로, 새 발행은 견적서 목록·이력에만(사용자 2026-10-22)
         fields = {}
     else:                      # 수주 전이어도 입금 확인이 있으면 금액을 바꾸는 발행은 막는다(QA 2026-11-16)
@@ -558,7 +616,7 @@ async def quote_deal(db: AsyncSession, user_id: int | None, proposal_id: int | N
         pays = json.loads(cur[0]) if isinstance(cur[0], str) else cur[0]
         _amount_locked(pays, cur[1], quote["amount"])
     if r.kind == "recommend":
-        fields.update(kind="quote", base_date=p["quote_date"], owner=p.get("owner"))
+        fields.update(kind="quote", base_date=p["quote_date"], owner=getattr(r, "owner", None) or p.get("owner"))
     deal_no = r.deal_no
     if not deal_no:                                       # 제품 추천 확정만 한 건 — 첫 견적서 발행번호가 건 번호
         deal_no = p.get("doc_no") or await deal_no_for(db, p.get("owner"), p["quote_date"], p.get("initials"))
@@ -645,6 +703,8 @@ async def set_won(db: AsyncSession, deal_id: int, user_id: int | None, won: bool
     d = await _lock(db, deal_id)
     if d["kind"] == "shipment_only":
         raise DealError("견적 없는 출하 건은 수주 상태가 없습니다.")
+    if won and d["kind"] == "recommend":                # 견적서를 발행하기 전(번호 없음) — 수주는 견적서 발행 뒤(사용자 2026-11-18)
+        raise DealError("견적서를 먼저 발행해 주세요 — 상세의 [견적서 수기 작성]으로 견적서를 만들어 발행하면 수주 확정할 수 있습니다.", 409)
     # 이미 수주한 건에 날짜 없이 수주를 다시 누르면 원래 수주일 유지 — 분기 KPI 가 옮겨 가던 문제(검증 DL-049, 2026-10-15).
     # 오늘은 한국 날짜로(서버 시계는 UTC)
     keep = dt.date.fromisoformat(d["won_date"]) if won and d.get("won") and d.get("won_date") and day is None else None
@@ -889,6 +949,54 @@ async def reissue_statement(db: AsyncSession, deal_id: int, user_id: int | None,
     return st["no"]
 
 
+async def cancel_statement(db: AsyncSession, deal_id: int, user_id: int | None) -> None:
+    """거래명세서 발급 취소(사용자 2026-11-18 — 영업팀 누구나 처음 단계까지 거슬러 다시 작성). 마지막 발급을 없던 일로: 예전 발급본이
+    있으면 그 발급본이 다시 지금 명세서, 없으면 발급 전. 취소한 번호는 다시 쓴다(오늘 01 을 취소하고 다시 내면 01).
+    취소한 발급본은 변경 이력에 통째로 남긴다. 입금 기록이 남아 있으면 그것부터 — 회차 금액이 명세서 공급가액 기준."""
+    d = await _lock(db, deal_id)
+    st = d.get("statement")
+    if not st:
+        raise DealError("발급한 거래명세서가 없습니다.", 409)
+    if d.get("payments") or d.get("paid_full"):
+        raise DealError("입금 기록이 남아 있어 거래명세서 발급을 취소할 수 없습니다 — 입금 칸에서 [확인 취소]·[잘못 입력함]·[완납 해제]로 "
+                        "먼저 되돌려 주세요.", 409, code=STATEMENT_PAID)
+    hist = list(st.get("history") or [])
+    if hist:
+        prev = {k: v for k, v in hist[-1].items() if k not in ("kind", "ended_at")}
+        await _save(db, deal_id, statement={**prev, "history": hist[:-1]})
+    else:
+        await db.execute(text("UPDATE sales_deals SET statement = NULL, updated_at = NOW() WHERE id = :i"), {"i": deal_id})
+    # 같은 번호로 교체했던 발급본으로 돌아가면 그 번호는 그대로 쓰는 중
+    if not (hist and str(hist[-1].get("no") or "").upper() == str(st.get("no") or "").upper()):
+        await dn.release(db, [st.get("no")])
+    await _log(db, deal_id, user_id, "statement_cancel", {"no": st.get("no"), "total": (st.get("totals") or {}).get("total"),
+                                                         **({"back_to": hist[-1].get("no")} if hist else {}), "snapshot": st})
+    await db.commit()
+
+
+async def clear_terms(db: AsyncSession, deal_id: int, user_id: int | None) -> None:
+    """결제 조건 지우기 → 정하기 전으로(사용자 2026-11-18). 입금 확인한 회차가 있으면 그것부터 [확인 취소]."""
+    d = await _lock(db, deal_id)
+    old = d.get("pay_terms") or []
+    if not old and not d.get("pay_case"):
+        return
+    if any(p.get("term") is not None for p in d.get("payments") or []):
+        raise DealError("입금 확인한 회차가 있어 결제 조건을 지울 수 없습니다 — 회차마다 [확인 취소]를 먼저 눌러 주세요.", 409, code=STATEMENT_PAID)
+    await _save(db, deal_id, pay_case=None, pay_terms=[])
+    await _log(db, deal_id, user_id, "pay_terms_clear", {"terms": [f"{t.get('label')} {float(t.get('pct') or 0):g}%" for t in old]})
+    await db.commit()
+
+
+def _statement_nos(st: Any) -> list[str]:
+    """거래명세서 기록의 발행번호들(지금 + 예전 발급본)."""
+    st = json.loads(st) if isinstance(st, str) else (st or {})
+    return [n for n in [st.get("no"), *[h.get("no") for h in st.get("history") or []]] if n]
+
+
+# 입금 기록 때문에 명세서·결제 조건을 못 되돌림 — 화면이 팝업 + [입금 칸으로 가기](사용자 2026-11-18)
+STATEMENT_PAID = "STATEMENT_PAID"
+
+
 async def statement_file(db: AsyncSession, deal_id: int, prev: int | None = None) -> tuple[str, bytes]:
     """발급한 거래명세서 → (파일 이름(확장자 없음), 엑셀 바이트). prev = 예전 발급본 순번(history, 사용자 2026-11-17)."""
     r = (await db.execute(text("SELECT statement FROM sales_deals WHERE id = :i"), {"i": deal_id})).first()
@@ -964,6 +1072,7 @@ async def reset_to_quote(db: AsyncSession, deal_id: int, user_id: int | None) ->
     if d["kind"] not in ("quote", "recommend"):
         raise DealError("되돌릴 수 없는 건입니다.")
     keys = [f["key"] for f in d.get("po_files") or [] if f.get("key")]
+    await dn.release(db, _statement_nos(d.get("statement")))       # 지운 거래명세서 번호는 다시 쓴다(사용자 2026-11-18)
     await db.execute(text(
         "UPDATE sales_deals SET won = NULL, won_date = NULL, pay_case = NULL, statement = NULL, order_state = NULL, "
         "pay_terms = '[]'::jsonb, payments = '[]'::jsonb, shipments = '[]'::jsonb, invoices = '[]'::jsonb, "
@@ -1251,22 +1360,26 @@ async def delete_deals(db: AsyncSession, ids: list[int], user_id: int | None) ->
     found = (await db.execute(text("SELECT id FROM sales_deals WHERE id = ANY(:ids) FOR UPDATE"), {"ids": ids})).scalars().all()
     if len(found) != len(ids):
         raise DealError("이미 지워졌거나 없는 건이 있습니다. 리스트를 새로 고친 뒤 다시 골라 주세요.", 409)
+    # 지운 건의 거래명세서 번호(지금·예전 발급본)는 다시 쓸 수 있게(사용자 2026-11-18). 견적서는 견적서 목록에 남아 번호도 그대로
+    sts = (await db.execute(text("SELECT statement FROM sales_deals WHERE id = ANY(:ids) AND statement IS NOT NULL"), {"ids": ids})).scalars().all()
+    await dn.release(db, [n for st in sts for n in _statement_nos(st)])
     await db.execute(text(
         "INSERT INTO sales_deal_trash (deal_id, deal_no, deal, events, deleted_by) "
         "SELECT d.id, d.deal_no, to_jsonb(d), "
         "       COALESCE((SELECT jsonb_agg(to_jsonb(e) ORDER BY e.id) FROM sales_deal_events e WHERE e.deal_id = d.id), "
         "                '[]'::jsonb), :u "
         "FROM sales_deals d WHERE d.id = ANY(:ids)"), {"ids": ids, "u": user_id})
-    from . import units
-
-    # 그 건의 S/N 은 지우지 않고 남긴다 — 어느 건·고객사 것이었는지 메모에 적고 상태 '건 삭제'(사용자 2026-10-26:
-    # 버린 S/N 도 기록, S/N 은 겹치지 않으므로 같은 번호 다시 등록은 막는다). 건이 지워지면 deal_id 는 비게 된다(ON DELETE SET NULL)
+    # 그 건의 S/N 도 지운다(사용자 2026-11-18 — 예전 10-26 '건 삭제로 남기고 다시 쓰지 않음'을 바꿈): 대여 제품 목록·제품 목록에서
+    # 사라지고 같은 S/N 을 다시 등록할 수 있다
+    # 그 건(또는 그 건의 S/N)에 걸린 A/S 기록도 같이 지운다(사용자 2026-11-18 — S/N 과 같게). A/S 를 따로 지울 때처럼 보관함(trash_bin)에
+    # 통째로 옮긴 뒤 지운다(되살릴 수 있게)
+    case_where = ("FROM as_cases a WHERE a.deal_id = ANY(:ids) OR a.unit_id IN (SELECT id FROM product_units WHERE deal_id = ANY(:ids))")
     await db.execute(text(
-        "UPDATE product_units u SET status = :st, updated_at = NOW(), note = btrim("
-        "  '[' || :tag || ' ' || :day || '] ' || concat_ws(' · ', COALESCE(d.quote->>'no', d.deal_no), d.customer, d.title) "
-        "  || CASE WHEN u.note <> '' THEN ' / ' || u.note ELSE '' END) "
-        "FROM sales_deals d WHERE d.id = u.deal_id AND u.deal_id = ANY(:ids)"),
-        {"ids": ids, "st": units.DELETED, "tag": "지운 건", "day": kst_today().isoformat()})
+        "INSERT INTO trash_bin (source_table, source_id, label, data, reason) "
+        "SELECT 'as_cases', a.id, a.serial || ' · ' || COALESCE(a.customer, ''), to_jsonb(a), :why " + case_where +
+        " ON CONFLICT (source_table, source_id) DO NOTHING"), {"ids": ids, "why": f"영업 건 삭제로 함께 지움(user {user_id})"})
+    await db.execute(text("DELETE " + case_where.replace("FROM as_cases a WHERE a.", "FROM as_cases a WHERE a.", 1)), {"ids": ids})
+    await db.execute(text("DELETE FROM product_units WHERE deal_id = ANY(:ids)"), {"ids": ids})
     nos = (await db.execute(text("DELETE FROM sales_deals WHERE id = ANY(:ids) RETURNING deal_no"),
                             {"ids": ids})).scalars().all()
     await db.commit()

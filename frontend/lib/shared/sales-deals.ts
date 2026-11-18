@@ -7,7 +7,7 @@ const TOKEN_COOKIE = "und_cortex_token";
 const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:8002";
 
 /** 영업 건 단계 — 대여 중·회수는 영업 건 단계가 아니다(사용자 2026-11-10, 대여 상태는 RentalPhase) */
-export type DealStage = "제품 추천 확정" | "견적" | "수주" | "출하 후 입금 대기" | "완료 (출하·완납)" | "드랍" | "출하 기록만 (이전)";
+export type DealStage = "견적 전" | "제품 추천 확정" | "견적" | "수주" | "출하 후 입금 대기" | "완료 (출하·완납)" | "드랍" | "출하 기록만 (이전)";
 
 export interface DealAlert {
   code: string;

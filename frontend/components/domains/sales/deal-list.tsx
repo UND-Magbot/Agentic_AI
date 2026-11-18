@@ -8,14 +8,15 @@
 
 import { useRouter } from "next/navigation";
 import { Fragment, useMemo, useState } from "react";
-import { DealDetail, type DealFocus } from "@/components/domains/sales/deal-detail";
+import { DealDetail, DealInfoDialog, type DealFocus } from "@/components/domains/sales/deal-detail";
 import { DealMeetingDialog, hasMeeting } from "@/components/domains/sales/deal-meeting";
 import { Muted, RegionBadge, StageChip, eventDetail, eventLabel, quoteVer, shortDate, stamp, won } from "@/components/domains/sales/deal-format";
 import { DealNewForm } from "@/components/domains/sales/deal-new-form";
+import { Icon } from "@/components/shared/ui/icon";
 import type { DealBiz, DealKpi, DealListData, DealRental, DealRow, DealStage } from "@/lib/shared/sales-deals";
 import { cn } from "@/lib/shared/utils";
 
-const STAGES: DealStage[] = ["제품 추천 확정", "견적", "수주", "출하 후 입금 대기", "완료 (출하·완납)", "드랍", "출하 기록만 (이전)"];
+const STAGES: DealStage[] = ["견적 전", "제품 추천 확정", "견적", "수주", "출하 후 입금 대기", "완료 (출하·완납)", "드랍", "출하 기록만 (이전)"];
 // 대여 중·회수 중·회수 완료는 영업 건 단계가 아니다(사용자 2026-11-10 — 대여 건 한정 과정, [대여 제품 목록]에서만).
 // 유상 대여 건도 여기서는 판매와 같은 단계로 본다
 
@@ -40,13 +41,13 @@ type Filter = { q: string; owner: string; stage: string; year: string; unpaid: b
 
 type Group = "" | "before" | "progress" | "done";
 const GROUPS: [Exclude<Group, "">, string, DealStage[]][] = [
-  ["before", "수주 전", ["제품 추천 확정", "견적"]],
+  ["before", "수주 전", ["견적 전", "제품 추천 확정", "견적"]],
   ["progress", "진행 중", ["수주", "출하 후 입금 대기"]],
   ["done", "완료", [DONE_STAGE]],
 ];
 const isOverseas = (r: DealRow) => (r.quote?.currency ?? "KRW") === "USD";
 
-export function DealList({ data, biz, initialOpenId = null, initialFocus, onRefresh, onMeeting, onOrder, onQuote }: {
+export function DealList({ data, biz, initialOpenId = null, initialFocus, onRefresh, onMeeting, onOrder, onQuote, onRecommend }: {
   data: DealListData;
   /** 처음부터 열어 둘 건 — [제품·A/S] 탭의 [프로젝트 건 열기](사용자 2026-10-22) */
   initialOpenId?: number | null;
@@ -62,6 +63,7 @@ export function DealList({ data, biz, initialOpenId = null, initialFocus, onRefr
   onOrder?: (dealId: number) => void;
   /** [견적서 고치기 →] — 견적서 탭 작업 화면으로. */
   onQuote?: (quoteId: number) => void;
+  onRecommend?: (deal: DealRow) => void;
 }) {
   const router = useRouter();
   const refresh = onRefresh ?? (() => router.refresh());
@@ -89,6 +91,8 @@ export function DealList({ data, biz, initialOpenId = null, initialFocus, onRefr
     return next;
   });
   const [creating, setCreating] = useState(false);
+  // 고객사·프로젝트명 고치기(사용자 2026-11-18 — 리스트·상세 두 곳)
+  const [naming, setNaming] = useState<DealRow | null>(null);
   const [meetingRow, setMeetingRow] = useState<DealRow | null>(null);
   // AI 추천으로 시작한 건은 확정 기록(onMeeting), 수기 견적으로 시작한 건은 직접 입력 창(사용자 2026-10-08)
   const showMeeting = (r: DealRow) => (r.proposal_id && onMeeting ? onMeeting(r.proposal_id) : setMeetingRow(r));
@@ -167,6 +171,12 @@ export function DealList({ data, biz, initialOpenId = null, initialFocus, onRefr
     }
     return next;
   });
+
+  // 새 건은 팝업 대신 탭 안 작성 화면(사용자 2026-11-18 — 새 구매 건과 같은 형식) — 등록하면 목록으로 돌아와 상세를 연다
+  if (creating) {
+    return <DealNewForm owners={owners} onClose={() => setCreating(false)}
+                        onCreated={(row) => { setCreating(false); refresh(); setOpenId(row.id); }} />;
+  }
 
   return (
     // 회사 제품 추천 화면의 탭 패널 안에 들어간다 — 제목은 화면 머리가 보여 주므로 여기는 요약 줄만(사용자 2026-10-23)
@@ -317,6 +327,13 @@ export function DealList({ data, biz, initialOpenId = null, initialFocus, onRefr
                   <div className="truncate font-semibold" title={r.customer ?? undefined}>{r.customer ?? <Muted>고객사 미기재</Muted>}</div>
                   <div className="mt-0.5 flex items-center gap-1.5">
                     <span className="truncate text-[12.5px] text-foreground-muted" title={r.title}>{r.title}</span>
+                    {!selecting && r.kind !== "shipment_only" && (
+                      <button type="button" title="고객사·프로젝트명 고치기" aria-label="고객사·프로젝트명 고치기"
+                              onClick={(e) => { e.stopPropagation(); setNaming(r); }}
+                              className="shrink-0 rounded p-0.5 text-foreground-subtle hover:bg-foreground/8 hover:text-accent">
+                        <Icon name="edit" className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                     {r.quote && <RegionBadge overseas={r.quote.currency === "USD"} />}
                     {r.biz === "rental" && biz !== "rental" && (
                       <span className="shrink-0 rounded bg-emerald-500/12 px-1.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">{r.flow?.free ? "무상 대여" : "대여"}</span>
@@ -387,7 +404,7 @@ export function DealList({ data, biz, initialOpenId = null, initialFocus, onRefr
         </table>
       </div>
 
-      {open && <DealDetail key={open.id} row={open} admin={admin} focus={open.id === initialOpenId ? initialFocus : undefined} onClose={() => setOpenId(null)} onChanged={refresh} onMeeting={onMeeting} onOrder={onOrder} onQuote={onQuote} />}
+      {open && <DealDetail key={open.id} row={open} admin={admin} focus={open.id === initialOpenId ? initialFocus : undefined} onClose={() => setOpenId(null)} onChanged={refresh} onMeeting={onMeeting} onOrder={onOrder} onQuote={onQuote} onRecommend={onRecommend} />}
       {confirming && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-4" onClick={() => !deleting && setConfirming(false)}>
           <div role="alertdialog" aria-label="영업 건 삭제 확인" onClick={(e) => e.stopPropagation()}
@@ -451,14 +468,7 @@ export function DealList({ data, biz, initialOpenId = null, initialFocus, onRefr
       )}
       {meetingRow && <DealMeetingDialog deal={meetingRow} onClose={() => setMeetingRow(null)}
                                         onSaved={(row) => { setMeetingRow(row); refresh(); }} />}
-      {creating && (
-        <DealNewForm
-          owners={owners}
-          biz={biz}
-          onClose={() => setCreating(false)}
-          onCreated={(row) => { setCreating(false); refresh(); setOpenId(row.id); }}
-        />
-      )}
+      {naming && <DealInfoDialog deal={naming} onClose={() => setNaming(null)} onSaved={() => { setNaming(null); refresh(); }} />}
     </div>
   );
 }

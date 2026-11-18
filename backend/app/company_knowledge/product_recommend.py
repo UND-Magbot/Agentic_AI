@@ -51,10 +51,11 @@ _CORRECTION_RE = re.compile(r"아니라|아니고|대신|말고|틀렸|잘못|�
 class RecommendError(Exception):
     """화면에 그대로 보여도 되는 한국어 문구. code·deal_id 는 화면이 따로 처리할 때(PAY_LOCKED → 입금 확인 칸으로 안내)."""
 
-    def __init__(self, message: str = "", *, code: str | None = None, deal_id: int | None = None) -> None:
+    def __init__(self, message: str = "", *, code: str | None = None, deal_id: int | None = None, extra: dict | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.deal_id = deal_id
+        self.extra = extra or {}
 
 
 def _deal_err(e: Exception, deal_id: int | None) -> RecommendError:
@@ -1037,13 +1038,27 @@ _EMPTY_MANUAL = ("status = 'draft' AND recommendation_id IS NULL AND deal_id IS 
                  "AND jsonb_array_length(COALESCE(state->'chat', '[]'::jsonb)) <= 1")
 
 
-async def quote_manual(*, user_id: int | None, form: dict[str, Any] | None = None) -> dict[str, Any]:
+async def quote_manual(*, user_id: int | None, form: dict[str, Any] | None = None, deal_id: int | None = None) -> dict[str, Any]:
     """[견적서 수기 작성](사용자 2026-10-08) — AI 제품 추천 없이 빈 견적서로 시작(그리퍼·AMR 등 추천 전 제품).
     발행하면 그때 영업 건(견적 단계)과 건 번호가 생기고, 이후 수주·거래명세서·출하는 추천으로 시작한 건과 같다.
-    미팅 정보는 영업 건 관리에서 [미팅 정보 → 직접 입력]."""
+    미팅 정보는 영업 건 관리에서 [미팅 정보 → 직접 입력].
+    deal_id — [+ 새 건 등록]으로 만든 '견적 전' 건의 상세에서 연 경우(사용자 2026-11-18): 그 건에 이어 두고 고객사·담당자를
+    채워 연다. 발행하면 그 건이 견적 단계가 되고 첫 발행번호가 건 번호. 그 건에 작성 중인 견적서가 있으면 그걸 다시 연다."""
     from ..database import SessionLocal
     from . import quote_session as qs
 
+    if deal_id is not None:
+        async with SessionLocal() as db:
+            d = (await db.execute(text("SELECT id, kind, customer, contact FROM sales_deals WHERE id = :i"), {"i": deal_id})).mappings().first()
+            if not d:
+                raise RecommendError("영업 건을 찾을 수 없습니다.")
+            if d["kind"] != "recommend":
+                raise RecommendError("견적서를 이미 발행한 건입니다 — 견적서 고치기로 이어서 고쳐 주세요.")
+            qid = (await db.execute(text("SELECT id FROM product_quotes WHERE deal_id = :d AND status = 'draft' ORDER BY id DESC LIMIT 1"),
+                                    {"d": deal_id})).scalar()
+            if qid:
+                return _quote_view(await _quote_row(db, qid, user_id))
+        form = {**(form or {}), "customer": d["customer"] or "", **({"to": d["contact"]} if d["contact"] else {})}
     form = {k: v for k, v in (form or {}).items() if v} | await _account_contact(user_id)
     st = qs.draft_state({}, model="", payload_kg=None, form=form, manual=True)
     q = qs.next_question(st)
@@ -1052,7 +1067,7 @@ async def quote_manual(*, user_id: int | None, form: dict[str, Any] | None = Non
     async with SessionLocal() as db:
         # 손대지 않은 빈 수기 초안(고객사·품목 없음, 대화는 첫 인사뿐)이 있으면 그걸 다시 연다 — 누를 때마다 빈 초안이
         # 견적서 목록에 쌓이던 것(사용자 2026-10-08). 담당자 정보는 지금 값으로 다시 채운다.
-        qid = (await db.execute(text(
+        qid = None if deal_id is not None else (await db.execute(text(
             f"SELECT id FROM product_quotes WHERE user_id IS NOT DISTINCT FROM :u AND {_EMPTY_MANUAL} ORDER BY id DESC LIMIT 1"),
             {"u": user_id})).scalar()
         if qid:
@@ -1060,9 +1075,9 @@ async def quote_manual(*, user_id: int | None, form: dict[str, Any] | None = Non
                              {"s": json.dumps(st, ensure_ascii=False), "i": qid})
         else:
             qid = (await db.execute(text(
-                "INSERT INTO product_quotes (recommendation_id, user_id, status, customer, state) "
-                "VALUES (NULL, :u, 'draft', :c, CAST(:s AS jsonb)) RETURNING id"),
-                {"u": user_id, "c": st["form"].get("customer") or None, "s": json.dumps(st, ensure_ascii=False)})).scalar_one()
+                "INSERT INTO product_quotes (recommendation_id, user_id, status, customer, state, deal_id) "
+                "VALUES (NULL, :u, 'draft', :c, CAST(:s AS jsonb), :d) RETURNING id"),
+                {"u": user_id, "c": st["form"].get("customer") or None, "s": json.dumps(st, ensure_ascii=False), "d": deal_id})).scalar_one()
         await db.commit()
         return _quote_view(await _quote_row(db, qid, user_id))
 
@@ -1385,8 +1400,24 @@ def _snap_biz(form: dict[str, Any]) -> dict[str, Any]:
     return {"biz": "rental", "rental": r["rental"]} if r else {"biz": "sale"}
 
 
+async def quote_next_no(qid: int, *, user_id: int | None) -> dict[str, Any]:
+    """[번호 정해서 발행] 창의 기본값 — 다음 자동 번호(잡지 않음)·수주한 번호·이 견적서에서 낸 번호들(사용자 2026-11-18)."""
+    from ..database import SessionLocal
+    from ..sales_deals import doc_numbers as dn
+    from ..sales_deals import service as deals
+
+    async with SessionLocal() as db:
+        r = await _quote_row(db, qid, user_id)
+        ini = str(((r["state"] or {}).get("form") or {}).get("initials") or "")
+        nxt = await dn.peek(db, dn.QUOTE, ini, deals.kst_today())
+        won = await _won_issue(db, r)
+    hist = r.get("history") or []
+    return {"next": nxt, "won_no": won[1] if won else None,
+            "issued": [{"no": h.get("quote_no"), "revision": h.get("revision"), "issued_at": h.get("issued_at")} for h in hist if h.get("quote_no")]}
+
+
 async def quote_issue(qid: int, *, user_id: int | None, replace_won: bool = False,
-                      statement: str | None = None) -> dict[str, Any]:
+                      statement: str | None = None, doc_no: str | None = None, overwrite: bool = False) -> dict[str, Any]:
     """[견적서 발행] — 미정 값이 없어야(C13). 발행할 때마다 새 발행번호 QT-{이니셜}{발행일}-NN(사용자 2026-10-12):
     NN 은 그 발행자의 그날 견적서 발행 순서(고객사 무관, doc_numbers). 다른 사람이 고쳐 다시 내면 그 사람 번호.
     덮어쓰기는 없앴다 — 고치면 재발행(새 번호). 처음 발행이면 이 추천의 영업 건('제품 추천 확정')이 견적 단계가 되고
@@ -1419,8 +1450,47 @@ async def quote_issue(qid: int, *, user_id: int | None, replace_won: bool = Fals
                        "statement": deals.for_statement(ln)} for ln in lines
                       if ln.get("row") in (None, "nego") or (ln.get("row") == "option" and ln.get("in_total"))],
             **_deal_rental(f)}
-    if replace_won:                                # 수주한 견적서를 이 내용으로 고치기(같은 번호, 사용자 2026-11-16)
+    # [번호 정해서 발행](사용자 2026-11-18 — '다른 이름으로 저장'처럼): 적은 번호가 이 견적서에서 낸 번호면 그 판을 덮어쓸지 묻고
+    # (overwrite), 다른 견적서·건에서 쓴 번호면 막는다. 없던 번호면 그 번호로 새로 발행(수주한 견적서 고치기면 수주 판을 이 판으로)
+    custom = None
+    if str(doc_no or "").strip():
+        custom = dn.clean_doc_no(doc_no)
+        if not custom:
+            raise RecommendError("발행번호는 영문·숫자·-_.() 로 40자까지 적어 주세요.")
+        own = next((h for h in r.get("history") or [] if str(h.get("quote_no") or "").upper() == custom.upper()), None)
+        if own:
+            if not overwrite:
+                raise RecommendError(
+                    f"{own['quote_no']} 는 이 견적서에서 이미 발행한 번호입니다(v{int(own.get('revision') or 0) + 1}, "
+                    f"{str(own.get('issued_at') or '')[:10]}). 그 견적서를 지금 내용으로 덮어쓸까요?",
+                    code="QUOTE_NO_EXISTS", extra={"no": own["quote_no"], "revision": own.get("revision")})
+            return await _issue_replace_won(r, parts, deal, user_id=user_id, day=day, statement=statement,
+                                            target=(int(own.get("revision") or 0), str(own["quote_no"])))
+        async with SessionLocal() as db:
+            used = await dn.issued_where(db, custom)
+            await db.rollback()
+        if used:
+            raise RecommendError(f"{custom} 는 이미 다른 견적서·건에서 쓴 번호입니다"
+                                 f"({' · '.join(str(v) for v in (used.get('deal_no'), used.get('customer')) if v) or '번호 기록'}). 다른 번호를 적어 주세요.")
+    if replace_won and not custom:                 # 수주한 견적서를 이 내용으로 고치기(같은 번호, 사용자 2026-11-16)
         return await _issue_replace_won(r, parts, deal, user_id=user_id, day=day, statement=statement)
+    repoint = None                                 # 수주한 견적서를 다른 번호로 고치기 — 새 판을 내고 수주 판을 그 판으로
+    if replace_won and custom:
+        async with SessionLocal() as db:
+            won = await _won_issue(db, r)
+            if not won:
+                raise RecommendError("수주한 견적서가 없습니다 — [새 견적서로 발행]으로 내 주세요.")
+            dr = (await db.execute(text("SELECT paid_full, payments, quote->>'amount' AS amount FROM sales_deals WHERE id = :i"),
+                                   {"i": r["deal_id"]})).mappings().one()
+            if dr["paid_full"]:
+                raise RecommendError(deals.PAID_QUOTE_LOCKED, code="PAY_LOCKED", deal_id=r["deal_id"])
+            pays = json.loads(dr["payments"]) if isinstance(dr["payments"], str) else (dr["payments"] or [])
+            new_amt = sum((x.get("unit_price") or 0) * (x.get("qty") or 0) for x in deal["items"])
+            try:
+                deals._amount_locked(pays, dr["amount"], new_amt)
+            except deals.DealError as e:
+                raise _deal_err(e, r["deal_id"]) from e
+        repoint = r["deal_id"]
     async with SessionLocal() as db:
         pid = (await db.execute(text("SELECT id FROM product_proposals WHERE recommendation_id = :r"),
                                 {"r": r["recommendation_id"]})).scalar() if r["recommendation_id"] else None
@@ -1430,7 +1500,13 @@ async def quote_issue(qid: int, *, user_id: int | None, replace_won: bool = Fals
         rev = cur["revision"] + 1 if cur["quote_no"] else 0
         r["deal_id"] = cur["deal_id"]
         try:   # 번호를 잡고 → 영업 건 반영 → 견적 기록. 어디서든 실패하면 모두 되돌려 번호도 안 나간 것
-            no = await dn.allocate(db, dn.QUOTE, parts["ini"], day, deal_id=r.get("deal_id"), quote_id=qid, user_id=user_id)
+            if custom:                             # 적은 번호 — 잠근 채 다시 확인하고 우리 형식이면 번호 기록에 남긴다
+                if await dn.issued_where(db, custom):
+                    raise ValueError(f"{custom} 는 방금 다른 곳에서 쓴 번호입니다. 다른 번호를 적어 주세요.")
+                no = custom
+                await dn.register(db, no, deal_id=r.get("deal_id"), quote_id=qid, user_id=user_id)
+            else:
+                no = await dn.allocate(db, dn.QUOTE, parts["ini"], day, deal_id=r.get("deal_id"), quote_id=qid, user_id=user_id)
             deal_id, _ = await deals.quote_deal(db, user_id, pid, {**deal, "doc_no": no}, rev + 1, deal_id=r.get("deal_id"))
             await dn.link_deal(db, no, deal_id)
         except (deals.DealError, ValueError) as e:
@@ -1474,11 +1550,28 @@ async def quote_issue(qid: int, *, user_id: int | None, replace_won: bool = Fals
         _mark_issued(st, rev)
         await _save_state(db, qid, st)
         await db.commit()
-        return _quote_view(await _quote_row(db, qid, user_id))
+        extra: dict[str, Any] = {}
+        if repoint:                                # 수주 판을 방금 낸 판으로(수주일 그대로) + 거래명세서도 원하면
+            try:
+                sn_note = await deals.set_won(db, repoint, user_id, True, None, {"quote_id": qid, "revision": rev})
+                st_no = None
+                if statement in ("same", "new"):
+                    st_no = await deals.reissue_statement(db, repoint, user_id, same_no=statement == "same")
+                    await db.commit()
+            except deals.DealError as e:
+                await db.rollback()
+                raise _deal_err(e, repoint) from e
+            extra = {"replaced_won": True, "replaced_rev": rev, "sn_note": sn_note or None, "deal_id": repoint,
+                     "statement_reissued": {"no": st_no, "same_no": statement == "same"} if st_no else None}
+        out = _quote_view(await _quote_row(db, qid, user_id))
+        if repoint:
+            out["won_issue"] = _won_open(await _quote_row(db, qid, user_id), await _won_issue(db, {**r, "deal_id": repoint}),
+                                         await _statement_no(db, repoint))
+        return {**out, **extra}
 
 
 async def _issue_replace_won(r: dict[str, Any], parts: dict[str, Any], deal: dict[str, Any], *, user_id: int | None, day,
-                             statement: str | None = None) -> dict[str, Any]:
+                             statement: str | None = None, target: tuple[int, str] | None = None) -> dict[str, Any]:
     """[수주한 견적서 고치기] — 수주한 판을 지금 작성 내용으로 교체(같은 발행번호·판, 사용자 2026-11-16). 고친 파일 같은 번호 교체와 같게:
     교체 전 내용은 그 판의 replaced 에 보관, 영업 건 견적·금액이 따라가고(입금 확인이 있으면 금액 변경은 막힘), S/N 은 품목 이름으로 다시
     짝지음(짝 없는 S/N 은 기록으로 남김·안내). 회사 양식으로 새로 그리거나, 바탕 파일이 있으면 그 파일 위에서 고친다."""
@@ -1497,9 +1590,11 @@ async def _issue_replace_won(r: dict[str, Any], parts: dict[str, Any], deal: dic
     async with SessionLocal() as db:
         cur = (await db.execute(text("SELECT history, deal_id FROM product_quotes WHERE id = :i FOR UPDATE"), {"i": qid})).mappings().one()
         won = await _won_issue(db, {**r, "deal_id": cur["deal_id"]})
-        if not won:
+        # target = 덮어쓸 판(번호를 적어 이 견적서에서 낸 번호를 고른 경우, 사용자 2026-11-18). 없으면 수주한 판
+        if target is None and not won:
             raise RecommendError("수주한 견적서가 없습니다 — [새 견적서로 발행]으로 내 주세요.")
-        rev, no = won
+        rev, no = target or won
+        is_won = bool(won) and won[0] == rev
         hist = json.loads(cur["history"]) if isinstance(cur["history"], str) else (cur["history"] or [])
         idx = next((i for i, h in enumerate(hist) if int(h.get("revision") or 0) == rev), None)
         if idx is None:
@@ -1531,7 +1626,7 @@ async def _issue_replace_won(r: dict[str, Any], parts: dict[str, Any], deal: dic
                 await deals._log(db, cur["deal_id"], user_id, "sn_rebind", {"note": sn_note})
             # 거래명세서도 새 견적으로(사용자 2026-11-17) — same 같은 번호로 교체 · new 새 번호 · 그 밖은 그대로(다시 발급 알림만)
             st_no = None
-            if statement in ("same", "new"):
+            if statement in ("same", "new") and is_won:
                 st_no = await deals.reissue_statement(db, cur["deal_id"], user_id, same_no=statement == "same")
         except deals.DealError as e:
             await db.rollback()
@@ -1543,7 +1638,8 @@ async def _issue_replace_won(r: dict[str, Any], parts: dict[str, Any], deal: dic
              "h": json.dumps(header, ensure_ascii=False), "l": json.dumps(lines, ensure_ascii=False), "i": qid})
         money = f"${qx.total(lines):,.2f}" if lang == "en" else f"{qx.total(lines):,.0f}원"
         st["chat"] = [*(st.get("chat") or []), {"role": "assistant", "text": (
-            f"수주한 견적서({no})를 고쳐 다시 냈습니다 — 같은 번호, 합계 {money}. 영업 건에도 반영했습니다."
+            (f"수주한 견적서({no})를 고쳐 다시 냈습니다" if is_won else f"견적서 {no}를 덮어썼습니다")
+            + f" — 같은 번호, 합계 {money}." + (" 영업 건에도 반영했습니다." if is_won or latest else "")
             + (f" 거래명세서도 {'같은 번호' if statement == 'same' else '새 번호'}({st_no})로 다시 발급했습니다." if st_no else "")
             + (f" {sn_note}" if sn_note else "") + (f" {pnote}" if pnote else ""))}][-QUOTE_CHAT_MAX:]
         _mark_issued(st, rev)
@@ -1551,7 +1647,7 @@ async def _issue_replace_won(r: dict[str, Any], parts: dict[str, Any], deal: dic
         await db.commit()
         out = _quote_view(await _quote_row(db, qid, user_id))
         return {**out, "won_issue": _won_open(await _quote_row(db, qid, user_id), won, await _statement_no(db, cur["deal_id"])),
-                "sn_note": sn_note, "replaced_won": True, "deal_id": cur["deal_id"],
+                "sn_note": sn_note, "replaced_won": is_won, "replaced_rev": rev, "deal_id": cur["deal_id"],
                 "statement_reissued": {"no": st_no, "same_no": statement == "same"} if st_no else None}
 
 
@@ -2222,7 +2318,7 @@ def _proposal_head(rec: dict[str, Any]) -> dict[str, str]:
 
 
 async def finalize_recommendation(rid: int, *, user_id: int | None, history: list[dict[str, str]],
-                                  memo: str = "") -> dict[str, Any]:
+                                  memo: str = "", deal_id: int | None = None) -> dict[str, Any]:
     """추천 한 건을 최종 제안으로 확정해 저장(같은 추천을 다시 확정하면 덮어씀). 후보가 없으면 확정하지 않는다."""
     from ..database import SessionLocal
 
@@ -2240,18 +2336,23 @@ async def finalize_recommendation(rid: int, *, user_id: int | None, history: lis
     async with SessionLocal() as db:
         for _ in range(3):
             try:
-                pid, deal_id, deal_no = await _save_proposal(db, rid, user_id, rec, head, memo, snapshot)
+                pid, out_id, deal_no = await _save_proposal(db, rid, user_id, rec, head, memo, snapshot, attach=deal_id)
                 await db.commit()
                 break
             except IntegrityError:                     # 같은 순간 다른 건이 같은 건 번호를 받음 — 다시
                 await db.rollback()
+            except Exception as e:                     # 붙일 건이 이미 견적서를 냈음 등(영업 건 오류) — 화면 문구로
+                await db.rollback()
+                if type(e).__name__ == "DealError":
+                    raise RecommendError(str(e)) from e
+                raise
         else:
             raise RecommendError("영업 건 번호를 정하지 못했습니다. 잠시 뒤 다시 시도해 주세요.")
-    return {**await get_proposal(pid), "deal_id": deal_id, "deal_no": deal_no}
+    return {**await get_proposal(pid), "deal_id": out_id, "deal_no": deal_no}
 
 
 async def _save_proposal(db, rid: int, user_id: int | None, rec: dict[str, Any], head: dict[str, Any], memo: str,
-                         snapshot: dict[str, Any]) -> tuple[int, int, str]:
+                         snapshot: dict[str, Any], attach: int | None = None) -> tuple[int, int, str]:
     """확정 기록(미팅·결과·근거·대화) 저장 + 제품 영업 건('제품 추천 확정', 사용자 2026-10-06). 커밋은 호출부."""
     from ..sales_deals import service as deals
 
@@ -2267,7 +2368,11 @@ async def _save_proposal(db, rid: int, user_id: int | None, rec: dict[str, Any],
     owner = (await db.execute(text("SELECT COALESCE(alias, username) FROM users WHERE id = :u"), {"u": user_id})).scalar() \
         if user_id else None
     deal_id, deal_no = await deals.recommend_deal(db, user_id, pid, {
-        "day": deals.kst_today(), "customer": head["customer"], "owner": owner, "title": head["model"]})
+        "day": deals.kst_today(), "customer": head["customer"], "owner": owner, "title": head["model"]}, attach=attach)
+    if attach and not head["customer"]:            # 추천에 고객사가 없으면 붙인 건의 고객사로(미팅 정보·목록에 보이게)
+        await db.execute(text("UPDATE product_proposals SET customer = d.customer, title = d.customer || ' · ' || :m "
+                              "FROM sales_deals d WHERE d.id = :d AND product_proposals.id = :p AND d.customer IS NOT NULL"),
+                         {"d": deal_id, "p": pid, "m": head["model"]})
     return pid, deal_id, deal_no
 
 

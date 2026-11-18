@@ -398,6 +398,7 @@ async def save_units(db: AsyncSession, deal_id: int, user_id: int | None, quote_
     # 이번에 다시 쓰는 부품 밖(다른 줄·다른 판·다른 건)에 이미 있는 시리얼(같은 제조사) — 회수가 끝난 줄('회수')은 빼고:
     # 회수한 대여 제품은 다음 대여·판매 건에 새 줄로 다시 등록한다(사용자 2026-11-16)
     reals = [(v["maker"].lower(), v["serial"].lower(), uid) for uid, v in keep if not v["no_serial"]]
+    await purge_deleted(db, [(m, s) for m, s, _ in reals])        # 지운 건에 남아 있던 같은 S/N 은 치우고 다시 쓴다(2026-11-18)
     if reals:
         dup = (await db.execute(text(
             "SELECT u.serial, u.maker, u.issue_no, u.status, u.note, s.customer FROM product_units u LEFT JOIN sales_deals s ON s.id = u.deal_id "
@@ -583,8 +584,19 @@ async def ship_units(db: AsyncSession, deal_id: int, index: int, day: dt.date, u
     return len(rs)
 
 
+async def purge_deleted(db: AsyncSession, pairs: list[tuple[str, str]]) -> None:
+    """예전에 지운 건의 S/N 기록('건 삭제')을 치운다 — 지운 건의 S/N 은 다시 쓴다(사용자 2026-11-18, 예전 10-26 '다시 쓰지 않음'을 바꿈).
+    pairs = [(제조사, S/N)] 소문자 비교."""
+    if pairs:
+        await db.execute(text(
+            "DELETE FROM product_units WHERE status = :g AND NOT no_serial AND (lower(maker), lower(serial)) IN "
+            "(SELECT * FROM unnest(CAST(:m AS text[]), CAST(:s AS text[])))"),
+            {"g": DELETED, "m": [m.lower() for m, _ in pairs], "s": [s.lower() for _, s in pairs]})
+
+
 async def shipment_removed(db: AsyncSession, deal_id: int, index: int | None) -> None:
-    """출하 기록 삭제(index) 또는 견적 상태로 되돌림(None) — 묶여 있던 부품을 '등록'으로, 뒤 출하 번호는 하나씩 당긴다.
+    """출하 기록 삭제(index) 또는 견적 상태로 되돌림(None) — 그 출하에 등록한 S/N 을 지우고(사용자 2026-11-18: 출하를 취소하면 S/N 도
+    없던 일로 — 같은 S/N 을 다시 쓸 수 있게), 뒤 출하 번호는 하나씩 당긴다.
     (QA 2026-11-16) A/S 기록이 있는 S/N 이 묶인 출하는 지우지 않는다 — 무상 기간 기준(출하일)이 사라져 A/S 의 무상·유상과 어긋났다.
     회수를 마친 S/N 은 '회수' 그대로 둔다 — '등록'으로 되돌리면 다른 건에 다시 나간 같은 S/N 과 겹쳐 오류(500)가 났고,
     회수했는데도 다른 건에 다시 쓸 수 없게 됐다."""
@@ -596,9 +608,7 @@ async def shipment_removed(db: AsyncSession, deal_id: int, index: int | None) ->
         raise DealError("A/S 기록이 있는 S/N이 묶인 출하 기록은 지울 수 없습니다(무상 기간의 기준이 사라짐): "
                         + ", ".join(asn[:5]) + ". 출하일·운송 정보가 틀렸으면 출하 기록을 고쳐 주세요.", 409,
                         code="SHIP_HAS_AS")   # 화면이 팝업으로 알리고 [출하 기록 고치기]로 이어 준다(사용자 2026-11-17)
-    await db.execute(text("UPDATE product_units u SET shipment_index = NULL, warranty_start = NULL, warranty_until = NULL, "
-                          f"status = CASE WHEN u.status = '{RETURNED}' THEN '{RETURNED}' ELSE '등록' END, updated_at = NOW() "
-                          f"WHERE u.deal_id = :d AND u.shipment_index IS NOT NULL{cond}"),
+    await db.execute(text(f"DELETE FROM product_units u WHERE u.deal_id = :d AND u.shipment_index IS NOT NULL{cond}"),
                      {"d": deal_id, "x": index})
     if index is not None:
         await db.execute(text("UPDATE product_units SET shipment_index = shipment_index - 1 WHERE deal_id = :d AND shipment_index > :x"),
