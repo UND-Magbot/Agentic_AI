@@ -446,7 +446,8 @@ async def upload_start_step(db, tag: str) -> None:
     try:
         sp = await pr.upload_sync_preview(qid=q["id"], deal_id=None, user_id=uid, owner_check=True,
                                           read={"items": items, "_parsed": rb.parse(data)})
-        check(sp.get("rental") == {"months": 24, "start": "2026-11-01"} and not sp.get("blocked"),
+        # 11/10 무상 대여 추가로 free(유상=False)도 함께 보여 준다
+        check(sp.get("rental") == {"months": 24, "start": "2026-11-01", "free": False} and not sp.get("blocked"),
               "대여-확인 올리기 확인 창에 대여(파일 기준 24개월)·건의 시작일 11/1 을 보여 줌", str(sp.get("rental")))
         try:
             await pr.quote_issue_upload(qid=q["id"], deal_id=None, user_id=uid, owner_check=True, upload=up, items=items,
@@ -480,9 +481,11 @@ async def rental_phase(db, tag: str) -> None:
     """사용자 2026-10-27: AI '대여 나간 제품' = 대여 중(출하)만. 대여 건의 A/S 중 제품은 포함, 출하 전 R 은 따로, 회수 뒤엔 다 빠짐."""
     deal_id, _ = await new_deal(db, "QT-RV20261027-21", amount=36_000_000)
     sale_id, _ = await new_deal(db, "QT-RV20261027-22")
+    # 대여 시작일은 앞으로의 날짜 — 시작일이 지나면 출하 전(등록) S/N 도 대여 중으로 본다(사용자 2026-11-10, 상태는 시작일로 자동)
+    start = (TODAY + dt.timedelta(days=30)).isoformat()
     await db.execute(text("UPDATE sales_deals SET shipments = CAST(:s AS jsonb), quote = quote || CAST(:q AS jsonb) WHERE id = :d"),
                      {"s": json.dumps([{"date": "2026-10-05"}]), "d": deal_id,
-                      "q": json.dumps({"biz": "rental", "rental": {"months": 36, "start": "2026-10-05", "end": "2029-10-04", "monthly": 1_000_000}})})
+                      "q": json.dumps({"biz": "rental", "rental": {"months": 36, "start": start, "end": "2029-10-04", "monthly": 1_000_000}})})
     for did, sn, purpose, st in ((deal_id, "11", "R", "출하"), (deal_id, "12", "R", "등록"), (deal_id, "13", "A", "출하"),
                                  (sale_id, "14", "A", "출하")):
         await db.execute(text("INSERT INTO product_units (deal_id, line_no, line_name, part_name, serial, purpose, status) "

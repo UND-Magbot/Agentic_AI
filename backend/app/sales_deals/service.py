@@ -609,12 +609,19 @@ async def quote_deal(db: AsyncSession, user_id: int | None, proposal_id: int | N
         fields.update(customer=p["customer"], contact=p.get("contact"))
         if not (getattr(r, "title", None) or "").strip():
             fields["title"] = title
-    if r.won or r.paid_full:   # 완납한 건도 견적은 그대로(사용자 2026-10-26). 수주한 건 — 수주한 견적서(품목·금액·번호)는 그대로, 새 발행은 견적서 목록·이력에만(사용자 2026-10-22)
+    cur = (await db.execute(text("SELECT payments, quote->>'amount', quote->>'no' FROM sales_deals WHERE id = :i"), {"i": r.id})).first()
+    pays = json.loads(cur[0]) if isinstance(cur[0], str) else cur[0]
+    # 견적서 번호 없이 수주된 건(예전 [+ 새 건 등록]으로 직접 등록 — 사용자 2026-11-18, 견적서를 고쳐도 반영되지 않던 오류):
+    # 따라갈 수주 번호가 없으니 그 뒤에 발행·첨부한 견적서를 수주 견적서로 받는다(완납 건은 그대로, 입금 확인이 있으면 금액 변경 막음)
+    # 입금 확인이 있는데 금액이 바뀌면 받지 않고 예전처럼 견적서 목록에만(발행 자체를 막지 않게 — 그 건은 입금 확인 취소 뒤 수주 확정에서 고름)
+    same_amt = round(float(cur[1] or 0), 2) == round(float(quote["amount"] or 0), 2)
+    adopt = bool(r.won) and not r.paid_full and not cur[2] and (not pays or same_amt)
+    if (r.won or r.paid_full) and not adopt:   # 완납한 건도 견적은 그대로(사용자 2026-10-26). 수주한 건 — 수주한 견적서(품목·금액·번호)는 그대로, 새 발행은 견적서 목록·이력에만(사용자 2026-10-22)
         fields = {}
     else:                      # 수주 전이어도 입금 확인이 있으면 금액을 바꾸는 발행은 막는다(QA 2026-11-16)
-        cur = (await db.execute(text("SELECT payments, quote->>'amount' FROM sales_deals WHERE id = :i"), {"i": r.id})).first()
-        pays = json.loads(cur[0]) if isinstance(cur[0], str) else cur[0]
         _amount_locked(pays, cur[1], quote["amount"])
+        if adopt:
+            fields = {"quote": quote}
     if r.kind == "recommend":
         fields.update(kind="quote", base_date=p["quote_date"], owner=getattr(r, "owner", None) or p.get("owner"))
     deal_no = r.deal_no
