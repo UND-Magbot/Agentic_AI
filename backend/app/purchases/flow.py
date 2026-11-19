@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
 from typing import Any
 
 from ..sales_deals.flow import clean_terms  # noqa: F401 — 결제 조건 검사는 판매와 같다(구분·% 합 100·예정일)
@@ -96,7 +97,47 @@ def overdue(d: dict, today: dt.date) -> list[dict[str, Any]]:
     return out
 
 
+RECEIPT_PURPOSES = ("sale", "dev")                  # 판매용 입고 · 보유 후 자체 개발용 입고(사용자 2026-11-18)
+
+
+def purpose_of(r: dict) -> str:
+    """입고 기록의 목적 — 예전 기록(구분 없음)은 판매용으로 본다(사용자 2026-11-18)."""
+    return r.get("purpose") if r.get("purpose") in RECEIPT_PURPOSES else "sale"
+
+
 def merge_receipts(recs: list[dict]) -> list[dict]:
+    """입고 기록은 목적(판매용·자체 개발용)마다 한 건(사용자 2026-11-18). 목적별로 _merge_one 으로 합친다."""
+    out = []
+    for purpose in RECEIPT_PURPOSES:
+        group = [r for r in recs if purpose_of(r) == purpose]
+        out += [{**r, "purpose": purpose} for r in _merge_one(group)]
+    return out
+
+
+def parts_of(ln: dict) -> list[dict]:
+    """품목 줄의 나눈 줄(사용자 2026-11-19 — [같은 품목 줄 나누기]: 같은 품목을 따로 관리할 몇 줄로. 판매용·자체 개발용 같게).
+    [{qty, customer, owner, sw_owner, note, photos}] — 나누지 않았으면 줄 전체가 한 줄. 재고 목록은 이 나눈 줄 하나 = 목록 한 줄.
+    예전 꼴 buyers(대마다 하나씩)는 1대짜리 나눈 줄로 읽는다."""
+    qty = float(ln.get("qty") or 0)
+    base = {"customer": ln.get("customer") or "", "owner": ln.get("owner") or "", "sw_owner": ln.get("sw_owner") or "",
+            "note": ln.get("note") or "", "photos": []}
+    parts = [x for x in ln.get("parts") or [] if isinstance(x, dict)]
+    if not parts and ln.get("buyers"):
+        parts = [{**x, "qty": 1} for x in ln["buyers"] if isinstance(x, dict)]
+    if not parts:
+        return [{**base, "qty": qty}]
+    return [{**base, **{k: v for k, v in x.items() if k in base}, "qty": float(x.get("qty") or 0)} for x in parts]
+
+
+def units_of_parts(ln: dict) -> list[tuple[int, dict]]:
+    """나눈 줄을 한 대씩 펼침 — [(나눈 줄 번호, 그 줄)] 길이 = 나눈 줄 수량(올림)의 합."""
+    out: list[tuple[int, dict]] = []
+    for i, pt in enumerate(parts_of(ln)):
+        out += [(i, pt)] * max(math.ceil(pt["qty"] - 1e-9), 0)
+    return out
+
+
+def _merge_one(recs: list[dict]) -> list[dict]:
     """입고 기록은 한 건(사용자 2026-11-17 — 나눠 들어오는 일이 거의 없어 1차·2차를 없앰). 예전에 나눠 남긴 기록은 하나로 합친다:
     품목 줄별 수량은 더하고 사진·S/N 은 이어 붙이며, 날짜·운송·받은 사람·보관 위치는 가장 최근 기록, 메모는 이어 붙인다.
     [입고 완료]는 하나라도 있으면 완료 — 닫은 범위(closed)는 줄마다 가장 많이 닫은 것(예전 꼴 closed 없는 완료가 있으면 없음 = 전부 닫힘).
@@ -106,23 +147,32 @@ def merge_receipts(recs: list[dict]) -> list[dict]:
     first, last = recs[0], recs[-1]
     lines: dict[Any, dict] = {}
     for r in recs:
-        for ln in r.get("lines") or []:
-            k = ln.get("line_no")
+        for n, ln in enumerate(r.get("lines") or []):
+            # 자유 형식 줄(발주 품목과 연결 없음)은 이름으로 묶는다
+            k = ln.get("line_no") if ln.get("line_no") is not None else ("free", str(ln.get("name") or n))
             cur = lines.get(k)
             if cur is None:
                 lines[k] = {**ln, "qty": float(ln.get("qty") or 0), "photos": list(ln.get("photos") or []),
-                            "serials": list(ln.get("serials") or [])}
+                            "serials": list(ln.get("serials") or []), "units": list(ln.get("units") or [])}
                 continue
-            cur["qty"] = float(cur.get("qty") or 0) + float(ln.get("qty") or 0)
             cur["photos"] += [x for x in ln.get("photos") or [] if x not in cur["photos"]]
             cur["serials"] += [x for x in ln.get("serials") or [] if x not in cur["serials"]]
+            # 판매용 — 나눈 줄이 있거나 고객사가 다르면 나눈 줄(parts)로 이어 붙인다(앞 기록 고객사·사진을 잃지 않게)
+            if "customer" in ln or "customer" in cur or cur.get("parts") or ln.get("parts"):
+                a, b = parts_of(cur), parts_of(ln)
+                differ = len({(x["customer"], x["owner"], x["sw_owner"], x["note"]) for x in a + b}) > 1
+                if cur.get("parts") or ln.get("parts") or cur.get("buyers") or ln.get("buyers") or differ:
+                    cur["parts"] = a + b
+                    cur.pop("buyers", None)
+            cur["qty"] = float(cur.get("qty") or 0) + float(ln.get("qty") or 0)
+            cur["units"] += list(ln.get("units") or [])
             cur["name"] = ln.get("name") or cur.get("name")
     pick = lambda key: next((r.get(key) for r in reversed(recs) if r.get(key)), last.get(key))   # noqa: E731
     out = {**last, "date": max(str(r.get("date") or "") for r in recs) or last.get("date"),
            "carrier": pick("carrier") or "", "receiver": pick("receiver") or "", "location": pick("location") or "",
            "tracking": [t for r in recs for t in (r.get("tracking") or [])][:10],
            "note": " / ".join(str(r.get("note") or "").strip() for r in recs if str(r.get("note") or "").strip())[:500],
-           "lines": sorted(lines.values(), key=lambda x: (x.get("line_no") is None, x.get("line_no") or 0)),
+           "lines": list(lines.values()),
            "by": first.get("by"), "at": first.get("at"), "merged": len(recs)}
     out.pop("closed", None)
     finals = [r for r in recs if r.get("final")]

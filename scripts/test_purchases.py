@@ -121,7 +121,8 @@ check(len(m) == 1 and m[0]["at"] == "t1" and m[0]["by"] == "A" and m[0]["date"] 
 po2 = {"items": [{"commodity": "M", "qty": 2}, {"commodity": "N", "qty": 1}]}
 check(flow.receipt_done({"po": po2, "receipt": {"records": two}}) == flow.receipt_done({"po": po2, "receipt": {"records": m}}) == True,
       "합쳐도 입고 완료 판정 같음")
-check(flow.merge_receipts(two[:1]) == two[:1], "기록 하나면 그대로")
+one = flow.merge_receipts(two[:1])   # 목적 없는 예전 기록은 판매용으로(사용자 2026-11-18)
+check([{k: v for k, v in r.items() if k != "purpose"} for r in one] == two[:1] and one[0]["purpose"] == "sale", "기록 하나면 그대로(예전 기록은 판매용)")
 check(flow.receipt_done(base(po=po, receipt={"records": [{"lines": [], "final": True}]})), "'입고 완료'로 남기면 끝")
 late = base(quote_files=[{}], approval={"done_at": "x"}, po={**po, "expected_date": "2026-10-30"})
 check(any(a["code"] == "RECEIPT_DUE" and "2026-10-30" in a["text"] for a in flow.alerts(late, TODAY)), "입고 예정일 지나면 알림")

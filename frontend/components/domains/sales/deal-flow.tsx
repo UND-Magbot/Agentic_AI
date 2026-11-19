@@ -404,7 +404,7 @@ export function ShipForm({ deal, busy, act, initial, onSaved, onCancel, onChange
   );
   const photoBtn = (target: number | "set") => (
     <label className={cn(ROW_BTN, "cursor-pointer text-accent", up !== null && "pointer-events-none opacity-50")}>
-      <Icon name="plus" className="h-3.5 w-3.5" /> {up === target ? "올리는 중…" : "사진"}
+      <Icon name="plus" className="h-3.5 w-3.5" /> {up === target ? "올리는 중…" : "품목 사진"}
       <input type="file" accept=".jpg,.jpeg,.png,.webp" multiple className="hidden"
              onChange={(e) => { const fs = e.target.files; if (fs?.length) void addPhotos(target, fs); e.target.value = ""; }} />
     </label>

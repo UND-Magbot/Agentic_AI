@@ -6,6 +6,7 @@
 
 import { useState } from "react";
 import { Icon } from "@/components/shared/ui/icon";
+import { SnPhotoCell, type SnPhotoApi, uploadPhoto } from "@/components/domains/sales/sn-photos";
 import { ITEM_BTN, primaryBtn, secondaryBtn } from "@/components/domains/sales/proposal-actions";
 import { HEAD_FIELD, ROW_ICON_BTN, ROW_LABEL } from "@/components/domains/sales/quote-styles";
 import type { IssueUnits, ProductUnit, UnitSummary } from "@/lib/shared/sales-deals";
@@ -67,14 +68,18 @@ export function SnButton({ count, need, open, disabled, onClick, tall }: {
   );
 }
 
-type Draft = { key: string; id?: number; part_name: string; serial: string; maker: string; purpose: string; note: string;
-               locked: boolean };
+// S/N 두 줄(사용자 2026-11-18): serial = 제조사 S/N, und_serial = UND S/N, photos = S/N 사진(여러 장)
+// item_photos = 낱개 품목 사진(사용자 2026-11-19 — 구매 '보유 후 자체 개발용 입고'와 같은 두 칸)
+type Draft = { key: string; id?: number; part_name: string; serial: string; und_serial: string; photos: string[]; item_photos: string[]; maker: string;
+               purpose: string; note: string; locked: boolean };
 
 let seq = 0;
-const blank = (ln: SnLine, purpose: string): Draft => ({ key: `n${++seq}`, part_name: ln.part, serial: "", maker: "UND", purpose,
+const blank = (ln: SnLine, purpose: string): Draft => ({ key: `n${++seq}`, part_name: ln.part, serial: "", und_serial: "", photos: [], item_photos: [],
+                                                        maker: "UND", purpose,
                                                         note: "",
                                                         locked: false });
-const fromUnit = (u: ProductUnit): Draft => ({ key: `u${u.id}`, id: u.id, part_name: u.part_name, serial: u.serial, maker: u.maker,
+const fromUnit = (u: ProductUnit): Draft => ({ key: `u${u.id}`, id: u.id, part_name: u.part_name, serial: u.serial,
+                                               und_serial: u.und_serial ?? "", photos: u.photos ?? [], item_photos: u.item_photos ?? [], maker: u.maker,
                                                purpose: u.purpose,
                                                note: u.note, locked: u.shipment_index != null });
 
@@ -100,9 +105,34 @@ export function SnPanel({ dealId, view, line, need, editIndex, bindIndex, bindEx
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const filled = rows.filter((d) => d.serial.trim()).length;
+  const filled = rows.filter((d) => d.serial.trim() || d.und_serial.trim()).length;
 
-  const setRow = (key: string, patch: Partial<Draft>) => setRows((r) => r.map((d) => (d.key === key ? { ...d, ...patch } : d)));
+  // 우리 제품(제조사 UND)은 제조사 S/N 이 곧 UND S/N — 제조사 S/N 을 적으면 UND S/N 칸도 같은 번호로 따라간다(고칠 수 있음)
+  const follow = (d: Draft, serial: string): Draft =>
+    (d.maker.trim().toUpperCase() === "UND" && (!d.und_serial || d.und_serial === d.serial) ? { ...d, serial, und_serial: serial } : { ...d, serial });
+  const setRow = (key: string, patch: Partial<Draft>) => setRows((r) => r.map((d) => (d.key !== key ? d
+    : patch.serial !== undefined ? { ...follow(d, patch.serial), ...Object.fromEntries(Object.entries(patch).filter(([k]) => k !== "serial")) }
+      : { ...d, ...patch })));
+  const photoApi: SnPhotoApi = {
+    upload: (f) => uploadPhoto(`/api/sales-deals/${dealId}/ship-photos`, f),
+    urlOf: (id) => `/api/sales-deals/${dealId}/ship-photos/${id}`,
+  };
+  const addPhotos = (key: string, kind: "photos" | "item_photos", ids: string[]) => setRows((r) => r.map((d) =>
+    d.key === key ? { ...d, [kind]: [...d[kind], ...ids.filter((x) => !d[kind].includes(x))] } : d));
+  // [S/N 없는 품목](소모품 등, 사용자 2026-11-19) — 낱개 칸을 숨기고 'S/N 없음'으로 채운다(숫자 없는 글 = 시리얼 없음, 서버 규칙 그대로)
+  const NO_SN = "S/N 없음";
+  const isNoSn = (v: string) => !!v.trim() && !/\d/.test(v);
+  // 처음엔 체크 안 함(S/N 있는 품목이 기본, 사용자 2026-11-19). 고칠 수 있는 칸이 있고 그 칸이 모두 'S/N 없음'으로 저장돼 있을 때만 체크 —
+  // 예전엔 출하 [수정]에서 칸이 모두 잠겨(이미 등록) 고칠 칸이 0개면 every([]) = 참이라 체크된 채로 열렸다
+  const [noSn, setNoSn] = useState(() => {
+    const open = rows.filter((d) => !d.locked);
+    return open.length > 0 && open.every((d) => isNoSn(d.serial));
+  });
+  const toggleNoSn = (on: boolean) => {
+    setNoSn(on);
+    setRows((r) => r.map((d) => (d.locked ? d : on ? { ...d, serial: NO_SN, und_serial: "" } : isNoSn(d.serial) ? { ...d, serial: "", und_serial: "" } : d)));
+  };
+  const photoN = rows.filter((d) => d.photos.length > 0 || d.item_photos.length > 0).length;
 
   /** 여러 줄을 붙여 넣으면 그 칸부터 아래로 하나씩(출하한 칸은 건너뛰고, 모자라면 칸을 더 만든다) */
   const pasteMany = (key: string, text: string): boolean => {
@@ -114,7 +144,7 @@ export function SnPanel({ dealId, view, line, need, editIndex, bindIndex, bindEx
       for (const v of vals) {
         while (i < list.length && list[i].locked) i++;
         if (i >= list.length) list.push(blank(line, purpose));
-        list[i] = { ...list[i], serial: v };
+        list[i] = follow(list[i], v);
         i++;
       }
       return list;
@@ -126,11 +156,11 @@ export function SnPanel({ dealId, view, line, need, editIndex, bindIndex, bindEx
     setBusy(true);
     setError(null);
     try {
-      const toUnit = (d: Draft) => ({ id: d.id ?? null, part_name: d.part_name, serial: d.serial, maker: d.maker, purpose: d.purpose,
-                                       note: d.note });
+      const toUnit = (d: Draft) => ({ id: d.id ?? null, part_name: d.part_name, serial: d.serial, und_serial: d.und_serial,
+                                       photos: d.photos, item_photos: d.item_photos, maker: d.maker, purpose: d.purpose, note: d.note });
       const units = [
         ...[...earlier, ...waiting].map((u) => toUnit(fromUnit(u))),
-        ...rows.filter((d) => d.serial.trim()).map(toUnit),
+        ...rows.filter((d) => d.serial.trim() || d.und_serial.trim()).map(toUnit),
       ];
       const r = await fetch(`/api/sales-deals/${dealId}/units`, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -153,10 +183,11 @@ export function SnPanel({ dealId, view, line, need, editIndex, bindIndex, bindEx
     <div className="mt-3 rounded-xl border border-accent/30 bg-accent/[0.03] p-3.5" onKeyDown={(e) => { if (e.key === "Escape" && !busy) { e.stopPropagation(); onClose(); } }}>
       <div className="mb-3 flex flex-wrap items-baseline gap-x-2 gap-y-1">
         <b className="text-[13.5px] font-extrabold">S/N 등록</b>
-        <span className="text-[12px] text-foreground-muted">{scope} {need}개 중 <b className={filled >= need ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>{Math.min(filled, need)}개</b> 적음</span>
+        <span className="text-[12px] text-foreground-muted">{scope} {need}개 · S/N <b className={filled >= need ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>{Math.min(filled, need)}/{need}</b>
+          {!noSn && <> · 사진 <b>{photoN}/{rows.length}</b></>}</span>
         {/* 무상 기간은 모든 제품 출하일부터 1년 고정(사용자 2026-10-30) */}
         <span className="text-[11.5px] text-foreground-subtle">무상 기간 출하일부터 1년</span>
-        <span className="ml-auto text-[11.5px] text-foreground-subtle">S/N이 없는 품목은 &lsquo;특주&rsquo;처럼 적습니다</span>
+        <span className="ml-auto text-[11.5px] text-foreground-subtle">제조사 S/N·UND S/N 두 줄을 함께 적습니다(우리 제품은 같은 번호) · S/N이 없는 품목은 &lsquo;특주&rsquo;</span>
       </div>
       {earlier.length > 0 && (
         <p className="mb-2 text-[11.5px] text-foreground-subtle">
@@ -168,17 +199,30 @@ export function SnPanel({ dealId, view, line, need, editIndex, bindIndex, bindEx
           아직 출하 전으로 적어 둔 S/N(이 출하에 묶지 않음): {waiting.map((u) => u.serial).join(", ")}
         </p>
       )}
+      <label className="mb-2 inline-flex items-center gap-1.5 text-[12.5px]">
+        <input type="checkbox" checked={noSn} disabled={busy} onChange={(e) => toggleNoSn(e.target.checked)} />
+        S/N 없는 품목(소모품 등) — 낱개 칸 없이 &lsquo;S/N 없음&rsquo;으로 기록
+      </label>
+      {noSn ? (
+        <p className="rounded-lg bg-foreground/[0.04] px-3 py-2 text-[12px] text-foreground-muted">
+          S/N 없는 품목으로 {rows.length}개 기록합니다. 박스·제품 사진은 출하 품목 줄의 [+ 품목 사진]에 올려 주세요.
+        </p>
+      ) : (
       <ul className="flex flex-col gap-2">
         {rows.map((d, i) => (
           <li key={d.key} className="@container rounded-xl border border-border bg-surface-raised p-3">
             {/* 윗줄: 번호 · S/N · 부품명 · 빼기 — 아랫줄은 칸이 넓으면 한 줄, 좁으면 메모만 따로(상세 패널·수주 진행 폭 둘 다) */}
-            <div className="grid grid-cols-[24px_minmax(0,1fr)_minmax(0,1.3fr)_40px] items-end gap-2.5">
+            <div className="grid grid-cols-[24px_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.1fr)_40px] items-end gap-2.5">
               <span className="grid h-10 place-items-center font-mono text-[12px] font-bold text-foreground-subtle">{i + 1}</span>
-              <label className={ROW_LABEL}><span>S/N</span>
-                <input className={cn(HEAD_FIELD, "font-mono")} value={d.serial} maxLength={80} placeholder="S/N 또는 특주" aria-label={`${i + 1}번 S/N`}
+              <label className={ROW_LABEL}><span>제조사 S/N</span>
+                <input className={cn(HEAD_FIELD, "font-mono")} value={d.serial} maxLength={80} placeholder="제조사 S/N 또는 특주" aria-label={`${i + 1}번 제조사 S/N`}
                        autoFocus={i === rows.findIndex((x) => !x.serial.trim())} disabled={busy}
                        onPaste={(e) => { if (pasteMany(d.key, e.clipboardData.getData("text"))) e.preventDefault(); }}
                        onChange={(e) => setRow(d.key, { serial: e.target.value })} />
+              </label>
+              <label className={ROW_LABEL}><span>UND S/N</span>
+                <input className={cn(HEAD_FIELD, "font-mono")} value={d.und_serial} maxLength={80} placeholder="UND S/N" aria-label={`${i + 1}번 UND S/N`}
+                       disabled={busy} onChange={(e) => setRow(d.key, { und_serial: e.target.value })} />
               </label>
               <label className={ROW_LABEL}><span>부품명</span>
                 <input className={HEAD_FIELD} value={d.part_name} maxLength={120} aria-label={`${i + 1}번 부품명`} disabled={busy}
@@ -207,13 +251,23 @@ export function SnPanel({ dealId, view, line, need, editIndex, bindIndex, bindEx
                        onChange={(e) => setRow(d.key, { note: e.target.value })} />
               </label>
             </div>
+            {/* 사진 두 가지 — 낱개 품목 사진 · S/N 사진(여러 장), 입고와 같게 */}
+            <div className="ml-[34px] mt-2.5 flex flex-wrap gap-x-5 gap-y-2">
+              <SnPhotoCell api={photoApi} photos={d.item_photos} disabled={busy} label="낱개 품목 사진"
+                           onAdd={(ids) => addPhotos(d.key, "item_photos", ids)}
+                           onRemove={(ph) => setRow(d.key, { item_photos: d.item_photos.filter((x) => x !== ph) })} />
+              <SnPhotoCell api={photoApi} photos={d.photos} disabled={busy} label="S/N 사진"
+                           onAdd={(ids) => addPhotos(d.key, "photos", ids)}
+                           onRemove={(ph) => setRow(d.key, { photos: d.photos.filter((x) => x !== ph) })} />
+            </div>
           </li>
         ))}
       </ul>
+      )}
       <datalist id="sn-makers">{MAKERS.map((m) => <option key={m} value={m} />)}</datalist>
       {error && <p className="mt-2 rounded-lg bg-red-500/10 px-3 py-1.5 text-[12px] text-red-700 dark:text-red-300">{error}</p>}
       <div className="mt-2.5">
-        <button type="button" disabled={busy} onClick={() => setRows((r) => [...r, blank(line, purpose)])} className={ITEM_BTN}>
+        <button type="button" disabled={busy || noSn} onClick={() => setRows((r) => [...r, blank(line, purpose)])} className={ITEM_BTN}>
           <Icon name="plus" className="h-3.5 w-3.5 text-accent" /> 칸 추가 <span className="font-normal text-foreground-muted">(한 품목을 부품 여러 개로 나눌 때)</span>
         </button>
       </div>

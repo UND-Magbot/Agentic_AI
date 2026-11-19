@@ -27,6 +27,7 @@ import { OPEN_APPROVALS_EVENT } from "./approval-alert";
 import { ApprovalRequests } from "./approval-requests";
 import { DealsTab } from "./deals-tab";
 import { PurchasesTab } from "./purchases-tab";
+import { StockTab } from "./stock-tab";
 import { RentalDealsTab } from "./rental-deals-tab";
 import { ProductUnitsTab } from "./product-units-tab";
 import { InitialsPrompt } from "./initials-prompt";
@@ -921,7 +922,7 @@ function MeetRows({ rows }: { rows: [string, string][] }) {
   );
 }
 
-export type RecommendTab = "recommend" | "quote" | "order" | "deals" | "purchases" | "rentals" | "units" | "memory";
+export type RecommendTab = "recommend" | "quote" | "order" | "deals" | "purchases" | "stock" | "rentals" | "units" | "memory";
 
 /** 화면 머리 — 고른 탭마다 제목·설명이 바뀐다(사용자 2026-10-23). 이름은 기술영업 첫 화면 기능 카드와 같게 */
 const TAB_HEAD: Record<RecommendTab, { title: string; desc: string }> = {
@@ -936,10 +937,14 @@ const TAB_HEAD: Record<RecommendTab, { title: string; desc: string }> = {
   // 이름 '제품 구매 건 관리'(사용자 2026-11-11 — 영업 건 관리와 짝)
   purchases: { title: "제품 구매 건 관리",
     desc: "우리가 공급사에서 제품을 살 때 견적 → 재가 → 발주 → 송금·배송·입고(해외는 통관 서류·관세사 송금까지)를 한 건씩 기록합니다. 발주서는 회사 양식으로 작성·발행하거나 고친 파일로 올리고, 거래명세서·세금계산서는 받으면 첨부합니다(선택)." },
+  // 제품 재고 관리(사용자 2026-11-19) — 구매 건 관리 오른쪽, 입고 기록에서 제품 한 대 = 한 줄
+  stock: { title: "제품 재고 관리",
+    desc: "제품 구매 건의 입고 기록을 저장하면 제품 한 대가 한 줄로 들어옵니다. 판매용과 보유 후 자체 개발용으로 나눠 보고, 구분과 상태를 정하고 상태 메모를 남깁니다. 제품명·고객사·담당자·S/N 은 입고 기록에서 고칩니다." },
   rentals: { title: "대여 제품 목록",
     desc: "유상·무상 대여 제품을 품목마다 한 줄씩 — 대여 시작일이 되면 자동으로 대여 중, 반납일이 지나면 빨갛게 표시됩니다. 줄을 누르면 그 제품의 S/N 과 고객사·대여 건 정보가 열리고, 무상 대여 건은 여기서 등록합니다." },
-  units: { title: "제품 A/S건 관리",
-    desc: "S/N 으로 고객사·출하일·무상 기간·A/S 이력을 찾고, 접수한 A/S 를 원인·무상/유상·진행 상태와 함께 기록합니다." },
+  // 이름 '제품 S/N 관리'(사용자 2026-11-19 — 자체 개발 제품 SD 도 함께)
+  units: { title: "제품 S/N 관리",
+    desc: "S/N·품목 이름으로 고객사·출하일·무상 기간·A/S 이력을 찾고, 접수한 A/S 를 원인·무상/유상·진행 상태와 함께 기록합니다. 자체 개발 제품(SD · 개발)도 구매 건·담당자·재고 상태와 함께 찾고 A/S 를 남깁니다." },
   memory: { title: "검토·승인",
     desc: "AI 가 대화에서 배운 내용(경험·정정·기준)과 나에게 온 승인 요청을 확인합니다. 영업 관리자가 승인한 내용만 AI 답에 반영됩니다." },
 };
@@ -1021,6 +1026,7 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
   const [dealOpen, setDealOpen] = useState<number | null>(initialTab === "deals" ? initialDeal ?? null : null);
   // [대여 제품 목록]에서 펼칠 대여 건 — 채팅 이동 버튼(?tab=rentals&deal=)·[제품·A/S]의 무상 대여 건(사용자 2026-11-10)
   const [rentalOpen, setRentalOpen] = useState<number | null>(initialTab === "rentals" ? initialDeal ?? null : null);
+  const [purchaseOpen, setPurchaseOpen] = useState<number | null>(null);   // 재고 줄에서 연 구매 건
   // [+ 무상 대여 건 등록] — 무상 대여 견적서(예전 견적서 수기 작성의 무상 대여와 같은 양식)를 만들어 견적서 탭에서 연다
   const newFreeRental = async () => {
     const r = await fetch("/api/product-recommend/quotes/manual", {
@@ -1835,7 +1841,7 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
     <SpecLockContext.Provider value={specLock}>
     <SpecAskContext.Provider value={() => void askSpec()}>
     <div className="und-page-bg scroll-thin h-full overflow-y-auto">
-    <div className={cn("mx-auto flex w-full flex-col gap-4 px-4 py-6", session || tab === "quote" || tab === "order" || tab === "deals" || tab === "purchases" || tab === "rentals" || tab === "units" ? "max-w-[1440px]" : "max-w-4xl")}>
+    <div className={cn("mx-auto flex w-full flex-col gap-4 px-4 py-6", session || tab === "quote" || tab === "order" || tab === "deals" || tab === "purchases" || tab === "stock" || tab === "rentals" || tab === "units" ? "max-w-[1440px]" : "max-w-4xl")}>
       <header>
         <p className="und-eyebrow">기술영업 · Sales</p>
         <h1 className="und-page-title mt-1 text-[22px] text-foreground">{TAB_HEAD[tab].title}</h1>
@@ -1845,10 +1851,10 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
 
       {/* 탭: 제품 추천 / AI 학습 내용 관리 */}
       <div role="tablist" aria-label="회사 제품 추천 화면" className="und-tabs">
-        {([["recommend", "제품 추천"], ["quote", "견적서"], ["order", "수주 진행"], ["deals", "제품 영업 건 관리"], ["purchases", "제품 구매 건 관리"], ["rentals", "대여 제품 목록"], ["units", "제품·A/S"], ["memory", "검토·승인"]] as const).map(([key, label]) => {
+        {([["recommend", "제품 추천"], ["quote", "견적서"], ["order", "수주 진행"], ["deals", "제품 영업 건 관리"], ["purchases", "제품 구매 건 관리"], ["stock", "제품 재고 관리"], ["rentals", "대여 제품 목록"], ["units", "제품 S/N 관리"], ["memory", "검토·승인"]] as const).map(([key, label]) => {
           const pending = list.items.filter((c) => c.review_status === "pending").length;
           return (
-            <button key={key} type="button" role="tab" aria-selected={tab === key} onClick={() => { setDealOpen(null); setRentalOpen(null); setTab(key); }}
+            <button key={key} type="button" role="tab" aria-selected={tab === key} onClick={() => { setDealOpen(null); setRentalOpen(null); setPurchaseOpen(null); setTab(key); }}
                     className="und-tab">
               {label}
               {key === "memory" && (
@@ -2264,11 +2270,12 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
                                        setForDeal({ id: d.id, label: [d.customer, d.title].filter(Boolean).join(" · ") || "이 건" });
                                        setTab("recommend");
                                      }} />}
-      {tab === "purchases" && <PurchasesTab />}
+      {tab === "purchases" && <PurchasesTab key={purchaseOpen ?? "list"} initialOpen={purchaseOpen} />}
+      {tab === "stock" && <StockTab onOpenPurchase={(id) => { setPurchaseOpen(id); setTab("purchases"); }} />}
       {/* 대여 제품 목록(사용자 2026-11-10) — 대여 제품(유상·무상)을 품목마다 한 줄씩, 누르면 S/N·고객사·대여 건. 무상 대여 건은 여기서만 */}
       {tab === "rentals" && <RentalDealsTab key={rentalOpen ?? "list"} openDealId={rentalOpen} onOpenDeal={(id) => { setDealOpen(id); setTab("deals"); }}
                                             onQuote={(id) => { setQuoteId(id); setTab("quote"); }} onNewFree={newFreeRental} />}
-      {tab === "units" && <ProductUnitsTab onOpenDeal={(id, _biz, free) => {
+      {tab === "units" && <ProductUnitsTab onOpenPurchase={(id) => { setPurchaseOpen(id); setTab("purchases"); }} onOpenDeal={(id, _biz, free) => {
         if (free) { setRentalOpen(id); setTab("rentals"); } else { setDealOpen(id); setTab("deals"); } }} />}
       {meetingId && <MeetingInfo id={meetingId} onClose={() => setMeetingId(null)} />}
       {/* 공개 사양 검색이 끝나면 어느 질문을 작성 중이든 요약 팝업(사용자 2026-10-12) */}

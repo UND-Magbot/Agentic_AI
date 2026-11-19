@@ -343,7 +343,14 @@ export interface ProductUnit {
   line_no: number | null;
   line_name: string;
   part_name: string;
+  /** 제조사 S/N */
   serial: string;
+  /** UND S/N — 제조사 S/N 과 두 줄로 함께(사용자 2026-11-18) */
+  und_serial?: string;
+  /** S/N 사진(ship-photos 이름) */
+  photos?: string[];
+  /** 낱개 품목 사진(ship-photos 이름, 사용자 2026-11-19 — 입고와 같은 두 칸) */
+  item_photos?: string[];
   no_serial: boolean;
   maker: string;
   /** 상태 이니셜(unit-states.ts UNIT_STATES 의 code) */
@@ -365,6 +372,34 @@ export interface ProductUnit {
   as_count?: number;
   as_open?: number;
   warranty_state?: string;
+  /** 자체 개발 제품(사용자 2026-11-19) — 제품 재고 관리의 줄. 영업 건 대신 구매 건 */
+  stock_item_id?: number | null;
+  stock_purchase_id?: number | null;
+  stock_supplier?: string | null;
+  stock_po_no?: string | null;
+  stock_status?: string | null;
+  stock_sw_owner?: string | null;
+  stock_display_name?: string | null;
+}
+
+/** S/N 상세의 자체 개발 제품 정보 — 구매 건·담당자·재고 상태·전체 사진 */
+export interface UnitStockInfo {
+  stock_id: number;
+  purchase_id: number;
+  supplier: string;
+  po_no: string | null;
+  received_on: string | null;
+  category: string;
+  status: string;
+  status_note: string;
+  owner: string;
+  sw_owner: string;
+  line_photos: string[];
+  /** 재고 표시 이름 · 발주서 품목명 */
+  display_name: string;
+  po_name: string;
+  /** 재고 제조사(비면 공급사) */
+  maker: string;
 }
 
 export interface WarrantyPolicy { id?: number; keyword: string; months: number | null; note: string }
@@ -429,6 +464,7 @@ export interface AsCaseEvent { at: string; kind: "접수" | "진행 중" | "완�
 
 export interface UnitDetail extends ProductUnit {
   shipment: { date: string | null; carrier: string | null; tracking: string[] | null; receiver: string | null } | null;
+  stock?: UnitStockInfo | null;
   cases: AsCase[];
 }
 

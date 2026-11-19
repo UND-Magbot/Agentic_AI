@@ -285,21 +285,23 @@ async def run() -> None:
         await db.rollback()
         await expect_err(svc.add_receipt(db, pid, uid, "test", {"date": TODAY, "lines": []}), "수량 없는 입고 거절", "수량")
         await db.rollback()
-        await expect_err(svc.add_receipt(db, pid, uid, "test", {"date": TODAY, "lines": [{"line_no": 0, "qty": 2, "serials": ["A1", "a1"]}]}),
-                         "같은 S/N 두 번 거절", "두 번")
+        await expect_err(svc.add_receipt(db, pid, uid, "test", {"date": TODAY, "purpose": "dev", "lines": [{"line_no": 0, "qty": 2, "units": [{"maker_sn": "A1"}, {"maker_sn": "a1"}]}]}),
+                         "같은 S/N 두 번 거절(자체 개발용 두 줄 S/N)", "두 번")
         await db.rollback()
-        await expect_err(svc.add_receipt(db, pid, uid, "test", {"date": TODAY, "lines": [{"line_no": 0, "qty": 1, "serials": ["A1", "A2"]}]}),
-                         "입고 수량보다 많은 S/N 거절", "많습니다")
+        await expect_err(svc.add_receipt(db, pid, uid, "test", {"date": TODAY, "purpose": "dev", "lines": [{"line_no": 0, "qty": 1, "units": [{"maker_sn": "A1"}, {"und_sn": "U2"}]}]}),
+                         "입고 수량보다 많은 S/N 거절(자체 개발용)", "많습니다")
         await db.rollback()
         await svc.add_receipt(db, pid, uid, "test", {"date": TODAY, "carrier": "경동택배", "tracking": "123 456", "receiver": "이승학",
                                                       "location": "2층 창고", "lines": [{"line_no": 0, "qty": 120, "photos": ["a" * 32 + ".jpg", "../x"],
-                                                                                         "serials": [" SN-001 ", "", "SN-002"]}]})
+                                                                                         "customer": "LG CNS", "owner": "Lucas"}]})
         p = await svc.get(db, pid, TODAY)
         r0 = p["receipt"]["records"][0]
         check(not p["receipt"]["done"] and p["receipt"]["lines"][0]["received"] == 120 and r0["tracking"] == ["123", "456"]
               and r0["lines"][0]["photos"] == ["a" * 32 + ".jpg"], "부분 입고 기록(운송장·사진, 잘못된 사진 이름 버림)")
-        check(r0["lines"][0]["serials"] == ["SN-001", "SN-002"] and p["stage"] == "입고 대기" and not p["in_transit"],
-              "입고 S/N(빈 칸 버림), 입고 기록이 들어오면 배송 중 → 입고 대기", p["stage"])
+        # 판매용 입고(기본) — S/N 없이 품목마다 고객사·우리 측 담당자(사용자 2026-11-18)
+        check(r0["purpose"] == "sale" and r0["lines"][0]["customer"] == "LG CNS" and r0["lines"][0]["owner"] == "Lucas"
+              and "units" not in r0["lines"][0] and p["stage"] == "입고 대기" and not p["in_transit"],
+              "판매용 입고(고객사·담당자, S/N 없음), 입고 기록이 들어오면 배송 중 → 입고 대기", p["stage"])
         await svc.update_receipt(db, pid, uid, "test", 0, {"date": TODAY, "carrier": "경동택배", "lines": [{"line_no": 0, "qty": 100}]})
         await svc.add_receipt(db, pid, uid, "test", {"date": TODAY, "lines": [{"line_no": 0, "qty": 100}]})
         await expect_err(svc.undo_shipping(db, pid, uid, admin=False), "입고 뒤 직원 배송 시작 취소 거절", "입고 기록")

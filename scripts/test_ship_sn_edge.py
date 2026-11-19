@@ -229,9 +229,10 @@ async def e6_remove_middle(db, tag: str) -> None:
     await svc.add_shipment(db, deal_id, None, ship(DAY2, l1, screen_unit_ids(v, l1)))
     await svc.remove_entry(db, deal_id, None, "shipments", 0)
     got = by_serial(await units.issue_units(db, deal_id, qid, 0))
-    check(got[f"E6-{tag}-A"]["shipment_index"] is None and got[f"E6-{tag}-P"]["shipment_index"] == 0
+    # 사용자 2026-11-18: 출하를 취소하면 그 출하에 등록한 S/N 도 지운다(예전: 출하 전으로 되돌림)
+    check(f"E6-{tag}-A" not in got and got[f"E6-{tag}-P"]["shipment_index"] == 0
           and got[f"E6-{tag}-P"]["warranty_start"] == DAY2.isoformat(),
-          "E6 첫 출하 삭제 → 그 S/N 은 출하 전, 뒤 출하 S/N 은 0번으로 당겨지고 무상 시작일 유지",
+          "E6 첫 출하 삭제 → 그 S/N 은 지워지고, 뒤 출하 S/N 은 0번으로 당겨지고 무상 시작일 유지",
           str({k: (u["shipment_index"], u["warranty_start"]) for k, u in got.items()}))
 
 

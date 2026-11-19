@@ -212,16 +212,49 @@ class ConfirmIn(BaseModel):
     mismatch_note: str | None = Field(default=None, max_length=500)
 
 
-class ReceiptLineIn(BaseModel):
-    line_no: int = Field(ge=0, le=40)
+class ReceiptUnitIn(BaseModel):
+    """자체 개발용 입고 제품 한 대 — 제조사 S/N · UND S/N · S/W 담당자 + S/N 사진 · 낱개 품목 사진(사용자 2026-11-18·19)."""
+    maker_sn: str = Field(default="", max_length=120)
+    und_sn: str = Field(default="", max_length=120)
+    photos: list[str] = Field(default_factory=list, max_length=200)          # S/N 사진
+    sw_owner: str = Field(default="", max_length=100)
+    item_photos: list[str] = Field(default_factory=list, max_length=200)     # 낱개 품목 사진
+
+
+class ReceiptPartIn(BaseModel):
+    """판매용 [같은 품목 줄 나누기] 한 줄 — 수량·고객사·우리 측 담당자·메모·사진(사용자 2026-11-19)"""
     qty: float | None = Field(default=None, ge=0, le=1_000_000)
-    photos: list[str] = Field(default_factory=list, max_length=10)
-    serials: list[str] = Field(default_factory=list, max_length=500)     # S/N(사용자 2026-11-11 — 출하처럼 입고 때 등록)
+    customer: str = Field(default="", max_length=200)
+    sw_owner: str = Field(default="", max_length=100)                   # 자체 개발용 나눈 줄의 S/W 담당자
+    owner: str = Field(default="", max_length=100)
+    note: str = Field(default="", max_length=500)
+    photos: list[str] = Field(default_factory=list, max_length=200)
+
+
+class ReceiptLineIn(BaseModel):
+    line_no: int | None = Field(default=None, ge=0, le=40)              # 비우면 자유 형식 줄([품목 모두 비우기], 사용자 2026-11-18)
+    name: str = Field(default="", max_length=200)                       # 자유 형식 줄의 품목 이름
+    qty: float | None = Field(default=None, ge=0, le=1_000_000)
+    photos: list[str] = Field(default_factory=list, max_length=200)
+    serials: list[str] = Field(default_factory=list, max_length=500)     # 예전 꼴(한 줄 S/N)
+    # 판매용 — 품목마다 고객사·우리 측 담당자·메모
+    customer: str = Field(default="", max_length=200)
+    owner: str = Field(default="", max_length=100)
+    note: str = Field(default="", max_length=500)
+    # 보유 후 자체 개발용 — S/W 담당자, 제품 한 대씩 두 줄 S/N·사진
+    sw_owner: str = Field(default="", max_length=100)
+    units: list[ReceiptUnitIn] = Field(default_factory=list, max_length=500)
+    no_sn: bool = False                                                 # S/N 없는 품목(소모품 등, 사용자 2026-11-19)
+    category: str = Field(default="", max_length=20)                    # 재고 구분(비우면 '-', 사용자 2026-11-19)
+    parts: list[ReceiptPartIn] = Field(default_factory=list, max_length=100)     # 판매용 같은 품목 줄 나누기(2026-11-19)
 
 
 class SerialLineIn(BaseModel):
-    line_no: int = Field(ge=0, le=40)
-    serials: list[str] = Field(default_factory=list, max_length=500)
+    line_no: int | None = Field(default=None, ge=0, le=40)
+    line_index: int | None = Field(default=None, ge=0, le=200)          # 기록 안 품목 순번(자유 형식 줄도)
+    serials: list[str] | None = Field(default=None, max_length=500)
+    units: list[ReceiptUnitIn] | None = Field(default=None, max_length=500)
+    sw_owner: str | None = Field(default=None, max_length=100)
 
 
 # 순번으로 지우거나 고칠 때 화면에서 본 그 항목(파일 filename·uploaded_at, 입고 기록 at) — 다르면 409(QA 2026-11-16)
@@ -233,7 +266,7 @@ class ExpectIn(BaseModel):
 
 
 class SerialsIn(BaseModel):
-    lines: list[SerialLineIn] = Field(min_length=1, max_length=31)
+    lines: list[SerialLineIn] = Field(min_length=1, max_length=100)
     expect: Expect = None
 
 
@@ -249,8 +282,9 @@ class ReceiptIn(BaseModel):
     receiver: str = Field(default="", max_length=100)
     location: str = Field(default="", max_length=100)
     note: str = Field(default="", max_length=500)
-    lines: list[ReceiptLineIn] = Field(default_factory=list, max_length=31)
+    lines: list[ReceiptLineIn] = Field(default_factory=list, max_length=100)
     final: bool = False
+    purpose: Literal["sale", "dev"] = "sale"              # 판매용 입고 · 보유 후 자체 개발용 입고(사용자 2026-11-18)
     expect: Expect = None                                 # 고칠 때 — 화면에서 본 그 기록(at)
     # [남은 품목 받기]로 고칠 때 — 입고 완료를 지금 발주 수량 기준으로 다시 닫는다(입고 기록 한 건 관리, 사용자 2026-11-17)
     reclose: bool = False

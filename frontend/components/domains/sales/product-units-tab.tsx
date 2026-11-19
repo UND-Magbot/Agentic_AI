@@ -1,4 +1,5 @@
-// [제품·A/S] 탭(사용자 2026-10-19, 영업팀 요청 20번) — 시리얼로 고객사·출하·무상 기간·A/S 이력을 찾고, A/S 를 기록한다.
+// [제품 S/N 관리] 탭(사용자 2026-10-19 [제품·A/S], 이름 2026-11-19) — 시리얼로 고객사·출하·무상 기간·A/S 이력을 찾고, A/S 를 기록한다.
+// 자체 개발 제품(SD · 개발, 구매 '보유 후 자체 개발용' 입고)도 품목 이름·S/N 으로 찾아 구매 건·담당자·재고 상태를 보고 A/S 를 남긴다.
 // 유상 A/S 견적은 영업팀이 프로그램 밖에서 수기로 — 여기는 진행 상태와 A/S 금액(수기)을 쌓는다. 무상 기간은 출하일부터 1년 고정.
 "use client";
 
@@ -17,6 +18,8 @@ const CHARGES: AsCase["charge"][] = ["미정", "무상", "유상"];
 const STATUSES: AsCase["status"][] = ["접수", "진행 중", "완료"];
 /** 영업 건을 지운 S/N 의 상태(서버 units.DELETED) — 기록으로 남기고 건번호·고객사는 메모에 */
 const UNIT_DELETED = "건 삭제";
+/** 입고 기록에서 빠졌지만 A/S 기록이 있어 남긴 자체 개발 S/N(서버 units.DEV_GONE) */
+const DEV_GONE = "입고 삭제";
 const SMALL = "h-8 rounded-md border border-border bg-surface px-2 text-[12.5px] outline-none focus:border-accent";
 /** A/S 금액 칸 — 숫자만 받아 천 단위 쉼표로 보여 주고, 보낼 때는 원 단위 숫자(비우면 null) */
 const moneyInput = (v: string) => { const n = v.replace(/\D/g, "").slice(0, 12); return n ? Number(n).toLocaleString("ko-KR") : ""; };
@@ -52,9 +55,11 @@ function ChargeChip({ charge }: { charge: AsCase["charge"] }) {
   return <span className={cn("rounded px-1.5 py-0.5 text-[11.5px] font-semibold", tone)}>{charge}</span>;
 }
 
-export function ProductUnitsTab({ onOpenDeal }: {
+export function ProductUnitsTab({ onOpenDeal, onOpenPurchase }: {
   /** [프로젝트 건 열기] — 그 건을 판매·대여 관리 탭의 상세로 연다(사용자 2026-10-22) */
   onOpenDeal?: (dealId: number, biz: DealBiz, free?: boolean) => void;
+  /** [구매 건 열기] — 자체 개발 제품을 산 구매 건(사용자 2026-11-19) */
+  onOpenPurchase?: (purchaseId: number) => void;
 } = {}) {
   // 무상 기간 기본값 탭은 뺐다 — 모든 제품 출하일부터 1년 고정(사용자 2026-10-30)
   const [view, setView] = useState<"units" | "cases">("units");
@@ -71,7 +76,9 @@ export function ProductUnitsTab({ onOpenDeal }: {
             {label}
           </button>
         ))}
-        <span className="ml-auto text-[12px] text-foreground-subtle">S/N은 영업 건의 출하 기록을 쓸 때 품목마다 [S/N 등록]으로 넣습니다.</span>
+        <span className="ml-auto text-[12px] text-foreground-subtle">
+          S/N은 영업 건 출하 기록의 [S/N 등록]에서, 자체 개발 제품(SD)은 구매 건의 &lsquo;보유 후 자체 개발용&rsquo; 입고 기록에서 들어옵니다.
+        </span>
       </div>
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
         <div className="min-w-0">
@@ -79,7 +86,7 @@ export function ProductUnitsTab({ onOpenDeal }: {
           {view === "cases" && <CaseList onOpen={setOpenId} onChanged={() => setPanelVer((v) => v + 1)} />}
         </div>
         <div className="min-w-0">
-          {openId ? <UnitPanel key={`${openId}-${panelVer}`} unitId={openId} onOpenDeal={onOpenDeal} /> : (
+          {openId ? <UnitPanel key={`${openId}-${panelVer}`} unitId={openId} onOpenDeal={onOpenDeal} onOpenPurchase={onOpenPurchase} /> : (
             <div className="rounded-xl border border-dashed border-border p-6 text-center text-[13px] text-foreground-muted">
               왼쪽에서 S/N을 고르면 고객사·출하·무상 기간·A/S 이력이 보입니다.
             </div>
@@ -113,7 +120,7 @@ function UnitSearch({ openId, onOpen }: { openId: number | null; onOpen: (id: nu
     <div className="flex flex-col gap-2">
       <div className="relative">
         <Icon name="search" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-foreground-subtle" />
-        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="S/N·부품·고객사·발행번호로 찾기" aria-label="S/N 찾기"
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="S/N·품목 이름·고객사·발행번호로 찾기 (자체 개발 제품은 'SD')" aria-label="S/N 찾기"
                className={cn(INPUT, "pl-9")} />
       </div>
       {error && <p className="text-[12.5px] text-red-600">{error}</p>}
@@ -127,18 +134,23 @@ function UnitSearch({ openId, onOpen }: { openId: number | null; onOpen: (id: nu
                         openId === u.id ? "border-accent bg-accent/[0.05]" : "border-border")}>
                 <div className="flex flex-wrap items-center gap-2">
                   <UnitStateBadge code={u.purpose} status={u.status} rentalDeal={u.deal_biz === "rental"} />
-                  <b className={cn("font-mono", u.no_serial && "text-foreground-muted")}>{u.serial}</b>
-                  {u.no_serial && <span className="text-[11px] text-foreground-subtle">(S/N 없음)</span>}
+                  {u.stock_item_id && u.no_serial ? <b className="text-foreground-muted">S/N 미기재</b> : (
+                    <b className={cn("font-mono", u.no_serial && "text-foreground-muted")}>{u.serial}</b>)}
+                  {u.und_serial && u.und_serial !== u.serial && <span className="whitespace-nowrap font-mono text-[12px] text-foreground-muted">UND {u.und_serial}</span>}
+                  {u.no_serial && !u.stock_item_id && <span className="text-[11px] text-foreground-subtle">(S/N 없음)</span>}
                   <span className="truncate">{u.part_name}</span>
                   <span className="ml-auto"><WarrantyChip state={u.warranty_state} /></span>
                 </div>
                 <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11.5px] text-foreground-muted">
-                  <BizChip biz={u.deal_biz} />
+                  {!u.stock_item_id && u.status !== DEV_GONE && <BizChip biz={u.deal_biz} />}
                   {u.status === UNIT_DELETED
                     ? <span className="font-semibold text-red-700 dark:text-red-300">지운 건의 S/N</span>
+                    : u.status === DEV_GONE ? <span className="font-semibold text-red-700 dark:text-red-300">입고 기록에서 빠진 자체 개발 S/N</span>
+                    : u.stock_item_id ? <span>자체 개발 · {u.stock_supplier}{u.stock_po_no ? ` · ${u.stock_po_no}` : ""}
+                        {u.stock_status ? ` · 재고 ${u.stock_status}` : ""}{u.stock_sw_owner ? ` · S/W ${u.stock_sw_owner}` : ""}</span>
                     : <span>{u.customer ?? "고객사 없음"}{u.deal_title ? ` · ${u.deal_title}` : ""}</span>}
                   {u.issue_no && <span className="font-mono">{u.issue_no}</span>}
-                  <span>{u.maker}</span>
+                  {!u.stock_item_id && <span>{u.maker}</span>}
                   {!!u.as_count && <span className={cn(u.as_open ? "font-semibold text-amber-700 dark:text-amber-300" : "")}>
                     A/S {u.as_count}건{u.as_open ? ` (진행 ${u.as_open})` : ""}</span>}
                 </div>
@@ -325,7 +337,9 @@ function CaseList({ onOpen, onChanged }: { onOpen: (unitId: number) => void; onC
   );
 }
 
-function UnitPanel({ unitId, onOpenDeal }: { unitId: number; onOpenDeal?: (dealId: number, biz: DealBiz, free?: boolean) => void }) {
+function UnitPanel({ unitId, onOpenDeal, onOpenPurchase }: {
+  unitId: number; onOpenDeal?: (dealId: number, biz: DealBiz, free?: boolean) => void; onOpenPurchase?: (purchaseId: number) => void;
+}) {
   const [u, setU] = useState<UnitDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
@@ -335,11 +349,36 @@ function UnitPanel({ unitId, onOpenDeal }: { unitId: number; onOpenDeal?: (dealI
   useEffect(() => { load(); }, [load]);
   if (error) return <p className="text-[12.5px] text-red-600">{error}</p>;
   if (!u) return <Muted>불러오는 중…</Muted>;
+  const st = u.stock;
+  // 사진 주소 — 영업 건 S/N 은 출하 사진, 자체 개발 제품은 구매 입고 사진
+  const photoUrl = (ph: string) => (st ? `/api/purchases/${st.purchase_id}/receipt-photos/${ph}` : `/api/sales-deals/${u.deal_id}/ship-photos/${ph}`);
+  const thumbs = (key: string, list: string[], alt: string) => (
+    <span key={key} className="flex flex-wrap gap-1">{list.map((ph) => (
+      <a key={ph} href={photoUrl(ph)} target="_blank" rel="noreferrer">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={photoUrl(ph)} alt={alt} className="h-10 w-10 rounded object-cover" />
+      </a>))}</span>
+  );
   const rows: [string, React.ReactNode][] = [
-    ["S/N", <span key="s" className="font-mono">{u.serial}{u.no_serial ? " (S/N 없음)" : ""}</span>],
-    ["부품", u.part_name],
+    ["제조사 S/N", <span key="s" className="font-mono">{u.no_serial && st ? "- (S/N 미기재)" : `${u.serial}${u.no_serial ? " (S/N 없음)" : ""}`}</span>],
+    ["UND S/N", <span key="und" className="font-mono">{u.und_serial || "-"}</span>],
+    ...(u.photos?.length ? [["S/N 사진", thumbs("ph", u.photos, "S/N 사진")] as [string, React.ReactNode]] : []),
+    ...(st?.line_photos.length ? [["품목 사진", thumbs("lph", st.line_photos, "품목 사진")] as [string, React.ReactNode]] : []),
+    ...(u.item_photos?.length ? [["낱개 품목 사진", thumbs("iph", u.item_photos, "낱개 품목 사진")] as [string, React.ReactNode]] : []),
+    ["품목", u.part_name],
     ["제조사", u.maker],
     ["상태", <UnitStateBadge key="st" code={u.purpose} status={u.status} rentalDeal={u.deal_biz === "rental"} />],
+    ...(st ? ([
+      ...(st.display_name ? [["재고 표시 이름", `${st.display_name} (발주서: ${st.po_name})`] as [string, React.ReactNode]] : []),
+      ["구매 건", <span key="pc">{st.supplier}{st.po_no ? <span className="ml-1.5 font-mono text-[11.5px] text-foreground-muted">{st.po_no}</span> : null}</span>],
+      ["입고일", st.received_on ?? "-"],
+      ["구분", st.category || "-"],
+      ["재고 상태", <span key="ss">{st.status}{st.status_note ? <span className="block text-[11.5px] text-foreground-muted">{st.status_note}</span> : null}</span>],
+      ["영업팀 담당자", st.owner || "-"],
+      ["S/W 담당자", st.sw_owner || "-"],
+    ] as [string, React.ReactNode][]) : u.stock_item_id === null && u.status === DEV_GONE ? ([
+      ["구매 건", "입고 기록에서 빠짐 (메모에 구매 건)"],
+    ] as [string, React.ReactNode][]) : ([
     ["프로젝트", u.deal_id ? (
       <span key="pj" className="flex flex-wrap items-center gap-1.5">
         <BizChip biz={u.deal_biz} />
@@ -349,6 +388,7 @@ function UnitPanel({ unitId, onOpenDeal }: { unitId: number; onOpenDeal?: (dealI
     ["견적서", u.issue_no ? `${u.issue_no}${u.quote_revision != null ? ` v${u.quote_revision + 1}` : ""}` : "-"],
     ["출하", u.shipment ? `${u.shipment.date ?? "-"}${u.shipment.carrier ? ` · ${u.shipment.carrier}` : ""}` : "출하 전"],
     ["무상 기간", u.warranty_months == null ? "미정" : u.warranty_months === 0 ? "무상 없음 (0개월)" : `${u.warranty_months}개월${u.warranty_until ? ` (${u.warranty_start} ~ ${u.warranty_until})` : ""}`],
+    ] as [string, React.ReactNode][])),
   ];
   return (
     <div className="flex flex-col gap-3 rounded-xl border border-border p-4 text-[13px]">
@@ -360,6 +400,12 @@ function UnitPanel({ unitId, onOpenDeal }: { unitId: number; onOpenDeal?: (dealI
           <button type="button" onClick={() => onOpenDeal(u.deal_id as number, u.deal_biz ?? "sale", !!u.deal_free)}
                   className="ml-auto inline-flex items-center gap-1 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-accent/90">
             프로젝트 건 열기 →
+          </button>
+        )}
+        {st && onOpenPurchase && (
+          <button type="button" onClick={() => onOpenPurchase(st.purchase_id)}
+                  className="ml-auto inline-flex items-center gap-1 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-accent/90">
+            구매 건 열기 →
           </button>
         )}
       </div>
@@ -612,6 +658,7 @@ export function DealAsIntake({ units, onDone }: { units: ProductUnit[]; onDone: 
                          aria-label={`${u.serial} A/S 접수 선택`} className="h-4 w-4 shrink-0 accent-accent" />
                   <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">{u.part_name}</span>
                   <span className="whitespace-nowrap font-mono text-[12.5px] text-foreground-muted">{u.serial}</span>
+                  {u.und_serial && u.und_serial !== u.serial && <span className="whitespace-nowrap font-mono text-[12px] text-foreground-muted">UND {u.und_serial}</span>}
                   <UnitStateBadge code={u.purpose} status={u.status} rentalDeal={u.deal_biz === "rental"} />
                   {loading.includes(u.id) && <span className="text-[11px] text-foreground-subtle">불러오는 중…</span>}
                 </label>

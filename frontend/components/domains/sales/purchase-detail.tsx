@@ -10,16 +10,18 @@ import { DownloadDialog, PreviewDialog } from "@/components/domains/sales/quote-
 import { INPUT, Muted, shortDate, stamp, todayIso, won } from "@/components/domains/sales/deal-format";
 import {
   CUSTOMS_DOC_EXAMPLES, DOC_SKIP_HELP, DOC_SKIP_MODES, PurchaseApiError, purchaseRequest, purchaseUpload, REGION_LABEL,
-  type PoReplaced, type PurchaseFile, type PurchaseRow,
+  type PoReplaced, type PurchaseFile, type PurchaseRow, type ReceiptPurpose,
 } from "@/lib/shared/purchases";
 import { ConfirmDialog } from "@/components/shared/ui/confirm-dialog";
 import { askConfirm, askText, type ConfirmAsk } from "@/components/shared/ui/confirm-host";
-import { clearDraft, confirmLeave, draftTime, readDraft, useUnsaved, writeDraft, type UnsavedSave } from "@/components/shared/ui/unsaved";
+import { clearDraft, confirmLeave, draftTime, readDraft, useUnsaved, writeDraft } from "@/components/shared/ui/unsaved";
 import { Icon } from "@/components/shared/ui/icon";
+import { SnPhotoCell, type SnPhotoApi, uploadPhoto } from "@/components/domains/sales/sn-photos";
+import { STOCK_CATEGORIES } from "@/lib/shared/stock";
 import { cn } from "@/lib/shared/utils";
 import { primaryBtn, secondaryBtn } from "./proposal-actions";
 import { HEAD_FIELD } from "./quote-styles";
-import { req, REQ, REQ_SCOPE, ReqLabel, reqOr } from "@/components/domains/sales/required";
+import { req, REQ, REQ_SCOPE, ReqLabel } from "@/components/domains/sales/required";
 
 type FileKind = "quote" | "approval" | "statement" | "tax" | "customs" | "remit" | "customs_etc";
 
@@ -120,7 +122,7 @@ export function PurchaseDetail({ id, onClose, onChanged }: {
   return (
     <div className="fixed inset-0 z-40 flex justify-end bg-black/25" onClick={tryClose}>
       <aside role="dialog" aria-label={`${p.supplier} 구매 건 상세`} onClick={(e) => e.stopPropagation()}
-             className="scroll-thin h-full w-full max-w-[800px] overflow-y-auto bg-background shadow-2xl">
+             className="scroll-thin h-full w-full max-w-[max(800px,50vw)] overflow-y-auto bg-background shadow-2xl">
         <div className="sticky top-0 z-10 border-b border-border bg-background/95 px-6 py-4 backdrop-blur">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
@@ -346,7 +348,7 @@ export function PurchaseDetail({ id, onClose, onChanged }: {
 
           <Section id="receipt" n={num.receipt} title="입고" done={step.receipt.done} locked={lock("receipt")} lockText={afterOrder}
                    mark={marks["receipt"]}
-                   hint="출하 기록처럼 입고 기록(입고일·운송·받은 사람·보관 위치·품목별 수량·사진·S/N)을 남깁니다. 입고 기록은 한 건 — 나중에 더 들어오면(품목 추가 등) [남은 품목 받기]로 그 기록을 고쳐 수량을 채웁니다. 발주 수량을 다 받거나 '입고 완료'로 남기면 끝. S/N 은 기록을 남긴 뒤에도 [S/N 등록]으로 따로 적을 수 있습니다.">
+                   hint="판매용과 보유 후 자체 개발용을 따로 기록합니다 — 섞여 들어오면 [○○ 기록 작성]에서 그 목적의 품목과 수량만 골라 적고, 나머지는 다른 목적으로 적습니다. 판매용은 품목마다 고객사·담당자·메모(S/N 은 판매할 때), 자체 개발용은 제조사·UND S/N 과 S/N 사진·S/W 담당자. 적은 줄 그대로 제품 재고 관리에 들어가니, 같은 품목을 따로 관리하려면 [같은 품목 줄 나누기]로 나눠 적으세요. 발주 수량을 다 받거나 '입고 완료'로 남기면 끝.">
             <ReceiptSection id={id} p={p} admin={admin} busy={busy} ready={step.receipt.ready}
                             onSave={(index, body) => act("receipt", () => purchaseRequest(index == null ? `/${id}/receipt` : `/${id}/receipt/${index}/edit`,
                                                                              index == null ? body : { ...body, ...recAt(index) }),
@@ -355,7 +357,6 @@ export function PurchaseDetail({ id, onClose, onChanged }: {
                                                       ? { title: index == null ? "입고 기록을 저장할까요?" : "남은 품목 입고를 저장할까요?",
                                                           message: `입고일 ${body.date}${body.final ? " · 이번 입고로 입고 완료" : ""}`, confirmLabel: "저장" }
                                                       : undefined)}
-                            onSerials={(index, lines) => act("receipt-sn", () => purchaseRequest(`/${id}/receipt/${index}/serials`, { lines, ...recAt(index) }))}
                             onRemove={(index) => act("receipt", () => purchaseRequest(`/${id}/receipt/${index}/remove`, recAt(index)))} />
           </Section>
 
@@ -840,48 +841,6 @@ function DocBox({ id, kind, p, busy, disabled, onUpload, onRemove, onSkip, onUnd
 }
 
 /** S/N 칸(사용자 2026-11-11 — 출하처럼 입고 품목마다). 수량만큼 칸, 여러 줄을 붙여 넣으면 그 칸부터 아래로 나눠 들어간다. 빈 칸은 미등록. */
-function SnInputs({ qty, value, onChange, disabled }: { qty: number; value: string[]; onChange: (v: string[]) => void; disabled?: boolean }) {
-  const n = Math.max(Math.ceil(qty || 0), value.length, 1);
-  const cells = Array.from({ length: n }, (_, i) => value[i] ?? "");
-  const set = (i: number, v: string) => onChange(cells.map((x, j) => (j === i ? v : x)));
-  const paste = (i: number, text: string) => {
-    const vals = text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-    if (vals.length < 2) return false;
-    const next = [...cells];
-    vals.forEach((v, k) => { next[i + k] = v; });
-    onChange(next);
-    return true;
-  };
-  return (
-    <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-1.5">
-      {cells.map((v, i) => (
-        <input key={i} value={v} maxLength={80} disabled={disabled} placeholder={`${i + 1}번 S/N`} aria-label={`${i + 1}번 S/N`}
-               onPaste={(e) => { if (paste(i, e.clipboardData.getData("text"))) e.preventDefault(); }}
-               onChange={(e) => set(i, e.target.value)}
-               className="h-8 rounded-lg border border-border bg-surface px-2 font-mono text-[12px] outline-none focus:border-accent" />
-      ))}
-    </div>
-  );
-}
-
-const snCount = (xs: string[] | undefined) => (xs ?? []).filter((x) => x.trim()).length;
-
-/** [S/N 등록 n/수량] — 입고 S/N 은 선택이라 다 못 적어도 빨갛게 하지 않는다 */
-function SnToggle({ count, need, open, onClick, disabled }: { count: number; need: number; open: boolean; onClick: () => void; disabled?: boolean }) {
-  const full = need > 0 && count >= need;
-  return (
-    <button type="button" onClick={onClick} disabled={disabled} aria-expanded={open}
-            className={cn("inline-flex h-8 shrink-0 items-center gap-1 rounded-lg border px-2.5 text-[12px] font-semibold disabled:opacity-40",
-              full ? "border-emerald-500/40 text-emerald-700 dark:text-emerald-300" : "border-border text-foreground-muted hover:bg-foreground/5")}>
-      {full ? "✓ " : ""}S/N 등록 <span className="font-mono">{count}/{need}</span>
-    </button>
-  );
-}
-
-/** 완료 도장(UI 정리 2026-11-16) — '✓ 재가 완료 26.11.16 · Chris' 같은 줄을 아이콘·날짜 강조·작은 표시로.
- *  tone live = 진행 중(배송 중), 나머지는 완료. action = 옆의 작은 되돌리기 버튼. */
-/** 머리 요약 띠(UI 정리 2026-11-16) — 꼭 할 단계 진행(5/7), 단계마다 막대(누르면 그 칸으로), 오른쪽에 발주 금액.
- *  막대: 끝남 초록 · 지금 할 단계 파랑(빛남) · 남음 회색 · 선택 서류(명세서·계산서) 점선 */
 function ProgressBand({ p, marks }: { p: PurchaseRow; marks: Record<string, Mark> }) {
   const req = p.steps.filter((x) => !x.optional);
   const doneN = req.filter((x) => x.done).length;
@@ -1067,60 +1026,88 @@ function DateNoteAction({ label, placeholder, busy, disabled, title, onRun }: {
   );
 }
 
-/** 보관한 입고 기록 작성 내용 — index null 이면 새 기록, 아니면 그 기록 고치기 */
-type ReceiptDraft = { index: number | null; fillRest: boolean; body: ReceiptBody };
+/** 입고 목적(사용자 2026-11-18) — 판매용 · 보유 후 자체 개발용. 섞여 들어오면 품목을 골라 목적마다 따로 기록 */
+const PURPOSE_LABEL: Record<ReceiptPurpose, string> = { sale: "판매용 입고", dev: "보유 후 자체 개발용 입고" };
+const PURPOSES: ReceiptPurpose[] = ["sale", "dev"];
 
-type ReceiptBody = {
-  date: string; carrier: string; tracking: string; receiver: string; location: string; note: string; final: boolean;
-  /** [남은 품목 받기] — 입고 완료를 지금 발주 수량 기준으로 다시 닫음 */
-  reclose?: boolean;
-  lines: { line_no: number; qty: number | null; photos: string[]; serials: string[] }[];
+/** 자체 개발용 한 대 — 제조사 S/N · UND S/N · S/W 담당자 + S/N 사진(photos) · 낱개 품목 사진(item_photos) (사용자 2026-11-19) */
+type FormUnit = { maker_sn: string; und_sn: string; photos: string[]; sw_owner: string; item_photos: string[] };
+/** 판매용 [같은 품목 줄 나누기] 한 줄 — 수량·고객사·담당자·메모·사진(사용자 2026-11-19) */
+type FormPart = { qty: number | null; customer: string; owner: string; sw_owner: string; note: string; photos: string[] };
+type FormLine = {
+  /** 발주 품목 줄 — null 이면 직접 적은 자유 형식 줄([품목 모두 비우기]) */
+  line_no: number | null; name: string; qty: number | null; photos: string[];
+  customer: string; owner: string; note: string;          // 판매용
+  /** 판매용 나눈 줄 — 2줄 이상이면 나눈 것(재고 목록에도 이 줄 그대로), 비면 나누지 않음(사용자 2026-11-19) */
+  parts: FormPart[];
+  sw_owner: string; units: FormUnit[];                     // 보유 후 자체 개발용
+  /** S/N 없는 품목(소모품 등) — 낱개 칸 없이 품목 사진만(사용자 2026-11-19) */
+  no_sn: boolean;
+  /** 재고 구분 — 비우면 재고에서 '-'(사용자 2026-11-19) */
+  category: string;
 };
+export type ReceiptBody = {
+  purpose: ReceiptPurpose;
+  /** 재고 직접 등록(사용자 2026-11-19) — 제조사(구매처)·국내/해외 */
+  supplier?: string; region?: PurchaseRow["region"];
+  date: string; carrier: string; tracking: string; receiver: string; location: string; note: string; final: boolean;
+  /** 고칠 때 [입고 완료]를 지금 발주 수량 기준으로 다시 닫음 */
+  reclose?: boolean;
+  lines: FormLine[];
+};
+/** 보관한 입고 기록 작성 내용(목적마다) — index null 이면 새 기록, 아니면 그 기록 고치기 */
+type ReceiptDraft = { index: number | null; body: ReceiptBody };
 
 const photoUrl = (id: number, name: string) => `/api/purchases/${id}/receipt-photos/${name}`;
+const blankLine = (): FormLine => ({ line_no: null, name: "", qty: null, photos: [], customer: "", owner: "", note: "", sw_owner: "", units: [],
+                                     no_sn: false, parts: [], category: "" });
+/** 나눈 줄 최대 수(서버 ReceiptLineIn.parts max_length) */
+const PARTS_MAX = 100;
+const blankPart = (): FormPart => ({ qty: null, customer: "", owner: "", sw_owner: "", note: "", photos: [] });
+/** 나눈 줄 수량 합 */
+const partsSum = (ln: FormLine) => (ln.parts ?? []).reduce((n, x) => n + (x.qty ?? 0), 0);
+const unitsOf = (ln: FormLine): FormUnit[] => {
+  if (ln.no_sn) return [];
+  const n = Math.max(Math.ceil(ln.qty ?? 0), ln.units.length);
+  return Array.from({ length: n }, (_, k) => {
+    const u = ln.units[k];
+    return u ? { ...u, sw_owner: u.sw_owner ?? "", item_photos: u.item_photos ?? [] } : { maker_sn: "", und_sn: "", photos: [], sw_owner: "", item_photos: [] };
+  });
+};
+const lineFromRecord = (ln: PurchaseRow["receipt"]["records"][number]["lines"][number]): FormLine => ({
+  line_no: ln.line_no, name: ln.name, qty: ln.qty, photos: ln.photos ?? [], customer: ln.customer ?? "", owner: ln.owner ?? "",
+  note: ln.note ?? "", sw_owner: ln.sw_owner ?? "", units: (ln.units ?? []).map((u) => ({ ...u, photos: u.photos ?? [], sw_owner: u.sw_owner ?? "", item_photos: u.item_photos ?? [] })),
+  no_sn: !!ln.no_sn, category: ln.category ?? "", parts: (ln.parts ?? []).map((x) => ({ ...x, sw_owner: x.sw_owner ?? "", photos: x.photos ?? [] })),
+});
+/** 낱개 칸 처음 펼침 — 수량 3대 이하면 펼치고, 많으면 접어 둔다(사용자 2026-11-19) */
+const OPEN_UNITS_MAX = 3;
 
-/** 입고 — 기록 목록(품목·수량·사진·S/N, [수정]·[S/N 등록]) + 새 입고 기록 칸(출하 기록 작성과 같은 꼴). */
-function ReceiptSection({ id, p, admin, busy, ready, onSave, onSerials, onRemove }: {
+/** 입고 — 판매용·보유 후 자체 개발용 두 칸(없으면 흐리게, 있으면 ✓). [기록 작성] → 품목 체크로 고르기 → 작성 칸. */
+function ReceiptSection({ id, p, admin, busy, ready, onSave, onRemove }: {
   id: number; p: PurchaseRow; admin: boolean; busy: string | null; ready: boolean;
   onSave: (index: number | null, body: ReceiptBody) => Promise<boolean>; onRemove: (index: number) => void;
-  onSerials: (index: number, lines: { line_no: number; serials: string[] }[]) => void;
 }) {
-  const [editing, setEditing] = useState<number | null>(null);
-  // 적던 입고 기록(이 PC 브라우저 보관) — 실수로 닫혀도 다시 열면 이어서(사용자 2026-11-18)
-  const key = `purchase:${id}:receipt`;
-  const [draft, setDraft] = useState(() => {
-    const d = readDraft<ReceiptDraft>(key);
-    return d && (d.value.index == null ? p.receipt.records.length === 0 : d.value.index < p.receipt.records.length) ? d : null;
-  });
-  const [resume, setResume] = useState<ReceiptBody | undefined>(undefined);
-  const keep = (index: number | null, fill: boolean) => (b: ReceiptBody | null) => {
-    if (b) writeDraft<ReceiptDraft>(key, { index, fillRest: fill, body: b });
-    else clearDraft(key);
-  };
-  const done = () => { clearDraft(key); setDraft(null); setResume(undefined); };
-  // [남은 품목 받기] — 입고 기록은 한 건으로 관리(사용자 2026-11-17: 나눠 들어오는 일이 거의 없음). 더 들어오면 그 기록을 고쳐 수량을 채운다
-  const [fillRest, setFillRest] = useState(false);
-  const [snEdit, setSnEdit] = useState<number | null>(null);
-  const [adding, setAdding] = useState(false);
+  type Mode = { kind: "pick"; purpose: ReceiptPurpose } | { kind: "form"; purpose: ReceiptPurpose; index: number | null; picked: PickedLine[]; resume?: ReceiptBody };
+  const [mode, setMode] = useState<Mode | null>(null);
   const recs = p.receipt.records;
-  const last = recs.length - 1;
-  const formOpen = adding || editing !== null;
+  const recIndex = (pp: ReceiptPurpose) => recs.findIndex((r) => (r.purpose ?? "sale") === pp);
+  // 아직 받을 것이 남은 발주 품목(두 목적 합쳐서) — 다음 목적의 품목 고르기에는 이것만
+  const remaining = p.receipt.lines.filter((ln) => ln.ordered != null && ln.received < ln.ordered);
+  const leftOf = (no: number) => { const ln = p.receipt.lines.find((x) => x.line_no === no); return ln ? Math.max(0, (ln.ordered ?? 0) - ln.received) : 0; };
+  // 적던 입고 기록(이 PC 브라우저 보관, 목적마다) — 실수로 닫혀도 다시 열면 이어서(사용자 2026-11-18)
+  const key = (pp: ReceiptPurpose) => `purchase:${id}:receipt:${pp}`;
+  const [drafts, setDrafts] = useState(() => Object.fromEntries(PURPOSES.map((pp) => {
+    const d = readDraft<ReceiptDraft>(key(pp));
+    return [pp, d && (d.value.index == null || d.value.index < recs.length) ? d : null];
+  })) as Record<ReceiptPurpose, ReturnType<typeof readDraft<ReceiptDraft>>>);
+  const keep = (pp: ReceiptPurpose, index: number | null) => (b: ReceiptBody | null) => {
+    if (b) writeDraft<ReceiptDraft>(key(pp), { index, body: b });
+    else clearDraft(key(pp));
+  };
+  const done = (pp: ReceiptPurpose) => { clearDraft(key(pp)); setDrafts((x) => ({ ...x, [pp]: null })); setMode(null); };
+
   return (
-    <div className="space-y-2">
-      {draft && !formOpen && !p.dropped && (
-        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-accent/40 bg-accent/[0.06] px-3 py-2 text-[12.5px]">
-          <span><b>작성하던 입고 기록</b>이 있습니다 <span className="text-foreground-subtle">({draftTime(draft.at)} · 저장 안 함)</span></span>
-          <span className="ml-auto flex gap-1.5">
-            <button type="button" className={BTN} disabled={!!busy}
-                    onClick={() => void askConfirm({ title: "작성하던 입고 기록을 버릴까요?", confirmLabel: "버리기", danger: true }).then((ok) => { if (ok) done(); })}>버리기</button>
-            <button type="button" className={PRIMARY} disabled={!!busy} onClick={() => {
-              setResume(draft.value.body);
-              if (draft.value.index == null) setAdding(true);
-              else { setFillRest(draft.value.fillRest); setEditing(draft.value.index); }
-            }}>이어서 쓰기</button>
-          </span>
-        </div>
-      )}
+    <div className="space-y-3">
       {p.receipt.lines.length > 0 && (
         <div className="flex flex-wrap gap-1.5 text-[12px]">
           {p.receipt.lines.map((ln) => {
@@ -1133,226 +1120,495 @@ function ReceiptSection({ id, p, admin, busy, ready, onSave, onSerials, onRemove
           })}
         </div>
       )}
-      {recs.map((r, i) => (editing === i ? (
-        <ReceiptForm key={i} p={p} id={id} initial={r} fillRest={fillRest && i === last} busy={busy === "receipt"} resume={resume}
-                     onDraft={keep(i, fillRest && i === last)}
-                     onCancel={() => { done(); setEditing(null); setFillRest(false); }}
-                     onSave={async (b) => {
-                       if (!(await onSave(i, fillRest && i === last ? { ...b, reclose: true } : b))) return;
-                       done(); setEditing(null); setFillRest(false);
-                     }} />
-      ) : (
-        <div key={i} className="rounded-lg border border-border px-3 py-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-semibold">{recs.length > 1 ? `${i + 1}차 입고` : "입고 기록"} {shortDate(r.date)}</span>
-            {r.final && <span className="rounded bg-emerald-500/12 px-1.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">입고 완료</span>}
-            <span className="text-[12px] text-foreground-muted">
-              {[r.carrier, r.tracking.join(", "), r.receiver && `받은 사람 ${r.receiver}`, r.location && `보관 ${r.location}`].filter(Boolean).join(" · ")}
-            </span>
-            <span className="ml-auto flex gap-1.5">
-              {/* 입고 기록을 남긴 뒤에도(입고 완료 뒤에도) S/N 만 따로 등록(사용자 2026-11-11) */}
-              {!p.dropped && r.lines.some((ln) => ln.qty > 0) && (
-                <SnToggle count={r.lines.reduce((n, ln) => n + snCount(ln.serials), 0)} need={r.lines.reduce((n, ln) => n + Math.ceil(ln.qty), 0)}
-                          open={snEdit === i} disabled={!!busy} onClick={() => setSnEdit(snEdit === i ? null : i)} />
-              )}
-              {!p.dropped && <button type="button" className={BTN} disabled={!!busy} onClick={() => { setResume(undefined); setFillRest(false); setEditing(i); }}>수정</button>}
-              {admin && !p.dropped && <button type="button" className={BTN} disabled={!!busy}
-                                onClick={() => void askConfirm({ title: `${recs.length > 1 ? `${i + 1}차 ` : ""}입고 기록을 지울까요?`, message: "품목별 받은 수량·사진·S/N 이 함께 지워집니다. 변경 이력에는 남습니다.", confirmLabel: "지우기", danger: true })
-                                  .then((ok) => { if (ok) onRemove(i); })}>지우기</button>}
-            </span>
+      {PURPOSES.map((pp) => {
+        const idx = recIndex(pp);
+        const r = idx >= 0 ? recs[idx] : null;
+        const draft = drafts[pp];
+        const here = mode && mode.purpose === pp ? mode : null;
+        return (
+          <div key={pp} className={cn("rounded-xl border px-4 py-3", r ? "border-border bg-surface" : "border-dashed border-border bg-foreground/[0.015]")}>
+            <div className="flex flex-wrap items-center gap-2">
+              <b className={cn("text-[13.5px]", !r && !here && "text-foreground-subtle")}>{PURPOSE_LABEL[pp]}</b>
+              {pp === "dev" && <span className="text-[11.5px] text-foreground-subtle">제조사·UND S/N · S/N 사진 · S/W 담당자</span>}
+              {pp === "sale" && <span className="text-[11.5px] text-foreground-subtle">품목마다 고객사·담당자·메모(S/N 은 판매할 때)</span>}
+              {r && <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-emerald-500/12 px-2 py-0.5 text-[11.5px] font-semibold text-emerald-700 dark:text-emerald-300">
+                <Icon name="check" className="h-3.5 w-3.5" /> 기록함</span>}
+            </div>
+
+            {draft && !here && !p.dropped && (
+              <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-accent/40 bg-accent/[0.06] px-3 py-2 text-[12.5px]">
+                <span><b>작성하던 {PURPOSE_LABEL[pp]} 기록</b>이 있습니다 <span className="text-foreground-subtle">({draftTime(draft.at)} · 저장 안 함)</span></span>
+                <span className="ml-auto flex gap-1.5">
+                  <button type="button" className={BTN} disabled={!!busy}
+                          onClick={() => void askConfirm({ title: "작성하던 입고 기록을 버릴까요?", confirmLabel: "버리기", danger: true }).then((ok) => { if (ok) done(pp); })}>버리기</button>
+                  <button type="button" className={PRIMARY} disabled={!!busy}
+                          onClick={() => setMode({ kind: "form", purpose: pp, index: draft.value.index, picked: [], resume: draft.value.body })}>이어서 쓰기</button>
+                </span>
+              </div>
+            )}
+
+            {here?.kind === "pick" && (
+              <ItemPicker lines={remaining} purpose={pp} onCancel={() => setMode(null)}
+                          onDone={(picked) => setMode({ kind: "form", purpose: pp, index: null, picked })} />
+            )}
+            {here?.kind === "form" && (
+              <div className="mt-2">
+                <ReceiptForm id={id} p={p} purpose={pp} initial={here.index != null ? recs[here.index] : undefined} picked={here.picked}
+                             leftOf={leftOf} remaining={remaining} resume={here.resume} busy={busy === "receipt"}
+                             onDraft={keep(pp, here.index)} onCancel={() => done(pp)}
+                             onSave={async (b) => { if (await onSave(here.index, b)) done(pp); }} />
+              </div>
+            )}
+
+            {!here && r && <RecordView id={id} r={r} />}
+            {!here && (
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                {!r && <span className="text-[12px] text-foreground-subtle">기록 없음</span>}
+                {r && !p.dropped && (
+                  <button type="button" className={BTN} disabled={!!busy} onClick={() => setMode({ kind: "form", purpose: pp, index: idx, picked: [] })}>수정</button>
+                )}
+                {r && admin && !p.dropped && (
+                  <button type="button" className={BTN} disabled={!!busy}
+                          onClick={() => void askConfirm({ title: `${PURPOSE_LABEL[pp]} 기록을 지울까요?`, message: "품목별 받은 수량·사진·S/N 이 함께 지워집니다. 변경 이력에는 남습니다.",
+                                                           confirmLabel: "지우기", danger: true }).then((ok) => { if (ok) onRemove(idx); })}>지우기</button>
+                )}
+                {!r && !p.dropped && !p.receipt.done && (
+                  <button type="button" className={cn(PRIMARY, "ml-auto")} disabled={!ready || !!busy}
+                          onClick={() => setMode({ kind: "pick", purpose: pp })}>{PURPOSE_LABEL[pp]} 기록 작성</button>
+                )}
+              </div>
+            )}
           </div>
-          <ul className="mt-1 space-y-1 text-[12.5px]">
-            {r.lines.map((ln) => (
-              <li key={ln.line_no} className="flex flex-wrap items-center gap-2">
-                <span>{ln.name}</span><b className="tabular-nums">× {ln.qty}</b>
-                {(ln.serials ?? []).map((sn) => (
-                  <span key={sn} className="rounded bg-foreground/[0.06] px-1.5 font-mono text-[11.5px]">{sn}</span>
-                ))}
-                {ln.photos.map((ph) => (
-                  <a key={ph} href={photoUrl(id, ph)} target="_blank" rel="noreferrer">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={photoUrl(id, ph)} alt={`${ln.name} 입고 사진`} className="h-10 w-10 rounded object-cover" />
-                  </a>
-                ))}
-              </li>
-            ))}
-          </ul>
-          {snEdit === i && (
-            <SerialEditor record={r} busy={busy === "receipt-sn"} onCancel={() => setSnEdit(null)}
-                          onSave={(lines) => { onSerials(i, lines); setSnEdit(null); }} />
-          )}
-          {r.note && <p className="mt-1 text-[12px] text-foreground-muted">{r.note}</p>}
-          <p className="mt-0.5 text-[11px] text-foreground-subtle">기록 {r.by}{r.edited_by ? ` · 수정 ${r.edited_by}` : ""}</p>
-        </div>
-      )))}
-      {/* 입고 기록은 한 건(사용자 2026-11-17) — 처음엔 [입고 기록 작성], 그 뒤 더 받을 것이 생기면(품목 추가·덜 받음) 새 기록 대신
-          [남은 품목 받기]로 그 기록을 고쳐 수량을 채운다. 예전에 나눠 남긴 기록(2차 …)은 그대로 보인다 */}
-      {!p.receipt.done && !p.dropped && (recs.length === 0 ? (adding ? (
-        <ReceiptForm p={p} id={id} busy={busy === "receipt"} resume={resume} onDraft={keep(null, false)}
-                     onCancel={() => { done(); setAdding(false); }}
-                     onSave={async (b) => { if (await onSave(null, b)) { done(); setAdding(false); } }} />
-      ) : (
-        <button type="button" className={PRIMARY} disabled={!ready || !!busy} onClick={() => { setResume(undefined); setAdding(true); }}>입고 기록 작성</button>
-      )) : editing === null && (
-        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/[0.06] px-3 py-2 text-[12.5px]">
-          <span className="text-amber-800 dark:text-amber-200">
-            아직 받을 품목이 있습니다({p.receipt.lines.filter((ln) => ln.ordered != null && ln.received < ln.ordered)
-              .map((ln) => `${ln.name} ${(ln.ordered ?? 0) - ln.received}개`).join(", ") || "남은 수량"}). 들어오면 입고 기록을 고쳐 수량을 채우세요.
-          </span>
-          <button type="button" className={cn(PRIMARY, "ml-auto")} disabled={!!busy} onClick={() => { setResume(undefined); setFillRest(true); setEditing(last); }}>
-            남은 품목 받기 (입고 기록 고치기)
-          </button>
-        </div>
-      ))}
+        );
+      })}
+      {recs.length > 0 && !p.receipt.done && !p.dropped && remaining.length > 0 && !mode && (
+        <p className="text-[12px] text-amber-700 dark:text-amber-300">
+          아직 받을 품목이 있습니다({remaining.map((ln) => `${ln.name} ${(ln.ordered ?? 0) - ln.received}개`).join(", ")}) — 다른 목적으로 기록하거나, 기록의 [수정]에서 [+ 남은 발주 품목 추가]로 채우세요.
+        </p>
+      )}
     </div>
   );
 }
 
-function ReceiptForm({ id, p, initial, fillRest = false, busy, resume, onDraft, onSave, onCancel }: {
-  id: number; p: PurchaseRow; initial?: PurchaseRow["receipt"]["records"][number]; busy: boolean;
-  /** [남은 품목 받기] — 그 기록의 수량에 아직 안 받은 수량을 더해 채워 연다(사용자 2026-11-17, 입고 기록 한 건) */
-  fillRest?: boolean;
+/** [○○ 기록 작성] → 아직 안 받은 발주 품목 중 이번 목적의 것만 체크로 고르기(사용자 2026-11-18). */
+/** 고른 발주 품목 줄 + 이번 목적으로 받은 수량 */
+type PickedLine = { no: number; qty: number };
+
+function ItemPicker({ lines, purpose, onDone, onCancel }: {
+  lines: PurchaseRow["receipt"]["lines"]; purpose: ReceiptPurpose; onDone: (picked: PickedLine[]) => void; onCancel: () => void;
+}) {
+  const [on, setOn] = useState<Set<number>>(new Set());
+  // 고를 때 수량도(사용자 2026-11-19 — 3대 중 2대만 판매용으로). 처음엔 남은 수량, 1 ~ 남은 수량
+  const left = (no: number) => { const ln = lines.find((x) => x.line_no === no); return Math.max(0, (ln?.ordered ?? 0) - (ln?.received ?? 0)); };
+  const [qty, setQty] = useState<Record<number, string>>({});
+  const qtyOf = (no: number) => { const v = Number(qty[no] ?? left(no)); return Number.isFinite(v) ? v : 0; };
+  const qtyBad = (no: number) => on.has(no) && !(qtyOf(no) > 0 && qtyOf(no) <= left(no));
+  const toggle = (no: number) => setOn((s) => { const n = new Set(s); if (n.has(no)) n.delete(no); else n.add(no); return n; });
+  const bad = lines.some((ln) => qtyBad(ln.line_no));
+  return (
+    <div className="mt-2 rounded-lg border border-accent/40 bg-accent/[0.03] p-3 text-[12.5px]">
+      <p className="mb-2 font-semibold">{PURPOSE_LABEL[purpose]}으로 받은 품목을 고르세요</p>
+      {lines.length === 0 ? <p className="text-foreground-subtle">아직 받을 발주 품목이 없습니다. 아래 [직접 적기]로 품목을 적을 수 있습니다.</p> : (
+        // 심플하게(사용자 2026-11-19) — 남은 수량은 위 꼬리표(0/3)로 보고, 고르면 옆에 수량 칸만. [취소] [작성]
+        <ul className="space-y-1">
+          {lines.map((ln) => (
+            <li key={ln.line_no} className="flex flex-wrap items-center gap-2">
+              <label className="inline-flex items-center gap-2">
+                <input type="checkbox" checked={on.has(ln.line_no)} onChange={() => toggle(ln.line_no)} />
+                <span className="font-medium">{ln.name}</span>
+              </label>
+              {on.has(ln.line_no) && (
+                <span className="inline-flex items-center gap-1 text-foreground-muted">
+                  <input type="number" min={1} max={left(ln.line_no)} step={1} value={qty[ln.line_no] ?? String(left(ln.line_no))}
+                         aria-label={`${ln.name} ${PURPOSE_LABEL[purpose]} 수량`}
+                         onChange={(e) => setQty((x) => ({ ...x, [ln.line_no]: e.target.value }))}
+                         className={cn("h-7 w-16 rounded-md border bg-surface px-1.5 text-right tabular-nums outline-none focus:border-accent",
+                           qtyBad(ln.line_no) ? "border-red-500" : "border-border")} />
+                  개
+                  {qtyBad(ln.line_no) && <span className="text-[11.5px] font-semibold text-red-600">1~{left(ln.line_no)}개로 적어 주세요</span>}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+        <button type="button" className="text-[12px] text-foreground-subtle hover:underline" onClick={() => onDone([])}>발주 품목 없이 직접 적기</button>
+        <span className="ml-auto flex gap-1.5">
+          <button type="button" className={BTN} onClick={onCancel}>취소</button>
+          <button type="button" className={PRIMARY} disabled={!on.size || bad}
+                  onClick={() => onDone(lines.map((ln) => ln.line_no).filter((no) => on.has(no)).map((no) => ({ no, qty: qtyOf(no) })))}>
+            작성
+          </button>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/** 남긴 입고 기록 보기 — 판매용은 고객사·담당자·메모, 자체 개발용은 S/W 담당자·제조사/UND S/N·사진 */
+function RecordView({ id, r }: { id: number; r: PurchaseRow["receipt"]["records"][number] }) {
+  const dev = r.purpose === "dev";
+  const thumb = (ph: string) => (
+    <a key={ph} href={photoUrl(id, ph)} target="_blank" rel="noreferrer">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={photoUrl(id, ph)} alt="입고 사진" className="h-10 w-10 rounded object-cover" />
+    </a>
+  );
+  return (
+    <div className="mt-2 space-y-1.5 text-[12.5px]">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-semibold">입고 {shortDate(r.date)}</span>
+        {r.final && <span className="rounded bg-emerald-500/12 px-1.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">입고 완료</span>}
+        <span className="text-[12px] text-foreground-muted">
+          {[r.carrier, r.tracking.join(", "), r.receiver && `받은 사람 ${r.receiver}`, r.location && `보관 ${r.location}`].filter(Boolean).join(" · ")}
+        </span>
+      </div>
+      <ul className="space-y-1.5">
+        {r.lines.map((ln, n) => (
+          <li key={n} className="rounded-lg bg-foreground/[0.03] px-2.5 py-1.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-medium">{ln.name}</span><b className="tabular-nums">× {ln.qty}</b>
+              {ln.line_no == null && <span className="rounded bg-foreground/[0.06] px-1.5 text-[11px] text-foreground-muted">직접 적음</span>}
+              {!dev && !(ln.parts?.length) && [ln.customer && `고객사 ${ln.customer}`, ln.owner && `담당 ${ln.owner}`, ln.note].filter(Boolean).map((t) => (
+                <span key={String(t)} className="text-[12px] text-foreground-muted">{t}</span>))}
+              {dev && ln.sw_owner && <span className="text-[12px] text-foreground-muted">S/W 담당 {ln.sw_owner}</span>}
+              {ln.no_sn && <span className="rounded bg-foreground/[0.06] px-1.5 text-[11px] text-foreground-muted">S/N 없는 품목</span>}
+              {ln.photos.length > 0 && <span className="text-[11.5px] text-foreground-subtle">품목 사진</span>}
+              {ln.photos.map(thumb)}
+            </div>
+            {dev && (ln.units ?? []).length > 0 && (
+              <ul className="mt-1 space-y-1">
+                {(ln.units ?? []).map((u, k) => (
+                  <li key={k} className="flex flex-wrap items-center gap-2 text-[12px]">
+                    <span className="font-mono text-foreground-subtle">{k + 1}</span>
+                    <span>제조사 <b className="font-mono">{u.maker_sn || "-"}</b></span>
+                    <span>UND <b className="font-mono">{u.und_sn || "-"}</b></span>
+                    {u.sw_owner && <span className="text-foreground-muted">S/W {u.sw_owner}</span>}
+                    {(u.item_photos ?? []).map(thumb)}
+                    {(u.photos ?? []).map(thumb)}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {(ln.parts ?? []).length > 0 && (
+              <ul className="mt-1 space-y-0.5">
+                {(ln.parts ?? []).map((x, k) => (
+                  <li key={k} className="flex flex-wrap items-center gap-2 text-[12px] text-foreground-muted">
+                    <b className="tabular-nums text-foreground">× {x.qty}</b>
+                    {[x.customer && `고객사 ${x.customer}`, x.owner && `담당 ${x.owner}`, x.sw_owner && `S/W 담당 ${x.sw_owner}`, x.note]
+                      .filter(Boolean).join(" · ") || "-"}
+                    {(x.photos ?? []).map(thumb)}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </li>
+        ))}
+      </ul>
+      {r.note && <p className="text-[12px] text-foreground-muted">{r.note}</p>}
+      <p className="text-[11px] text-foreground-subtle">기록 {r.by}{r.edited_by ? ` · 수정 ${r.edited_by}` : ""}</p>
+    </div>
+  );
+}
+
+export function ReceiptForm({ id, p, purpose, initial, picked, leftOf, remaining, busy, resume, onDraft, onSave, onCancel, direct = false }: {
+  id: number; p: PurchaseRow; purpose: ReceiptPurpose; initial?: PurchaseRow["receipt"]["records"][number];
+  /** 새 기록 — [품목 고르기]에서 고른 발주 품목 줄(비면 자유 형식 한 줄로 시작) */
+  picked: PickedLine[];
+  leftOf: (lineNo: number) => number; remaining: PurchaseRow["receipt"]["lines"];
+  busy: boolean;
   /** [이어서 쓰기] — 실수로 닫히기 전에 적던 내용 */
   resume?: ReceiptBody;
   /** 적은 내용이 바뀔 때마다(시작값과 같으면 null) — 이 PC 브라우저에 보관 */
   onDraft: (b: ReceiptBody | null) => void;
   onSave: (b: ReceiptBody) => void; onCancel: () => void;
+  /** 재고 직접 등록(구매 없이 [제품 등록], 사용자 2026-11-19) — 품목은 직접 적은 줄만, 늘 입고 완료 */
+  direct?: boolean;
 }) {
-  // 기본 수량 = 남은 수량(새 기록) · 그 기록의 수량(수정) · 그 기록 수량 + 남은 수량(남은 품목 받기)
+  const nameOf = (no: number) => p.receipt.lines.find((ln) => ln.line_no === no)?.name ?? "";
+  const pickedLine = (no: number, qty?: number): FormLine => ({ ...blankLine(), line_no: no, name: nameOf(no), qty: qty ?? (leftOf(no) || null) });
   const [start] = useState<ReceiptBody>(() => ({
-    date: initial?.date ?? todayIso(), carrier: initial?.carrier ?? "", tracking: initial?.tracking.join(" ") ?? "",
+    purpose, date: initial?.date ?? todayIso(), carrier: initial?.carrier ?? "", tracking: initial?.tracking.join(" ") ?? "",
     receiver: initial?.receiver ?? "", location: initial?.location ?? "", note: initial?.note ?? "", final: initial?.final ?? false,
-    lines: p.receipt.lines.map((ln) => {
-      const mine = initial?.lines.find((x) => x.line_no === ln.line_no);
-      const left = Math.max(0, (ln.ordered ?? 0) - ln.received);
-      const qty = initial ? (fillRest ? ((mine?.qty ?? 0) + left) || null : mine?.qty ?? null) : left || null;
-      return { line_no: ln.line_no, qty, photos: mine?.photos ?? [], serials: mine?.serials ?? [] };
-    }),
+    lines: initial ? initial.lines.map(lineFromRecord) : picked.length ? picked.map((x) => pickedLine(x.no, x.qty)) : [blankLine()],
+    ...(direct ? { final: true, supplier: p.supplier === "직접 등록" ? "" : p.supplier, region: p.region } : {}),
   }));
   const [b, setB] = useState<ReceiptBody>(() => resume ?? start);
-  // 저장 안 한 내용 — 닫을 때 묻고(useUnsaved), 적는 대로 보관(onDraft)
   const dirty = JSON.stringify(b) !== JSON.stringify(start);
-  const saveRef = useRef<UnsavedSave>(null);   // [입고 기록 저장]과 같은 일 — 아래에서 필수 칸을 본 뒤 채운다
-  useUnsaved("입고 기록", dirty, () => saveRef.current?.() ?? false);
   const report = useRef(onDraft);
   useEffect(() => { report.current = onDraft; }, [onDraft]);
   useEffect(() => { report.current(dirty ? b : null); }, [b, dirty]);
-  const [uploading, setUploading] = useState<number | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const [snOpen, setSnOpen] = useState<number | null>(null);
-  const setLine = (i: number, patch: Partial<ReceiptBody["lines"][number]>) =>
-    setB({ ...b, lines: b.lines.map((x, j) => (j === i ? { ...x, ...patch } : x)) });
-  const addPhoto = async (i: number, f: File) => {
-    setUploading(i);
-    setErr(null);
-    try {
-      const fd = new FormData();
-      fd.append("file", f);
-      const r = await fetch(`/api/purchases/${id}/receipt-photos`, { method: "POST", body: fd });
-      const d = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(typeof d?.detail === "string" ? d.detail : "사진을 올리지 못했습니다.");
-      setLine(i, { photos: [...b.lines[i].photos, d.id as string] });
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "사진을 올리지 못했습니다.");
-    } finally {
-      setUploading(null);
-    }
+  const [openUnits, setOpenUnits] = useState<Record<number, boolean>>({});
+  const unitsOpen = (i: number, n: number) => openUnits[i] ?? n <= OPEN_UNITS_MAX;
+  const setLine = (i: number, patch: Partial<FormLine>) => setB((x) => ({ ...x, lines: x.lines.map((l, j) => (j === i ? { ...l, ...patch } : l)) }));
+  const setUnit = (i: number, k: number, patch: Partial<FormUnit>) => setB((x) => ({ ...x, lines: x.lines.map((l, j) => {
+    if (j !== i) return l;
+    const us = unitsOf(l);
+    us[k] = { ...us[k], ...patch };
+    return { ...l, units: us };
+  }) }));
+  const photoApi: SnPhotoApi = { upload: (f) => uploadPhoto(`/api/purchases/${id}/receipt-photos`, f), urlOf: (ph) => photoUrl(id, ph) };
+  // [품목 모두 비우기] — 읽어 온 품목·수량을 비우고 자유 형식으로 다시 적기(사용자 2026-11-18). 입고 완료는 체크로
+  const clearAll = async () => {
+    if (!(await askConfirm({ title: "품목을 모두 비울까요?", message: "발주서에서 불러온 품목·수량을 지우고 직접 적는 칸으로 바꿉니다. 직접 적은 품목은 발주 수량과 비교하지 않으니, 다 받았으면 아래 '이번 입고로 입고 완료'를 체크해 주세요.",
+                               confirmLabel: "모두 비우기", danger: true }))) return;
+    setB((x) => ({ ...x, lines: [blankLine()] }));
   };
-  // 이번 기록까지 합쳐 발주 수량을 다 채우면 '입고 완료'가 자동으로 된다 — 체크는 일부만 받고 끝낼 때
-  const fills = p.receipt.lines.every((ln, i) => {
-    const prev = ln.received - (initial?.lines.find((x) => x.line_no === ln.line_no)?.qty ?? 0);
-    return prev + (b.lines[i]?.qty ?? 0) >= (ln.ordered ?? 0);
+  const addable = remaining.filter((ln) => !b.lines.some((l) => l.line_no === ln.line_no));
+  const linked = b.lines.filter((l) => l.line_no != null);
+  // 발주 품목을 이번까지 합쳐 모두 받으면 '입고 완료'가 자동 — 직접 적은 품목만 있으면 체크로
+  const fills = linked.length > 0 && b.lines.every((l) => l.line_no != null) && p.receipt.lines.every((ln) => {
+    const mine = b.lines.find((l) => l.line_no === ln.line_no)?.qty ?? 0;
+    const before = initial?.lines.find((x) => x.line_no === ln.line_no)?.qty ?? 0;
+    return ln.received - before + mine >= (ln.ordered ?? 0);
   });
-  // 필수 — 입고일, 품목 수량(한 줄 이상, '입고 완료'만 남길 때는 없어도 됨 — 서버와 같게)
-  const anyQty = b.lines.some((x) => (x.qty ?? 0) > 0);
-  const qtyOk = anyQty || b.final;
-  const canSave = !busy && !!b.date && qtyOk && uploading == null;
-  const submit = () => onSave({ ...b, lines: b.lines.map((x) => ({ ...x, serials: x.serials.map((v) => v.trim()).filter(Boolean) })) });
-  useEffect(() => { saveRef.current = canSave ? submit : null; });
+  const freeBad = b.lines.some((l) => l.line_no == null && (l.qty ?? 0) > 0 && !l.name.trim());
+  const qtyOk = b.lines.some((l) => (l.qty ?? 0) > 0) || b.final;
+  // 나눈 줄 — 나눈 수량 합이 그 품목 수량과 같아야, 나눈 줄마다 수량이 있어야(판매용·자체 개발용)
+  const partsBad = b.lines.some((l) => (l.parts ?? []).length > 1
+    && (Math.abs(partsSum(l) - (l.qty ?? 0)) > 1e-9 || l.parts.some((x) => !(x.qty && x.qty > 0))));
+  const canSave = !busy && (!!b.date || direct) && qtyOk && !freeBad && !partsBad;
+  /** [같은 품목 줄 나누기] 편집 칸(판매용·자체 개발용 공용, 사용자 2026-11-19) — 나눈 줄 하나 = 재고 목록 한 줄 */
+  const partsBlock = (l: FormLine, i: number) => (
+                <div className="space-y-1.5 text-[11.5px] text-foreground-muted">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-semibold text-foreground">나눈 줄</span>
+                    <span className={cn("tabular-nums", Math.abs(partsSum(l) - (l.qty ?? 0)) > 1e-9 ? "font-semibold text-red-600" : "text-foreground-subtle")}>
+                      수량 합 {partsSum(l)} / {l.qty ?? 0}</span>
+                    <span className="text-foreground-subtle">— 나눈 줄 하나가 재고 목록 한 줄이 됩니다{purpose === "dev" ? " · S/N 은 아래 낱개 칸에" : ""}</span>
+                    <button type="button" className="ml-auto text-[12px] text-foreground-subtle hover:underline"
+                            onClick={() => { const f = l.parts[0]; setLine(i, { parts: [], customer: f.customer, owner: f.owner, sw_owner: f.sw_owner || l.sw_owner, note: f.note,
+                                                                                   photos: [...l.photos, ...l.parts.flatMap((x) => x.photos).filter((y) => !l.photos.includes(y))] }); }}>
+                      나누기 취소(한 줄로)</button>
+                  </div>
+                  {l.parts.map((x, k) => {
+                    const setPart = (patch: Partial<FormPart>) => setLine(i, { parts: l.parts.map((y, kk) => (kk === k ? { ...y, ...patch } : y)) });
+                    return (
+                      <div key={k} className="space-y-1 rounded-md border border-border/70 px-2 py-1.5">
+                        <div className="grid items-end gap-2 sm:grid-cols-[64px_1fr_1fr_1fr_auto]">
+                          <label className="grid gap-0.5">수량
+                            <input type="number" min={0} step="any" className={cn(INPUT, "h-8 px-2 text-right tabular-nums", !(x.qty && x.qty > 0) && "border-red-500")}
+                                   value={x.qty ?? ""} onChange={(e) => setPart({ qty: e.target.value === "" ? null : Number(e.target.value) })} /></label>
+                          {purpose === "sale" ? (
+                            <>
+                              <label className="grid gap-0.5">고객사<input className={cn(INPUT, "h-8")} value={x.customer} placeholder="예: LG CNS" maxLength={200} onChange={(e) => setPart({ customer: e.target.value })} /></label>
+                              <label className="grid gap-0.5">우리 측 담당자<input className={cn(INPUT, "h-8")} value={x.owner} placeholder="예: Lucas" maxLength={100} onChange={(e) => setPart({ owner: e.target.value })} /></label>
+                            </>
+                          ) : (
+                            <label className="grid gap-0.5 sm:col-span-2">S/W 담당자<input className={cn(INPUT, "h-8")} value={x.sw_owner} placeholder="정해지지 않았으면 비워 두기" maxLength={100} onChange={(e) => setPart({ sw_owner: e.target.value })} /></label>
+                          )}
+                          <label className="grid gap-0.5">메모<input className={cn(INPUT, "h-8")} value={x.note} maxLength={500} onChange={(e) => setPart({ note: e.target.value })} /></label>
+                          {/* 휴지통 — 줄 지우기. 2줄에서 하나를 지우면 나누기가 풀리고 남은 줄 값이 품목 줄로(사용자 2026-11-19) */}
+                          <button type="button" aria-label="이 나눈 줄 지우기" title="이 줄 지우기"
+                                  onClick={() => {
+                                    const rest = l.parts.filter((_, kk) => kk !== k);
+                                    if (rest.length > 1) { setLine(i, { parts: rest }); return; }
+                                    const f = rest[0] ?? blankPart();
+                                    setLine(i, { parts: [], customer: f.customer, owner: f.owner, sw_owner: f.sw_owner || l.sw_owner, note: f.note,
+                                                 photos: [...l.photos, ...f.photos.filter((y) => !l.photos.includes(y))] });
+                                  }}
+                                  className="mb-1 grid h-8 w-8 place-items-center rounded-md text-foreground-subtle hover:bg-red-500/10 hover:text-red-600">
+                            <Icon name="trash" className="h-4 w-4" /></button>
+                        </div>
+                        <SnPhotoCell api={photoApi} photos={x.photos} label="사진"
+                                     onAdd={(ids) => setPart({ photos: [...x.photos, ...ids.filter((y) => !x.photos.includes(y))] })}
+                                     onRemove={(ph) => setPart({ photos: x.photos.filter((y) => y !== ph) })} />
+                      </div>
+                    );
+                  })}
+                  <button type="button" className="text-[12px] font-semibold text-accent hover:underline"
+                          onClick={() => setLine(i, { parts: [...l.parts, blankPart()] })}>+ 나눈 줄 추가</button>
+                </div>
+  );
+  const splitBtn = (l: FormLine, i: number) => (l.qty ?? 0) >= 2 && (
+    <button type="button" className="justify-self-start text-[12px] font-semibold text-accent hover:underline sm:col-span-3"
+            onClick={() => {
+              // 1개씩 수량만큼 나눈다(사용자 2026-11-19 — 3개면 1·1·1). 나눈 줄은 최대 100줄이라 넘으면 마지막 줄에 나머지
+              const qty = l.qty ?? 0;
+              const n = Math.min(Math.ceil(qty), PARTS_MAX);
+              const base = { customer: l.customer, owner: l.owner, sw_owner: l.sw_owner, note: l.note };
+              setLine(i, { parts: Array.from({ length: n }, (_, k) => ({ ...base, photos: [], qty: k < n - 1 ? 1 : qty - (n - 1) })) });
+            }}>
+      + 같은 품목 줄 나누기 (따로 관리할 때)</button>
+  );
+
+  const send = (body: ReceiptBody) => onSave({
+    ...body, reclose: initial ? body.final : undefined,
+    date: body.date || todayIso(),                       // 직접 등록에서 입고일을 비우면 오늘
+    lines: body.lines.map((l) => ({
+      ...l, name: l.name.trim(),
+      units: purpose === "dev" ? unitsOf(l).map((u) => ({ ...u, maker_sn: u.maker_sn.trim(), und_sn: u.und_sn.trim(), sw_owner: u.sw_owner.trim() })) : [],
+      parts: (l.parts ?? []).length > 1
+        ? l.parts.map((x) => ({ ...x, customer: x.customer.trim(), owner: x.owner.trim(), sw_owner: x.sw_owner.trim(), note: x.note.trim() })) : [],
+    })),
+  });
+  const submit = () => send(b);
+  // 닫을 때 '저장 안 한 칸' — 팝업의 [변경사항 저장]은 이 칸의 저장과 같은 일
+  useUnsaved(PURPOSE_LABEL[purpose], dirty, canSave ? submit : null);
   return (
     <div className="space-y-3 rounded-xl border border-dashed border-accent/50 bg-accent/[0.03] px-4 py-3.5">
       <div className="grid grid-cols-2 gap-x-3 gap-y-2.5 text-[12px] text-foreground-muted">
-        <label className={cn("grid gap-1", REQ_SCOPE)}><ReqLabel>입고일</ReqLabel>
-          <input type="date" {...REQ} className={cn(INPUT, "font-semibold")} value={b.date} onChange={(e) => setB({ ...b, date: e.target.value })} /></label>
-        <label className="grid gap-0.5">운송사<input className={cn(INPUT, "h-8")} value={b.carrier} placeholder="예: 경동택배·DHL·포워더" onChange={(e) => setB({ ...b, carrier: e.target.value })} /></label>
-        <label className="grid gap-0.5">운송장 번호(여러 개는 띄어서)<input className={cn(INPUT, "h-8")} value={b.tracking} onChange={(e) => setB({ ...b, tracking: e.target.value })} /></label>
-        <label className="grid gap-0.5">받은 사람<input className={cn(INPUT, "h-8")} value={b.receiver} onChange={(e) => setB({ ...b, receiver: e.target.value })} /></label>
+        {direct ? (
+          // 재고 직접 등록 — 비우면 오늘로 등록, 칸 어디를 눌러도 달력(사용자 2026-11-19)
+          <label className="grid gap-1">입고일(비우면 오늘)
+            <input type="date" className={cn(INPUT, "cursor-pointer font-semibold")} value={b.date} aria-label="입고일"
+                   onClick={(e) => { try { e.currentTarget.showPicker?.(); } catch { /* 달력을 못 띄우는 브라우저 */ } }}
+                   onChange={(e) => setB({ ...b, date: e.target.value })} /></label>
+        ) : (
+          <label className={cn("grid gap-1", REQ_SCOPE)}><ReqLabel>입고일</ReqLabel>
+            <input type="date" {...REQ} className={cn(INPUT, "font-semibold")} value={b.date} onChange={(e) => setB({ ...b, date: e.target.value })} /></label>
+        )}
+        <label className={cn("grid gap-0.5", direct && "hidden")}>운송사<input className={cn(INPUT, "h-8")} value={b.carrier} placeholder="예: 경동택배·DHL·포워더" onChange={(e) => setB({ ...b, carrier: e.target.value })} /></label>
+        <label className={cn("grid gap-0.5", direct && "hidden")}>운송장 번호(여러 개는 띄어서)<input className={cn(INPUT, "h-8")} value={b.tracking} onChange={(e) => setB({ ...b, tracking: e.target.value })} /></label>
+        <label className={cn("grid gap-0.5", direct && "hidden")}>받은 사람<input className={cn(INPUT, "h-8")} value={b.receiver} onChange={(e) => setB({ ...b, receiver: e.target.value })} /></label>
         <label className="col-span-2 grid gap-0.5">보관 위치<input className={cn(INPUT, "h-8")} value={b.location} placeholder="예: 본사 2층 창고" onChange={(e) => setB({ ...b, location: e.target.value })} /></label>
+        {direct && (
+          <>
+            <label className="grid gap-0.5">제조사(구매처)<input className={cn(INPUT, "h-8")} value={b.supplier ?? ""} placeholder="예: Deep Robotics" maxLength={200}
+                                                         onChange={(e) => setB({ ...b, supplier: e.target.value })} /></label>
+            <label className="grid gap-0.5">국내·해외
+              <select className={cn(INPUT, "h-8")} value={b.region ?? "domestic"} onChange={(e) => setB({ ...b, region: e.target.value as PurchaseRow["region"] })}>
+                <option value="domestic">국내</option><option value="overseas">해외</option>
+              </select></label>
+          </>
+        )}
       </div>
-      <div className={cn("space-y-1.5", REQ_SCOPE)}>
-        <ReqLabel>이번에 받은 수량</ReqLabel>
+
+      <div className={cn("space-y-2", REQ_SCOPE)}>
+        <div className="flex flex-wrap items-center gap-2">
+          <ReqLabel>{direct ? "등록할 품목·수량" : "이번에 받은 품목·수량"}</ReqLabel>
+          {!direct && <button type="button" className="ml-auto text-[12px] text-foreground-subtle hover:text-red-600 hover:underline" onClick={() => void clearAll()}>품목 모두 비우기</button>}
+        </div>
         {!qtyOk && <p className="text-[11.5px] font-medium text-red-600 dark:text-red-400">받은 품목의 수량을 한 줄 이상 적어 주세요(더 받지 않고 끝낼 때는 아래 &lsquo;입고 완료&rsquo;만 체크).</p>}
-        {p.receipt.lines.map((ln, i) => (
-          <div key={ln.line_no} className="rounded-lg bg-background px-2.5 py-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium" title={ln.name}>{ln.name}</span>
-            <span className="text-[11.5px] text-foreground-subtle">발주 {ln.ordered ?? "-"} · 받음 {ln.received}</span>
-            {/* 한 줄 이상 — 아무 줄도 안 적었을 때만 모든 수량 칸이 필수(빨강) */}
-            <input className="h-9 w-24 rounded-lg border border-border bg-surface px-2 text-right text-[13px] font-bold tabular-nums outline-none focus:border-accent"
-                   {...reqOr((b.lines[i].qty ?? 0) > 0, !qtyOk)} inputMode="decimal" placeholder="수량" value={b.lines[i].qty ?? ""}
-                   onChange={(e) => { const n = Number(e.target.value); setLine(i, { qty: e.target.value.trim() === "" || Number.isNaN(n) ? null : n }); }} />
-            {b.lines[i].photos.map((ph) => (
-              <span key={ph} className="relative">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={photoUrl(id, ph)} alt="입고 사진" className="h-9 w-9 rounded object-cover" />
-                <button type="button" aria-label="사진 빼기" onClick={() => setLine(i, { photos: b.lines[i].photos.filter((x) => x !== ph) })}
-                        className="absolute -right-1 -top-1 grid h-4 w-4 place-items-center rounded-full bg-black/70 text-[10px] text-white">×</button>
-              </span>
-            ))}
-            <UploadButton label={uploading === i ? "올리는 중…" : "+ 사진"} busy={false} disabled={uploading != null} accept=".jpg,.jpeg,.png,.webp"
-                          onFile={(f) => void addPhoto(i, f)} />
-            <SnToggle count={snCount(b.lines[i].serials)} need={Math.ceil(b.lines[i].qty ?? 0)} open={snOpen === i}
-                      disabled={!(b.lines[i].qty ?? 0)} onClick={() => setSnOpen(snOpen === i ? null : i)} />
-          </div>
-          {snOpen === i && (b.lines[i].qty ?? 0) > 0 && (
-            <div className="mt-1.5">
-              <SnInputs qty={b.lines[i].qty ?? 0} value={b.lines[i].serials} onChange={(v) => setLine(i, { serials: v })} />
+        {b.lines.map((l, i) => {
+          const po = l.line_no != null ? p.receipt.lines.find((x) => x.line_no === l.line_no) : undefined;
+          const us = unitsOf(l);
+          return (
+            <div key={i} className="space-y-2 rounded-lg bg-background px-2.5 py-2">
+              <div className="flex flex-wrap items-center gap-2">
+                {l.line_no != null ? (
+                  <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium" title={l.name}>{l.name}</span>
+                ) : (
+                  <input className={cn(INPUT, "h-9 min-w-0 flex-1", !l.name.trim() && (l.qty ?? 0) > 0 && "border-red-400")} value={l.name}
+                         placeholder="품목(자유 형식)" maxLength={200} onChange={(e) => setLine(i, { name: e.target.value })} />
+                )}
+                {po && <span className="text-[11.5px] text-foreground-subtle">발주 {po.ordered ?? "-"} · 받음 {po.received}</span>}
+                {/* 재고 구분(사용자 2026-11-19) — 고르지 않으면 재고에서 '-' */}
+                <select className="h-9 rounded-lg border border-border bg-surface px-2 text-[12.5px] outline-none focus:border-accent"
+                        aria-label="구분" title="재고 구분(고르지 않으면 '-')" value={l.category}
+                        onChange={(e) => setLine(i, { category: e.target.value })}>
+                  <option value="">구분 -</option>
+                  {STOCK_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <input className="h-9 w-24 rounded-lg border border-border bg-surface px-2 text-right text-[13px] font-bold tabular-nums outline-none focus:border-accent"
+                       inputMode="decimal" placeholder="수량" value={l.qty ?? ""}
+                       onChange={(e) => { const n = Number(e.target.value); setLine(i, { qty: e.target.value.trim() === "" || Number.isNaN(n) ? null : n }); }} />
+                <button type="button" aria-label="이 품목 줄 지우기" title="이 품목 줄 지우기"
+                        className="grid h-8 w-8 place-items-center rounded-md text-foreground-subtle hover:bg-red-500/10 hover:text-red-600"
+                        onClick={() => setB((x) => ({ ...x, lines: x.lines.filter((_, j) => j !== i) }))}><Icon name="trash" className="h-4 w-4" /></button>
+              </div>
+              {/* 전체 사진 — 여러 대를 한 번에 찍은 사진(박스 상태 등), 여러 장 가능. 명판·S/N 은 낱개 칸에(사용자 2026-11-19) */}
+              <SnPhotoCell api={photoApi} photos={l.photos} label="품목 사진"
+                           onAdd={(ids) => setLine(i, { photos: [...l.photos, ...ids.filter((x) => !l.photos.includes(x))] })}
+                           onRemove={(ph) => setLine(i, { photos: l.photos.filter((x) => x !== ph) })} />
+              {purpose === "sale" && (l.parts ?? []).length > 1 ? partsBlock(l, i) : purpose === "sale" ? (
+                <div className="grid gap-2 text-[11.5px] text-foreground-muted sm:grid-cols-3">
+                  <label className="grid gap-0.5">고객사<input className={cn(INPUT, "h-8")} value={l.customer} placeholder="예: LG CNS" maxLength={200} onChange={(e) => setLine(i, { customer: e.target.value })} /></label>
+                  <label className="grid gap-0.5">우리 측 담당자<input className={cn(INPUT, "h-8")} value={l.owner} placeholder="예: Lucas" maxLength={100} onChange={(e) => setLine(i, { owner: e.target.value })} /></label>
+                  <label className="grid gap-0.5">메모<input className={cn(INPUT, "h-8")} value={l.note} maxLength={500} onChange={(e) => setLine(i, { note: e.target.value })} /></label>
+                  {splitBtn(l, i)}
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  {l.no_sn ? (
+                    // 한 줄로 합침 — S/N 없는 소모품·장비(재고 목록 한 줄, 제품 S/N 관리에 안 올림)
+                    <div className="grid gap-1">
+                      <div className="flex flex-wrap items-center gap-2 text-[12px]">
+                        <span className="rounded bg-foreground/[0.06] px-1.5 font-semibold text-foreground-muted">한 줄로 합침 — S/N 없는 소모품·장비</span>
+                        <button type="button" className="ml-auto text-[12px] font-semibold text-accent hover:underline"
+                                onClick={() => setLine(i, { no_sn: false })}>대마다 나누기(S/N 적기)</button>
+                      </div>
+                      <label className="grid max-w-xs gap-0.5 text-[11.5px] text-foreground-muted">S/W 담당자
+                        <input className={cn(INPUT, "h-8")} value={l.sw_owner} placeholder="정해지지 않았으면 비워 두기" maxLength={100}
+                               onChange={(e) => setLine(i, { sw_owner: e.target.value })} /></label>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex flex-wrap items-center gap-2 text-[12px]">
+                        {us.length > 0 ? (
+                          <button type="button" onClick={() => setOpenUnits((o) => ({ ...o, [i]: !unitsOpen(i, us.length) }))}
+                                  className="flex items-center gap-2 rounded-md bg-foreground/[0.03] px-2 py-1 text-left hover:bg-foreground/[0.06]">
+                            <span>{unitsOpen(i, us.length) ? "▾" : "▸"} 대마다 {us.length}대</span>
+                            <span className="text-foreground-muted">S/N <b>{us.filter((u) => u.maker_sn.trim() && u.und_sn.trim()).length}/{us.length}</b> ·
+                              사진 <b>{us.filter((u) => u.photos.length || u.item_photos.length).length}/{us.length}</b></span>
+                          </button>
+                        ) : <span className="text-[11.5px] text-foreground-subtle">수량을 적으면 한 대마다 S/N 칸이 생깁니다.</span>}
+                        <button type="button" className="ml-auto text-[12px] text-foreground-subtle hover:text-accent hover:underline"
+                                onClick={async () => {
+                                  const written = us.filter((u) => u.maker_sn.trim() || u.und_sn.trim() || u.photos.length).length;
+                                  if (written && !(await askConfirm({ title: "한 줄로 합칠까요?", confirmLabel: "합치기",
+                                    message: `S/N 이 없는 소모품·장비로 기록합니다. 적은 S/N·S/N 사진(${written}대)은 저장되지 않습니다. 낱개 품목 사진은 품목 사진으로 옮깁니다.` }))) return;
+                                  const moved = us.flatMap((u) => u.item_photos).filter((x) => !l.photos.includes(x));
+                                  setLine(i, { no_sn: true, photos: [...l.photos, ...moved], sw_owner: l.sw_owner || us.find((u) => u.sw_owner.trim())?.sw_owner || "" });
+                                }}>한 줄로 합치기(S/N 없는 소모품·장비)</button>
+                      </div>
+                      {unitsOpen(i, us.length) && us.map((u, k) => (
+                        <div key={k} className="space-y-1 rounded-md border border-border/70 px-2 py-1.5">
+                          {/* 한 대 = 한 줄: 제조사 S/N · UND S/N · S/W 담당자(비워 둬도 칸은 있음, 사용자 2026-11-19) */}
+                          <div className="grid grid-cols-[22px_minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.8fr)] items-center gap-2">
+                            <span className="font-mono text-[11.5px] font-bold text-foreground-subtle">{k + 1}</span>
+                            <input className={cn(INPUT, "h-8 font-mono")} value={u.maker_sn} placeholder="제조사 S/N" maxLength={120} onChange={(e) => setUnit(i, k, { maker_sn: e.target.value })} />
+                            <input className={cn(INPUT, "h-8 font-mono")} value={u.und_sn} placeholder="UND S/N" maxLength={120} onChange={(e) => setUnit(i, k, { und_sn: e.target.value })} />
+                            <input className={cn(INPUT, "h-8")} value={u.sw_owner} placeholder="S/W 담당자" aria-label={`${k + 1}번 S/W 담당자`} maxLength={100}
+                                   onChange={(e) => setUnit(i, k, { sw_owner: e.target.value })} />
+                          </div>
+                          {/* 사진 두 가지 — 낱개 품목 사진 · S/N 사진(여러 장) */}
+                          <div className="ml-[30px] flex flex-wrap gap-x-4 gap-y-1">
+                            <SnPhotoCell api={photoApi} photos={u.item_photos} label="낱개 품목 사진"
+                                         onAdd={(ids) => setUnit(i, k, { item_photos: [...u.item_photos, ...ids.filter((y) => !u.item_photos.includes(y))] })}
+                                         onRemove={(ph) => setUnit(i, k, { item_photos: u.item_photos.filter((x) => x !== ph) })} />
+                            <SnPhotoCell api={photoApi} photos={u.photos} label="S/N 사진"
+                                         onAdd={(ids) => setUnit(i, k, { photos: [...u.photos, ...ids.filter((y) => !u.photos.includes(y))] })}
+                                         onRemove={(ph) => setUnit(i, k, { photos: u.photos.filter((x) => x !== ph) })} />
+                          </div>
+                        </div>
+                      ))}
+                    </>
+                  )}
+                </div>
+              )}
             </div>
+          );
+        })}
+        {/* 고른 품목만(사용자 2026-11-19 — 헷갈려서): [+ 품목 줄 추가]는 직접 적는 모드([품목 모두 비우기]·직접 등록)에서만,
+            [+ 남은 발주 품목 추가]는 저장한 기록을 고칠 때만(나중에 들어온 남은 품목을 그 기록에 붙임) */}
+        <div className="flex flex-wrap items-center gap-2">
+          {(direct || b.lines.every((l) => l.line_no == null)) && (
+            <button type="button" className={BTN} onClick={() => setB((x) => ({ ...x, lines: [...x.lines, blankLine()] }))}>+ 품목 줄 추가</button>
           )}
-          </div>
-        ))}
+          {!!initial && addable.length > 0 && (
+            <select className={cn(INPUT, "h-8 w-auto")} value="" aria-label="남은 발주 품목 추가"
+                    onChange={(e) => { const no = Number(e.target.value); if (!Number.isNaN(no)) setB((x) => ({ ...x, lines: [...x.lines, pickedLine(no)] })); }}>
+              <option value="">+ 남은 발주 품목 추가</option>
+              {addable.map((ln) => <option key={ln.line_no} value={ln.line_no}>{ln.name} (남은 {(ln.ordered ?? 0) - ln.received}개)</option>)}
+            </select>
+          )}
+        </div>
       </div>
       <textarea className={cn(INPUT, "h-14 py-1.5 text-[12.5px]")} placeholder="메모(포장 상태·불량 등)" value={b.note} onChange={(e) => setB({ ...b, note: e.target.value })} />
-      <label className="flex items-center gap-1.5 text-[12.5px]">
+      <label className={cn("flex items-center gap-1.5 text-[12.5px]", direct && "hidden")}>
         <input type="checkbox" checked={b.final || fills} disabled={fills} onChange={(e) => setB({ ...b, final: e.target.checked })} />
-        이번 입고로 입고 완료 {fills ? "(발주 수량을 모두 받아 자동으로 완료)" : "(남은 수량이 있어도 더 받지 않을 때)"}
+        이번 입고로 입고 완료 {fills ? "(발주 수량을 모두 받아 자동으로 완료)" : "(남은 수량이 있어도 더 받지 않을 때 · 직접 적은 품목만 있을 때)"}
       </label>
-      {err && <p className="text-[12px] text-red-600">{err}</p>}
       <div className="flex justify-end gap-1.5">
-        {(!b.date || !qtyOk) && <span className="mr-auto self-center text-[12px] font-semibold text-red-600 dark:text-red-400">빨간 칸(필수)을 채워야 저장됩니다</span>}
+        {((!b.date && !direct) || !qtyOk || freeBad) && <span className="mr-auto self-center text-[12px] font-semibold text-red-600 dark:text-red-400">빨간 칸(필수)을 채워야 저장됩니다</span>}
+        {(b.date || direct) && qtyOk && !freeBad && partsBad && <span className="mr-auto self-center text-[12px] font-semibold text-red-600 dark:text-red-400">나눈 줄 수량의 합을 품목 수량과 맞춰 주세요</span>}
         <button type="button" className={BTN}
                 onClick={() => { if (!dirty) onCancel(); else void askConfirm({ title: "적은 입고 기록을 버리고 닫을까요?", confirmLabel: "버리고 닫기", cancelLabel: "계속 작성", danger: true }).then((ok) => { if (ok) onCancel(); }); }}>취소</button>
         <button type="button" className={PRIMARY} disabled={!canSave} onClick={submit}>
-          {busy ? "저장 중…" : initial ? "입고 기록 고치기" : "입고 기록 저장"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/** 남긴 입고 기록 하나의 S/N 만 고치기 — 품목 줄마다 입고 수량만큼 칸(사용자 2026-11-11: 입고 시트 작성 뒤에도 따로 등록) */
-function SerialEditor({ record, busy, onSave, onCancel }: {
-  record: PurchaseRow["receipt"]["records"][number]; busy: boolean;
-  onSave: (lines: { line_no: number; serials: string[] }[]) => void; onCancel: () => void;
-}) {
-  const lines = record.lines.filter((ln) => ln.qty > 0);
-  const [v0] = useState<Record<number, string[]>>(() => Object.fromEntries(lines.map((ln) => [ln.line_no, ln.serials ?? []])));
-  const [v, setV] = useState(v0);
-  const submit = () => onSave(lines.map((ln) => ({ line_no: ln.line_no, serials: (v[ln.line_no] ?? []).map((x) => x.trim()).filter(Boolean) })));
-  useUnsaved("S/N", JSON.stringify(v) !== JSON.stringify(v0), busy ? null : submit);
-  return (
-    <div className="mt-2 space-y-2 rounded-lg border border-dashed border-accent/50 bg-accent/[0.03] px-3 py-2">
-      <p className="text-[12px] text-foreground-muted">S/N 을 한 칸에 하나씩 적습니다. 여러 줄을 복사해 붙여 넣으면 아래 칸으로 나눠 들어갑니다. 비운 칸은 미등록.</p>
-      {lines.map((ln) => (
-        <div key={ln.line_no} className="space-y-1">
-          <div className="text-[12.5px] font-medium">{ln.name} <span className="text-foreground-subtle">× {ln.qty} · {snCount(v[ln.line_no])}개 적음</span></div>
-          <SnInputs qty={ln.qty} value={v[ln.line_no] ?? []} onChange={(x) => setV({ ...v, [ln.line_no]: x })} disabled={busy} />
-        </div>
-      ))}
-      <div className="flex justify-end gap-1.5">
-        <button type="button" className={BTN} onClick={onCancel}>취소</button>
-        <button type="button" className={PRIMARY} disabled={busy} onClick={submit}>
-          {busy ? "저장 중…" : "S/N 저장"}
+          {busy ? "저장 중…" : direct ? (initial ? "등록 고치기" : "제품 등록")
+            : initial ? `${PURPOSE_LABEL[purpose]} 기록 고치기` : `${PURPOSE_LABEL[purpose]} 기록 저장`}
         </button>
       </div>
     </div>

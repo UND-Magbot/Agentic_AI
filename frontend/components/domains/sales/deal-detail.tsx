@@ -1244,6 +1244,7 @@ function ShipmentInfo({ s, dealId, onPhoto, units = [] }: {
         <li key={u.id} className="flex min-w-0 items-center gap-2 rounded-lg bg-foreground/[0.03] px-2.5 py-1.5">
           <span className="text-[10.5px] font-bold text-foreground-subtle">S/N</span>
           <span className={cn("whitespace-nowrap font-mono text-[12.5px]", u.no_serial ? "text-foreground-subtle" : "font-semibold text-foreground")}>{u.serial}</span>
+          {u.und_serial && u.und_serial !== u.serial && <span className="whitespace-nowrap font-mono text-[12px] text-foreground-muted">UND {u.und_serial}</span>}
           {flatName(u.part_name) !== flatName(u.line_name || "") && <span className="min-w-0 flex-1 truncate text-[12px] text-foreground-muted">{u.part_name}</span>}
           <span className="ml-auto"><UnitStateBadge code={u.purpose} status={u.status} /></span>
         </li>
@@ -1351,7 +1352,7 @@ function QuoteDocs({ deal, onQuote, onUploaded }: {
         <p className="mb-2 rounded-lg bg-amber-500/10 px-3 py-1.5 text-[12.5px] text-amber-800 dark:text-amber-200">
           🔧 {deal.as_active ? `A/S 진행 중 ${deal.as_active}건` : ""}{deal.as_active && deal.as_open > deal.as_active ? " · " : ""}
           {deal.as_open > (deal.as_active ?? 0) ? `A/S 접수 ${deal.as_open - (deal.as_active ?? 0)}건` : ""} (전체 {deal.as_total}건)
-          — 내용은 [제품·A/S] 탭에서 S/N로 확인하고, [A/S 들어감 확인]·[A/S 완료]로 진행을 바꿉니다.
+          — 내용은 [제품 S/N 관리] 탭에서 S/N로 확인하고, [A/S 들어감 확인]·[A/S 완료]로 진행을 바꿉니다.
         </p>
       )}
       {(deal.quotes ?? []).map((q) => (

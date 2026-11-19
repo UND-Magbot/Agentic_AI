@@ -1041,11 +1041,20 @@ _SALES_DEALS_STMTS = [
     text("DROP INDEX IF EXISTS ux_product_units_maker_serial"),
     text("CREATE UNIQUE INDEX IF NOT EXISTS ux_product_units_active_serial ON product_units(lower(maker), lower(serial)) "
          "WHERE NOT no_serial AND status <> '회수'"),
+    # S/N 두 줄(사용자 2026-11-18 — 제조사 S/N · UND S/N 을 늘 함께) + S/N 사진. 기존 serial 은 제조사 S/N.
+    # 제조사가 UND 인 예전 S/N 은 UND S/N 도 같은 번호(우리 제품)로 채운다. UND S/N 도 겹치지 않게(회수 끝난 줄 빼고)
+    text("ALTER TABLE product_units ADD COLUMN IF NOT EXISTS und_serial TEXT NOT NULL DEFAULT ''"),
+    text("ALTER TABLE product_units ADD COLUMN IF NOT EXISTS photos JSONB NOT NULL DEFAULT '[]'::jsonb"),
+    # 낱개 품목 사진(사용자 2026-11-19 — 출하 S/N 등록도 입고처럼 낱개 품목 사진 · S/N 사진 두 칸)
+    text("ALTER TABLE product_units ADD COLUMN IF NOT EXISTS item_photos JSONB NOT NULL DEFAULT '[]'::jsonb"),
+    text("UPDATE product_units SET und_serial = serial WHERE und_serial = '' AND NOT no_serial AND lower(maker) = 'und'"),
+    text("CREATE UNIQUE INDEX IF NOT EXISTS ux_product_units_active_und ON product_units(lower(und_serial)) "
+         "WHERE und_serial <> '' AND NOT no_serial AND status <> '회수'"),
     # 상태 = 영문 이니셜(사용자 2026-10-19) — S 판매·R 대여·D 데모·A A/S 중·E A/S 교체품·O 기타(units.UNIT_STATES).
     # 이니셜 도입 전 한글로 저장한 값을 코드로 바꾼다.
     text("ALTER TABLE product_units ALTER COLUMN purpose SET DEFAULT 'S'"),
     text("UPDATE product_units SET purpose = CASE purpose WHEN '판매' THEN 'S' WHEN '대여' THEN 'R' "
-         "WHEN 'A/S 교체' THEN 'E' ELSE 'O' END WHERE purpose NOT IN ('S', 'R', 'D', 'A', 'E', 'O')"),
+         "WHEN 'A/S 교체' THEN 'E' ELSE 'O' END WHERE purpose NOT IN ('S', 'R', 'D', 'A', 'E', 'O', 'SD')"),   # SD = 자체 개발(2026-11-19)
     # 무상 0개월 = 무상 없음(사용자 2026-10-26) — 예전엔 종료일을 비워 '미정'으로 보였다. 이미 출하한 것은 출하 전날로 채운다(구조 변경 없음)
     text("UPDATE product_units SET warranty_until = warranty_start - 1 "
          "WHERE warranty_months = 0 AND warranty_start IS NOT NULL AND warranty_until IS NULL"),
@@ -1151,6 +1160,76 @@ _PURCHASES_STMTS = [
     text("ALTER TABLE purchases ADD COLUMN IF NOT EXISTS customs JSONB NOT NULL DEFAULT '{}'::jsonb"),
     # 구매 사유(사용자 2026-11-17 승인 — 목록 '서류' 칸 자리에 보이고, 없으면 [등록] 팝업). 되돌리기: ALTER TABLE purchases DROP COLUMN reason;
     text("ALTER TABLE purchases ADD COLUMN IF NOT EXISTS reason TEXT NOT NULL DEFAULT ''"),
+    # 제품 재고 관리(사용자 2026-11-19 승인) — 입고 기록에서 제품 한 대 = 한 줄(purchases/stock.py). 구분·상태·메모는 재고 화면에서.
+    # 되돌리기: DROP TABLE stock_events; DROP TABLE stock_items;
+    text(
+        """
+        CREATE TABLE IF NOT EXISTS stock_items (
+            id           BIGSERIAL PRIMARY KEY,
+            purchase_id  BIGINT       NOT NULL REFERENCES purchases(id) ON DELETE CASCADE,
+            purpose      VARCHAR(10)  NOT NULL,
+            line_key     VARCHAR(220) NOT NULL,
+            unit_index   INTEGER      NOT NULL,
+            name         VARCHAR(200) NOT NULL DEFAULT '',
+            category     VARCHAR(20)  NOT NULL DEFAULT '',
+            customer     VARCHAR(200) NOT NULL DEFAULT '',
+            owner        VARCHAR(100) NOT NULL DEFAULT '',
+            owner_set    BOOLEAN      NOT NULL DEFAULT FALSE,
+            sw_owner     VARCHAR(100) NOT NULL DEFAULT '',
+            maker_sn     VARCHAR(100) NOT NULL DEFAULT '',
+            und_sn       VARCHAR(100) NOT NULL DEFAULT '',
+            no_sn        BOOLEAN      NOT NULL DEFAULT FALSE,
+            received_on  DATE,
+            status       VARCHAR(20)  NOT NULL DEFAULT '대기 중',
+            status_note  TEXT         NOT NULL DEFAULT '',
+            created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            updated_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            UNIQUE (purchase_id, purpose, line_key, unit_index)
+        );
+        """
+    ),
+    text("CREATE INDEX IF NOT EXISTS ix_stock_items_purpose ON stock_items(purpose, received_on DESC)"),
+    # 재고 표시 이름(사용자 2026-11-19 승인) — 발주서 품목명(name)은 그대로 두고 재고 목록·제품별 묶기에서 보일 이름. 비면 name.
+    # 되돌리기: ALTER TABLE stock_items DROP COLUMN display_name;
+    text("ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS display_name VARCHAR(200) NOT NULL DEFAULT ''"),
+    # 재고 제조사(사용자 2026-11-19 승인) — 비면 구매 공급사와 같음(공급사 이름을 고치면 따라감), 대리점에서 산 것 등은 재고에서 고친다.
+    # 되돌리기: ALTER TABLE stock_items DROP COLUMN maker;
+    text("ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS maker VARCHAR(100) NOT NULL DEFAULT ''"),
+    # 재고 직접 등록 건(사용자 2026-11-19 승인) — 구매 없이 이미 있는 제품을 [제품 등록]으로 넣을 때 담는 건. 구매 건 목록·단계엔 안 나온다.
+    # 되돌리기: ALTER TABLE purchases DROP COLUMN direct;
+    text("ALTER TABLE purchases ADD COLUMN IF NOT EXISTS direct BOOLEAN NOT NULL DEFAULT FALSE"),
+    text(
+        """
+        CREATE TABLE IF NOT EXISTS stock_events (
+            id          BIGSERIAL PRIMARY KEY,
+            item_id     BIGINT      NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+            user_id     BIGINT      REFERENCES users(id) ON DELETE SET NULL,
+            action      VARCHAR(20) NOT NULL,
+            detail      JSONB       NOT NULL DEFAULT '{}'::jsonb,
+            created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        """
+    ),
+    text("CREATE INDEX IF NOT EXISTS ix_stock_events_item ON stock_events(item_id, id)"),
+    # 자체 개발 제품도 S/N 관리·A/S 로(사용자 2026-11-19 승인) — 재고 줄 하나 = S/N 표 한 줄(상태 SD · 개발, 영업 건 없음).
+    # 되돌리기: ALTER TABLE product_units DROP COLUMN stock_item_id;
+    text("ALTER TABLE product_units ADD COLUMN IF NOT EXISTS stock_item_id BIGINT REFERENCES stock_items(id) ON DELETE CASCADE"),
+    # 재고 줄이 지워지면 S/N 줄도(A/S 이력이 있는 줄은 stock.py 가 먼저 연결을 끊고 '입고 삭제'로 남긴다) — 처음 SET NULL 로 만든 개발 DB 를 고친다
+    text(
+        """
+        DO $$ BEGIN
+          IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'product_units_stock_item_id_fkey' AND confdeltype <> 'c') THEN
+            ALTER TABLE product_units DROP CONSTRAINT product_units_stock_item_id_fkey;
+            ALTER TABLE product_units ADD CONSTRAINT product_units_stock_item_id_fkey
+              FOREIGN KEY (stock_item_id) REFERENCES stock_items(id) ON DELETE CASCADE;
+          END IF;
+        END $$;
+        """
+    ),
+    text("CREATE UNIQUE INDEX IF NOT EXISTS ux_product_units_stock_item ON product_units(stock_item_id) WHERE stock_item_id IS NOT NULL"),
+    # SD 를 몰랐던 위 상태 정리(ELSE 'O')가 자체 개발 S/N 을 O 로 바꿨던 것 되돌리기(개발 DB, 2026-11-19) — 자체 개발 S/N 은 화면에서 상태를
+    # 고를 수 없어 O 일 까닭이 없다(A/S 중 A 는 그대로)
+    text("UPDATE product_units SET purpose = 'SD' WHERE stock_item_id IS NOT NULL AND purpose = 'O'"),
 ]
 
 async def run_migrations(db: AsyncSession) -> None:

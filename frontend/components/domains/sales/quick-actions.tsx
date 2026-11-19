@@ -190,8 +190,8 @@ const FEATURES: {
   },
   {
     href: "/proposals/recommend?tab=units",     // [제품·A/S] 탭(사용자 2026-10-22: A/S 건 관리 카드)
-    title: "제품 A/S건 관리",
-    desc: "S/N으로 고객사·출하일·무상 기간·A/S 이력을 찾고, 접수한 A/S 를 원인·무상/유상·진행 상태와 함께 기록합니다.",
+    title: "제품 S/N 관리",
+    desc: "S/N·품목 이름으로 고객사·출하일·무상 기간·A/S 이력을 찾고, 접수한 A/S 를 원인·무상/유상·진행 상태와 함께 기록합니다. 자체 개발 제품(SD)도 함께.",
     icon: "bug",
     steps: ["S/N 조회", "A/S 접수", "진행", "완료"],
     group: "bottom",

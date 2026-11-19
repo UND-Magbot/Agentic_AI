@@ -267,8 +267,9 @@ async def load_serials(db: AsyncSession, deal_id: int, user_id: int | None, toda
         for ln in iss["lines"]:
             if ln["line_no"] not in picked:
                 continue
-            cur = [{k: u.get(k) for k in ("id", "part_name", "serial", "maker", "purpose", "note")} for u in ln["units"]]
-            new = [{"part_name": ln["part"], "serial": s, "maker": "UND", "purpose": "R", "note": ""} for s in picked[ln["line_no"]]]
+            cur = [{k: u.get(k) for k in ("id", "part_name", "serial", "und_serial", "photos", "item_photos", "maker", "purpose", "note")} for u in ln["units"]]
+            # 우리 제품(UND) — 제조사 S/N 과 UND S/N 이 같은 번호(사용자 2026-11-18 두 줄 원칙)
+            new = [{"part_name": ln["part"], "serial": s, "und_serial": s, "maker": "UND", "purpose": "R", "note": ""} for s in picked[ln["line_no"]]]
             payload.append({"line_no": ln["line_no"], "units": cur + new})
         await units.save_units(db, deal_id, user_id, iss["quote_id"], iss["revision"], payload, partial=True)
     return {"filled": filled, "skipped": skipped, "hint_total": iss["hint_total"],

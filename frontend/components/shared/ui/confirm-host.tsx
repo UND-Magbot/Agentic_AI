@@ -37,6 +37,8 @@ export interface TextAsk extends ConfirmAsk {
   placeholder?: string;
   /** 비어 있으면 확인 버튼을 막는다 */
   required?: boolean;
+  /** 처음 채워 둘 값(고치기) */
+  initial?: string;
 }
 
 type Pending = (ConfirmAsk & { kind: "confirm"; extraLabel?: string; resolve: (v: boolean | "extra") => void })
@@ -78,8 +80,9 @@ export function ConfirmHost() {
   useEffect(() => {
     const on = (e: Event) => {
       e.preventDefault();
-      setText("");
-      setCur((e as CustomEvent<Pending>).detail);
+      const d = (e as CustomEvent<Pending>).detail;
+      setText(d.kind === "text" ? d.initial ?? "" : "");
+      setCur(d);
     };
     window.addEventListener(EVENT, on);
     return () => window.removeEventListener(EVENT, on);

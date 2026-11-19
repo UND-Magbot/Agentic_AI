@@ -121,16 +121,35 @@ export interface PoDraft {
   mine?: { issuer: PoHeader["issuer"]; initials: string };
 }
 
+/** 보유 후 자체 개발용 입고의 제품 한 대 — 제조사 S/N · UND S/N 두 줄 + S/N 사진(사용자 2026-11-18) */
+export interface ReceiptUnit { maker_sn: string; und_sn: string; photos: string[]; sw_owner?: string; item_photos?: string[] }
+export interface ReceiptPart { qty: number; customer: string; owner: string; sw_owner?: string; note: string; photos?: string[] }
+
 export interface ReceiptLine {
-  line_no: number;
+  /** 발주 품목 줄 — null 이면 [품목 모두 비우기]로 직접 적은 자유 형식 줄 */
+  line_no: number | null;
   name: string;
   qty: number;
   photos: string[];
-  /** S/N(사용자 2026-11-11 — 입고 때 또는 나중에 따로 등록) */
+  /** 예전 꼴 S/N(한 줄) */
   serials?: string[];
+  /** 판매용 — 품목마다 고객사·우리 측 담당자·메모 */
+  customer?: string; owner?: string; note?: string;
+  /** 판매용 [같은 품목 줄 나누기](사용자 2026-11-19) — 나눈 줄마다 수량·고객사·담당자·메모·사진 */
+  parts?: ReceiptPart[];
+  /** 보유 후 자체 개발용 — S/W 담당자, 제품 한 대씩 */
+  sw_owner?: string; units?: ReceiptUnit[];
+  /** S/N 없는 품목(소모품 등) — 낱개 칸 없음 */
+  no_sn?: boolean;
+  /** 재고 구분(사용자 2026-11-19) — 비우면 재고에서 '-' */
+  category?: string;
 }
 
+/** 입고 목적 — 판매용 · 보유 후 자체 개발용(사용자 2026-11-18). 예전 기록은 판매용 */
+export type ReceiptPurpose = "sale" | "dev";
+
 export interface ReceiptRecord {
+  purpose: ReceiptPurpose;
   date: string;
   carrier: string;
   tracking: string[];

@@ -398,7 +398,10 @@ async def delete_deals(body: DeleteIn, user: User = Depends(require_admin), db: 
 class UnitIn(BaseModel):
     id: int | None = None
     part_name: str = Field(default="", max_length=120)
-    serial: str = Field(default="", max_length=80)
+    serial: str = Field(default="", max_length=80)              # 제조사 S/N
+    und_serial: str = Field(default="", max_length=80)          # UND S/N(사용자 2026-11-18 — 두 줄 함께)
+    photos: list[str] = Field(default_factory=list, max_length=200)   # S/N 사진(ship-photos 로 올린 이름)
+    item_photos: list[str] = Field(default_factory=list, max_length=200)   # 낱개 품목 사진(사용자 2026-11-19)
     maker: str = Field(default="UND", max_length=40)
     purpose: str = Field(default="S", max_length=12)   # 상태 이니셜(units.UNIT_STATES)
     warranty_months: int | None = Field(default=None, ge=0, le=120)

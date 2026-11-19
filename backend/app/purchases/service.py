@@ -18,9 +18,10 @@ from ..sales_deals import doc_numbers as dn
 from ..sales_deals.service import kst_today
 from . import flow
 from . import po_xlsx as px
+from . import stock
 
 COLS = ("id, supplier, title, owner, region, quote_files, approval, po, pay_terms, payments, receipt, statement, tax_invoice, "
-        "customs, note, reason, dropped, drop_reason, created_by, created_at, updated_at")
+        "customs, note, reason, dropped, drop_reason, created_by, created_at, updated_at, direct")
 JSON_COLS = ("quote_files", "approval", "po", "pay_terms", "payments", "receipt", "statement", "tax_invoice", "customs")
 REGIONS = {"domestic": "국내", "overseas": "해외"}
 CURRENCY = {"domestic": "KRW", "overseas": "USD"}
@@ -34,7 +35,7 @@ OVERSEAS_KINDS = ("customs", "remit", "customs_etc", "broker")
 SERIAL_MAX = 80
 FILE_KEYS = ("key", "filename", "mime", "size", "uploaded_at", "uploaded_by")
 CHAT_MAX = 40                                         # 발주서 AI 대화 저장 줄 수
-ACTION_LABEL = {"create": "구매 건 등록", "info": "기본 정보 수정", "reason": "구매 사유", "file_quote": "견적서 첨부", "file_approval": "재가 서류 첨부",
+ACTION_LABEL = {"receipt_photo": "입고 사진", "direct": "재고 직접 등록", "direct_edit": "재고 직접 등록 고침", "create": "구매 건 등록", "info": "기본 정보 수정", "reason": "구매 사유", "file_quote": "견적서 첨부", "file_approval": "재가 서류 첨부",
                 "file_statement": "거래명세서 첨부", "file_tax": "세금계산서 첨부", "remove_file": "첨부 삭제",
                 "approve": "재가 완료", "unapprove": "재가 취소", "po_issue": "발주서 발행", "po_cancel": "발주서 발행 취소", "terms": "결제 조건",
                 "pay_check": "지출내역 대조", "pay_confirm": "송금 확인", "pay_unconfirm": "송금 확인 취소",
@@ -119,7 +120,7 @@ def view(d: dict, today: dt.date) -> dict:
         "pay_terms": [{k: v for k, v in t.items() if k != "check"} for t in d.get("pay_terms") or []],   # 대조 결과는 terms 에
         "terms": flow.terms(d),
         "receipt": {"done": flow.receipt_done(d),
-                    "records": [{**r, "lines": r.get("lines") or []} for r in rc.get("records") or []],
+                    "records": [{**r, "purpose": flow.purpose_of(r), "lines": r.get("lines") or []} for r in rc.get("records") or []],
                     # 품목 줄별 발주·입고 수량(입고 기록 창의 기본값)
                     "lines": [{"line_no": i, "name": px.item_name(it), "ordered": it.get("qty"),
                                "received": got.get(i, 0)} for i, it in enumerate(po.get("items") or [])]},
@@ -155,7 +156,8 @@ async def _hist(db: AsyncSession, pid: int, overseas: bool = False) -> list[dict
 
 
 async def list_purchases(db: AsyncSession, today: dt.date) -> dict:
-    rs = (await db.execute(text(f"SELECT {COLS} FROM purchases ORDER BY updated_at DESC, id DESC"))).mappings().all()
+    # 재고 직접 등록 건(direct)은 구매 건이 아니라 빼고 보인다(사용자 2026-11-19)
+    rs = (await db.execute(text(f"SELECT {COLS} FROM purchases WHERE NOT direct ORDER BY updated_at DESC, id DESC"))).mappings().all()
     rows = [view(_row(r), today) for r in rs]
     counts: dict[str, int] = {s: 0 for s in flow.STAGES}
     for r in rows:
@@ -195,6 +197,8 @@ async def _save(db: AsyncSession, pid: int, **fields: Any) -> None:
             sets.append(f"{k} = :{k}")
             params[k] = v
     await db.execute(text(f"UPDATE purchases SET {', '.join(sets)}, updated_at = NOW() WHERE id = :i"), params)
+    if "receipt" in fields or "owner" in fields or "supplier" in fields:   # 제품 재고 관리 — 입고 기록·담당·공급사(제조사 기본값)가 바뀌면 재고·S/N 도(2026-11-19)
+        await stock.sync(db, pid)
 
 
 async def _log(db: AsyncSession, pid: int, user_id: int | None, action: str, detail: dict) -> None:
@@ -328,6 +332,7 @@ async def delete(db: AsyncSession, ids: list[int]) -> int:
         po = json.loads(po) if isinstance(po, str) else (po or {})
         nos += [po.get("no"), *[h.get("no") for h in po.get("history") or []]]
     await dn.release(db, nos)
+    await stock.purchases_removed(db, ids)            # 자체 개발 제품의 S/N 줄(사용자 2026-11-19)
     n = (await db.execute(text("DELETE FROM purchases WHERE id = ANY(:ids)"), {"ids": ids})).rowcount
     await db.commit()
     return n or 0
@@ -1133,6 +1138,7 @@ async def undo_shipping(db: AsyncSession, pid: int, user_id: int | None, *, admi
 # ── 입고 기록 · 거래명세서 · 세금계산서 ────────────────────────────────────────────
 
 RECEIPT_PHOTO = re.compile(r"^[0-9a-f]{32}\.(jpg|jpeg|png|webp)$")
+PHOTO_MAX = 200                                       # 칸 하나의 사진 장수(사실상 제한 없음 — 사용자 2026-11-18)
 
 
 def _serials(name: str, qty: float, raw_list: Any) -> list[str]:
@@ -1150,37 +1156,127 @@ def _serials(name: str, qty: float, raw_list: Any) -> list[str]:
     return out
 
 
+def _photos(raw: Any) -> list[str]:
+    """올린 사진 이름(uuid.확장자)만 — 장수 제한 없이(사용자 2026-11-18, 한 칸 최대 PHOTO_MAX)."""
+    out: list[str] = []
+    for x in raw or []:
+        if RECEIPT_PHOTO.match(str(x)) and x not in out:
+            out.append(str(x))
+    return out[:PHOTO_MAX]
+
+
+def _units(name: str, qty: float, raw: Any) -> list[dict]:
+    """자체 개발용 입고의 제품 한 대씩 — 제조사 S/N · UND S/N · S/W 담당자 + 낱개 품목 사진 · S/N 사진(사용자 2026-11-18·19).
+    빈 칸은 나중에 채워도 된다. 같은 줄 안 S/N 겹침·입고 수량보다 많은 칸은 거절."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for u in raw or []:
+        u = u or {}
+        m = re.sub(r"\s+", " ", str(u.get("maker_sn") or "")).strip()[:SERIAL_MAX]
+        n = re.sub(r"\s+", " ", str(u.get("und_sn") or "")).strip()[:SERIAL_MAX]
+        ph = _photos(u.get("photos"))
+        for sn, what in ((m, "제조사"), (n, "UND")):
+            if sn:
+                key = f"{what}:{sn.upper()}"
+                if key in seen:
+                    raise PurchaseError(f"'{name}' {what} S/N {sn} 를 두 번 적었습니다.")
+                seen.add(key)
+        out.append({"maker_sn": m, "und_sn": n, "photos": ph, "sw_owner": _clean(u.get("sw_owner"), 100),
+                    "item_photos": _photos(u.get("item_photos"))})
+    while out and not (out[-1]["maker_sn"] or out[-1]["und_sn"] or out[-1]["photos"] or out[-1]["sw_owner"] or out[-1]["item_photos"]):
+        out.pop()                                     # 뒤쪽 빈 칸은 버린다
+    if len(out) > max(int(-(-qty // 1)), 0):
+        raise PurchaseError(f"'{name}' S/N 칸이 입고 수량({qty:g})보다 많습니다.")
+    return out
+
+
+def _parts(name: str, qty: float, raw: Any) -> list[dict]:
+    """판매용 [같은 품목 줄 나누기](사용자 2026-11-19) — 나눈 줄마다 수량·고객사·우리 측 담당자·메모·사진.
+    수량이 0 인 빈 줄은 버리고, 나눈 수량 합이 입고 수량과 다르면 거절. 한 줄만 남으면 나누지 않은 것으로(줄 값으로 올림)."""
+    out = []
+    for x in raw or []:
+        x = x or {}
+        q = _num(x.get("qty")) or 0
+        if q < 0:
+            raise PurchaseError(f"'{name}' 나눈 줄 수량은 0 이상으로 적어 주세요.")
+        pt = {"qty": q, "customer": _clean(x.get("customer"), 200), "owner": _clean(x.get("owner"), 100),
+              "sw_owner": _clean(x.get("sw_owner"), 100), "note": str(x.get("note") or "").strip()[:500], "photos": _photos(x.get("photos"))}
+        if q or pt["customer"] or pt["owner"] or pt["sw_owner"] or pt["note"] or pt["photos"]:
+            out.append(pt)
+    if not out:
+        return []
+    total = sum(pt["qty"] for pt in out)
+    if abs(total - qty) > 1e-9:
+        raise PurchaseError(f"'{name}' 나눈 줄 수량의 합({total:g})이 입고 수량({qty:g})과 다릅니다.")
+    if any(not pt["qty"] for pt in out):
+        raise PurchaseError(f"'{name}' 나눈 줄마다 수량을 적어 주세요.")
+    return out
+
+
 def _receipt_entry(d: dict, p: dict, others: list[dict], user_name: str) -> dict:
     """입고 입력 → 입고 기록 한 줄(출하 기록과 같은 꼴 — 날짜·운송·받은 사람·보관 위치·품목별 수량·사진, 사용자 2026-11-02).
-    수량은 발주 품목 줄(line_no)마다, 다른 입고 기록과 합쳐 발주 수량을 넘으면 거절(오타 방지)."""
+    목적(사용자 2026-11-18): sale 판매용 — S/N 없이 품목마다 고객사·우리 측 담당자·메모 / dev 보유 후 자체 개발용 — 품목마다
+    제조사·UND S/N 두 줄과 S/N 사진, S/W 담당자. 발주 품목 줄(line_no)은 다른 입고 기록과 합쳐 발주 수량을 넘으면 거절(오타 방지).
+    [품목 모두 비우기]로 적은 자유 형식 줄(line_no 없음)은 발주 수량과 비교하지 않는다 — 입고 완료는 체크로."""
+    purpose = p.get("purpose") if p.get("purpose") in flow.RECEIPT_PURPOSES else "sale"
     items = (d.get("po") or {}).get("items") or []
     got: dict[int, float] = {}
     for r in others:
         for ln in r.get("lines") or []:
-            got[ln["line_no"]] = got.get(ln["line_no"], 0) + float(ln.get("qty") or 0)
+            if isinstance(ln.get("line_no"), int):
+                got[ln["line_no"]] = got.get(ln["line_no"], 0) + float(ln.get("qty") or 0)
     lines = []
     for ln in p.get("lines") or []:
         i = ln.get("line_no")
-        if not isinstance(i, int) or not 0 <= i < len(items):
-            raise PurchaseError("발주서에 없는 품목 줄입니다. 화면을 새로 고친 뒤 다시 해 주세요.", 409)
         qty = _num(ln.get("qty")) or 0
-        photos = [x for x in ln.get("photos") or [] if RECEIPT_PHOTO.match(str(x))][:10]
+        photos = _photos(ln.get("photos"))
         if qty < 0:
             raise PurchaseError("입고 수량은 0 이상으로 적어 주세요.")
+        if i is None:                                 # 자유 형식 줄
+            name = _clean(ln.get("name"), 200)
+            if not name:
+                if qty or photos:
+                    raise PurchaseError("직접 적은 품목의 이름을 적어 주세요.")
+                continue
+        else:
+            if not isinstance(i, int) or not 0 <= i < len(items):
+                raise PurchaseError("발주서에 없는 품목 줄입니다. 화면을 새로 고친 뒤 다시 해 주세요.", 409)
+            name = px.item_name(items[i])
+            ordered = float(items[i].get("qty") or 0)
+            if got.get(i, 0) + qty > ordered + 1e-9:
+                raise PurchaseError(f"'{name}' 입고 수량이 발주 수량({ordered:g})을 넘습니다(이미 {got.get(i, 0):g} 입고).")
         if not qty and not photos:
             continue
-        name = px.item_name(items[i])
-        ordered = float(items[i].get("qty") or 0)
-        if got.get(i, 0) + qty > ordered + 1e-9:
-            raise PurchaseError(f"'{name}' 입고 수량이 발주 수량({ordered:g})을 넘습니다(이미 {got.get(i, 0):g} 입고).")
-        lines.append({"line_no": i, "name": name, "qty": qty, "photos": photos, "serials": _serials(name, qty, ln.get("serials"))})
+        line = {"line_no": i, "name": name, "qty": qty, "photos": photos}
+        # 재고 구분(사용자 2026-11-19) — 입고·제품 등록 때 고를 수 있다. 비우면 재고에서 '-'(재고 화면에서 정한 값 유지)
+        cat = str(ln.get("category") or "")
+        if cat and cat not in stock.CATEGORIES:
+            raise PurchaseError(f"'{name}' 구분은 목록에서 골라 주세요.")
+        if cat:
+            line["category"] = cat
+        if purpose == "sale":
+            # 판매용 — S/N 은 받지 않는다(출하 때). no_sn 은 예전 표시(지금 재고 묶기는 나눈 줄 기준)
+            line.update(customer=_clean(ln.get("customer"), 200), owner=_clean(ln.get("owner"), 100),
+                        note=str(ln.get("note") or "").strip()[:500], no_sn=bool(ln.get("no_sn")))
+        else:
+            no_sn = bool(ln.get("no_sn"))             # S/N 없는 품목 — 낱개 칸 없이 전체 사진만(사용자 2026-11-19)
+            line.update(sw_owner=_clean(ln.get("sw_owner"), 100), no_sn=no_sn, units=[] if no_sn else _units(name, qty, ln.get("units")))
+        # [같은 품목 줄 나누기](사용자 2026-11-19 — 판매용·자체 개발용 같게): 나눈 줄 하나 = 재고 목록 한 줄
+        parts = _parts(name, qty, ln.get("parts"))
+        if len(parts) > 1:
+            line["parts"] = [{k: v for k, v in pt.items() if purpose == "sale" or k not in ("customer", "owner")} for pt in parts]
+        elif parts:                                        # 한 줄만이면 나누지 않은 것 — 그 값을 줄에
+            keep = ("customer", "owner", "note") if purpose == "sale" else ("sw_owner",)
+            line.update({k: parts[0][k] for k in keep})
+            line["photos"] = line["photos"] + [x for x in parts[0]["photos"] if x not in line["photos"]]
+        lines.append(line)
     final = bool(p.get("final"))
     if not any(ln["qty"] for ln in lines) and not final:
         raise PurchaseError("입고한 품목 수량을 적어 주세요.")
     # [입고 완료]는 지금 발주 수량까지만 닫는다 — 뒤에 품목을 더하거나 수량을 늘리면 늘어난 만큼 다시 입고 대기(사용자 2026-11-16).
     # 품목 이름도 같이 — 그 자리에 다른 품목이 들어오면 새로 열린 줄로(flow.receipt_open, QA 2026-11-16)
     closed = {"closed": {str(i): {"qty": float(it.get("qty") or 0), "name": px.item_name(it)} for i, it in enumerate(items)}} if final else {}
-    return {**closed, "date": p["date"].isoformat(), "carrier": _clean(p.get("carrier"), 50),
+    return {**closed, "purpose": purpose, "date": p["date"].isoformat(), "carrier": _clean(p.get("carrier"), 50),
             "tracking": [t for t in re.split(r"[,\s]+", str(p.get("tracking") or "")) if t][:10],
             "receiver": _clean(p.get("receiver"), 100), "location": _clean(p.get("location"), 100),
             "note": str(p.get("note") or "").strip()[:500], "lines": lines, "final": final, "by": user_name, "at": _now()}
@@ -1199,7 +1295,8 @@ async def add_receipt(db: AsyncSession, pid: int, user_id: int | None, user_name
         raise PurchaseError("이미 입고를 마쳤습니다. 기록을 고치려면 그 입고 기록의 [수정]을 눌러 주세요.", 409)
     entry = _receipt_entry(d, p, recs, user_name)
     await _save(db, pid, receipt={**rc, "records": flow.merge_receipts(recs + [entry])})
-    await _log(db, pid, user_id, "receipt", {"date": entry["date"], "items": ", ".join(f"{ln['name']} {ln['qty']:g}" for ln in entry["lines"]),
+    await _log(db, pid, user_id, "receipt", {"구분": "판매용" if entry["purpose"] == "sale" else "보유 후 자체 개발용",
+                                             "date": entry["date"], "items": ", ".join(f"{ln['name']} {ln['qty']:g}" for ln in entry["lines"]),
                                              **({"입고 완료": True} if entry["final"] else {})})
     await db.commit()
 
@@ -1215,7 +1312,7 @@ async def update_receipt(db: AsyncSession, pid: int, user_id: int | None, user_n
     if not 0 <= index < len(recs):
         raise PurchaseError("고칠 입고 기록이 없습니다.", 404)
     _same_entry(recs, index, p.get("expect"))
-    entry = _receipt_entry(d, p, recs[:index] + recs[index + 1:], user_name)
+    entry = _receipt_entry(d, {**p, "purpose": flow.purpose_of(recs[index])}, recs[:index] + recs[index + 1:], user_name)
     # 이미 [입고 완료]였던 기록을 고칠 때(메모·받은 사람 오타 등)는 그때 닫은 범위를 그대로 — 지금 발주 수량으로 다시 닫으면
     # 다시 열린 입고(품목 추가·수량 늘림)가 조용히 닫혔다(QA 2026-11-16). 새로 닫으려면 새 입고 기록에서 [입고 완료]
     old = recs[index]
@@ -1241,14 +1338,25 @@ async def set_receipt_serials(db: AsyncSession, pid: int, user_id: int | None, i
         raise PurchaseError("S/N 을 적을 입고 기록이 없습니다. 화면을 새로 고쳐 주세요.", 404)
     _same_entry(recs, index, expect)
     rec = dict(recs[index])
-    by_no = {ln.get("line_no"): ln for ln in lines}
+    # lines = [{line_index(기록 안 순번), units, sw_owner?}] — 자체 개발용(두 줄 S/N·사진, 사용자 2026-11-18)
+    #       · 예전 꼴 [{line_no, serials}] 도 받는다
+    by_idx = {x["line_index"]: x for x in lines if isinstance(x.get("line_index"), int)}
+    by_no = {x.get("line_no"): x for x in lines if not isinstance(x.get("line_index"), int)}
     new_lines, changed = [], []
-    for ln in rec.get("lines") or []:
-        if ln.get("line_no") in by_no:
-            sn = _serials(ln.get("name") or "", float(ln.get("qty") or 0), by_no[ln["line_no"]].get("serials"))
-            if sn != (ln.get("serials") or []):
-                changed.append(f"{ln.get('name')} {len(sn)}개")
-            ln = {**ln, "serials": sn}
+    for n, ln in enumerate(rec.get("lines") or []):
+        x = by_idx.get(n) or (by_no.get(ln.get("line_no")) if ln.get("line_no") is not None else None)
+        if x is not None:
+            if x.get("units") is not None:
+                us = _units(ln.get("name") or "", float(ln.get("qty") or 0), x.get("units"))
+                sw = x.get("sw_owner")
+                if us != (ln.get("units") or []) or (sw is not None and _clean(sw, 100) != (ln.get("sw_owner") or "")):
+                    changed.append(f"{ln.get('name')} {sum(1 for u in us if u['maker_sn'] or u['und_sn'])}대")
+                ln = {**ln, "units": us, **({"sw_owner": _clean(sw, 100)} if sw is not None else {})}
+            else:
+                sn = _serials(ln.get("name") or "", float(ln.get("qty") or 0), x.get("serials"))
+                if sn != (ln.get("serials") or []):
+                    changed.append(f"{ln.get('name')} {len(sn)}개")
+                ln = {**ln, "serials": sn}
         new_lines.append(ln)
     if not changed:
         return
@@ -1304,3 +1412,61 @@ async def undo_step(db: AsyncSession, pid: int, user_id: int | None, kind: str) 
     await _save(db, pid, **{col: keep})
     await _log(db, pid, user_id, f"{kind}_undo", {})
     await db.commit()
+
+
+# ── 재고 직접 등록(사용자 2026-11-19) ────────────────────────────────────────────
+# 구매 없이 이미 있는 제품을 제품 재고 관리 [제품 등록]으로 넣는다. 화면에 안 보이는 '직접 등록' 건(direct) 하나에 입고 기록처럼
+# 담아, 재고 줄·상태·제품 S/N 관리·사진이 입고한 제품과 똑같이 동작한다. 구매 건 목록·발주번호·단계에는 나오지 않는다.
+
+DIRECT_TITLE = "재고 직접 등록"
+
+
+async def direct_draft(db: AsyncSession, user_id: int | None, owner: str) -> int:
+    """작성 중인 빈 직접 등록 건 — 같은 사람의 빈 건이 있으면 그것(취소를 반복해도 쌓이지 않게), 없으면 새로. 사진을 미리 올리려고 먼저 잡는다."""
+    pid = (await db.execute(text(
+        "SELECT id FROM purchases WHERE direct AND created_by IS NOT DISTINCT FROM :u "
+        "AND jsonb_array_length(COALESCE(receipt->'records', '[]'::jsonb)) = 0 ORDER BY id DESC LIMIT 1"), {"u": user_id})).scalar()
+    if pid:
+        return int(pid)
+    pid = (await db.execute(text(
+        "INSERT INTO purchases (supplier, title, owner, region, direct, created_by) VALUES ('직접 등록', :t, :o, 'domestic', TRUE, :u) RETURNING id"),
+        {"t": DIRECT_TITLE, "o": _clean(owner, 100), "u": user_id})).scalar_one()
+    await db.commit()
+    return int(pid)
+
+
+async def _direct(db: AsyncSession, pid: int) -> dict:
+    d = await _lock(db, pid)
+    if not d.get("direct"):
+        raise PurchaseError("재고 직접 등록 건이 아닙니다.", 404)
+    return d
+
+
+async def save_direct(db: AsyncSession, pid: int, user_id: int | None, user_name: str, p: dict) -> None:
+    """직접 등록 저장·고치기 — 제조사(구매처)·국내/해외·입고 기록 한 건(품목은 직접 적은 줄만, 늘 '입고 완료')."""
+    d = await _direct(db, pid)
+    recs = (d.get("receipt") or {}).get("records") or []
+    if recs and flow.purpose_of(recs[0]) != p.get("purpose"):
+        raise PurchaseError("판매용·보유 후 자체 개발용은 등록한 뒤 바꿀 수 없습니다. 지우고 다시 등록해 주세요.", 409)
+    region = p.get("region") or "domestic"
+    if region not in REGIONS:
+        raise PurchaseError("국내·해외 중에서 골라 주세요.")
+    lines = [{**ln, "line_no": None} for ln in p.get("lines") or []]       # 발주서가 없으니 모두 직접 적은 줄
+    entry = _receipt_entry(d, {**p, "lines": lines, "final": True}, [], user_name)
+    if not any(ln["qty"] for ln in entry["lines"]):
+        raise PurchaseError("등록할 품목과 수량을 적어 주세요.")
+    if recs:
+        entry = {**entry, "by": recs[0].get("by"), "at": recs[0].get("at"), "edited_by": user_name, "edited_at": _now()}
+    supplier = _clean(p.get("supplier"), 200) or "직접 등록"
+    await _save(db, pid, supplier=supplier, region=region, receipt={"records": [entry]})
+    await _log(db, pid, user_id, "direct_edit" if recs else "direct", {
+        "구분": "판매용" if entry["purpose"] == "sale" else "보유 후 자체 개발용", "date": entry["date"],
+        "items": ", ".join(f"{ln['name']} {ln['qty']:g}" for ln in entry["lines"])})
+    await db.commit()
+
+
+async def delete_direct(db: AsyncSession, pid: int) -> None:
+    """직접 등록 건 지우기 — 재고 줄·S/N 줄도 함께(구매 건 지우기와 같은 정리)."""
+    await _direct(db, pid)
+    await db.rollback()
+    await delete(db, [pid])

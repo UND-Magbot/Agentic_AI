@@ -67,10 +67,10 @@ const WATCH: [Exclude<Watch, "">, string, (r: PurchaseRow) => boolean, string][]
 ];
 type Region = "" | PurchaseRegion;
 
-export function PurchasesTab() {
+export function PurchasesTab({ initialOpen = null }: { initialOpen?: number | null } = {}) {
   const [data, setData] = useState<PurchaseListData | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [openId, setOpenId] = useState<number | null>(null);
+  const [openId, setOpenId] = useState<number | null>(initialOpen);   // 재고 줄에서 구매 건 열기(사용자 2026-11-19)
   // 구매 사유 팝업(사용자 2026-11-17) — 목록의 [등록]·사유 글을 누르면 연다
   const [reasonRow, setReasonRow] = useState<PurchaseRow | null>(null);
   const [q, setQ] = useState("");
