@@ -32,8 +32,11 @@ STATES = ("대기 중", "수리 필요", "수리 중", "사용 중", "대여 중
 FIRST_STATE = "대기 중"
 RENTED = "대여 중"       # 영업 건 대여로 나감(사용자 2026-11-20) — 회수하면 자동으로 '대기 중'
 SOLD = "판매 완료"       # 영업 건 판매로 나감 — 재고 목록에서 빠지고 제품 S/N 관리에서 그 건으로 추적
+DELETED = "삭제"         # 관리자가 재고 목록에서 지움(사용자 2026-11-20) — 입고 기록은 그대로, 다시 저장해도 안 되살아남
+HIDDEN = (SOLD, DELETED)
 PURPOSES = ("sale", "dev")
-ACTION_LABEL = {"in": "입고", "receipt": "입고 기록 반영", "status": "상태", "handover": "영업 건으로", "back": "재고로 돌아옴", "category": "구분", "owner": "담당자",
+ACTION_LABEL = {"in": "입고", "receipt": "입고 기록 반영", "status": "상태", "handover": "영업 건으로", "back": "재고로 돌아옴",
+                "delete": "삭제(관리자)", "category": "구분", "owner": "담당자",
                 "name": "표시 이름", "maker": "제조사", "customer": "판매 고객사", "sw_owner": "S/W 담당자", "received_on": "입고일"}
 # 입고 기록에서 오는 칸 — sync 가 맞춘다
 _FROM_RECEIPT = ("name", "received_on", "customer", "sw_owner", "maker_sn", "und_sn", "no_sn")
@@ -176,6 +179,9 @@ async def _sync_units(db: AsyncSession, pid: int, rows: dict[int, dict]) -> None
     supplier = (await db.execute(text("SELECT supplier FROM purchases WHERE id = :p"), {"p": pid})).scalar() or ""
     # 제조사 = 재고에서 정한 제조사(비면 구매 공급사, 사용자 2026-11-19)
     makers = {r[0]: r[1] for r in (await db.execute(text("SELECT id, maker FROM stock_items WHERE id = ANY(:i)"), {"i": list(rows)})).all()}
+    gone = set((await db.execute(text("SELECT id FROM stock_items WHERE id = ANY(:i) AND status = :d"),
+                                 {"i": list(rows), "d": DELETED})).scalars().all())      # 관리자가 지운 줄
+    rows = {iid: w for iid, w in rows.items() if iid not in gone}
     cur = {r["stock_item_id"]: r["deal_id"] for r in (await db.execute(text(
         "SELECT deal_id, stock_item_id FROM product_units WHERE stock_item_id = ANY(:i)"), {"i": list(rows)})).mappings().all()}
     for iid, w in rows.items():
@@ -255,6 +261,32 @@ async def release(db: AsyncSession) -> int:
     return len(rs)
 
 
+async def delete_items(db: AsyncSession, ids: list[int], user_id: int | None) -> int:
+    """재고 줄 지우기(관리자, 사용자 2026-11-20) — 재고 목록·엑셀에서 빠지고 S/N 표의 판매 예정·개발 줄도 지운다
+    (A/S 기록이 있으면 '입고 삭제'로 남김). 구매 건의 입고 기록(받은 수량)은 그대로 — 다시 저장해도 이 줄은 안 되살아난다.
+    대여 중인 제품은 회수한 뒤에. 반환 = 지운 줄 수."""
+    ids = list(dict.fromkeys(i for i in ids if isinstance(i, int) and i > 0))
+    if not ids:
+        raise StockError("지울 제품을 골라 주세요.")
+    if len(ids) > BULK_MAX:
+        raise StockError(f"한 번에 {BULK_MAX}개까지 지울 수 있습니다.")
+    rs = (await db.execute(text("SELECT id, status FROM stock_items WHERE id = ANY(:i) FOR UPDATE"), {"i": ids})).mappings().all()
+    if len(rs) != len(ids):
+        raise StockError("지울 제품을 찾지 못했습니다. 화면을 새로 고쳐 주세요.", 404)
+    if any(r["status"] == RENTED for r in rs):
+        raise StockError("대여 중인 제품은 지울 수 없습니다 — 대여를 회수한 뒤 지워 주세요.", 409)
+    live = [r["id"] for r in rs if r["status"] not in HIDDEN]
+    if not live:
+        return 0
+    await _drop_units(db, live)
+    await db.execute(text("UPDATE stock_items SET status = :d, updated_at = NOW() WHERE id = ANY(:i)"), {"d": DELETED, "i": live})
+    for r in rs:
+        if r["id"] in live:
+            await _log(db, r["id"], user_id, "delete", {"전 상태": r["status"]})
+    await db.commit()
+    return len(live)
+
+
 async def purchases_removed(db: AsyncSession, pids: list[int]) -> None:
     """구매 건을 지우기 전에 — 그 재고 줄의 S/N 줄 정리(재고 줄은 구매 건과 함께 지워진다)."""
     ids = (await db.execute(text("SELECT id FROM stock_items WHERE purchase_id = ANY(:p)"), {"p": pids})).scalars().all()
@@ -313,8 +345,8 @@ async def list_items(db: AsyncSession, purpose: str) -> dict:
         "FROM stock_items s JOIN purchases p ON p.id = s.purchase_id "
         "LEFT JOIN LATERAL (SELECT * FROM stock_events x WHERE x.item_id = s.id ORDER BY x.id DESC LIMIT 1) e ON TRUE "
         "LEFT JOIN users u ON u.id = e.user_id "
-        "WHERE s.purpose = :pu AND NOT p.dropped AND s.status <> :sold ORDER BY s.received_on DESC NULLS LAST, s.purchase_id DESC, s.line_key, s.unit_index"),
-        {"pu": purpose, "sold": SOLD})).mappings().all()
+        "WHERE s.purpose = :pu AND NOT p.dropped AND s.status <> ALL(:hidden) ORDER BY s.received_on DESC NULLS LAST, s.purchase_id DESC, s.line_key, s.unit_index"),
+        {"pu": purpose, "hidden": list(HIDDEN)})).mappings().all()
     rows = []
     for r in rs:
         detail = r["last_detail"] if isinstance(r["last_detail"], dict) else json.loads(r["last_detail"] or "{}")
@@ -340,8 +372,8 @@ async def list_items(db: AsyncSession, purpose: str) -> dict:
         if w:                                            # 예전 판매용 기록(대마다 S/N 전)은 묶음 줄로 보이게 — 다음 저장 때 표에도 맞춰짐
             x["no_sn"] = w["no_sn"]
     counts = dict((await db.execute(text(
-        "SELECT s.purpose, COUNT(*) FROM stock_items s JOIN purchases p ON p.id = s.purchase_id WHERE NOT p.dropped AND s.status <> :sold "
-        "GROUP BY s.purpose"), {"sold": SOLD})).all())
+        "SELECT s.purpose, COUNT(*) FROM stock_items s JOIN purchases p ON p.id = s.purchase_id WHERE NOT p.dropped "
+        "AND s.status <> ALL(:hidden) GROUP BY s.purpose"), {"hidden": list(HIDDEN)})).all())
     return {"rows": rows, "counts": {k: counts.get(k, 0) for k in PURPOSES}, "categories": CATEGORIES, "states": STATES}
 
 

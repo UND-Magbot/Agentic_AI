@@ -12,6 +12,7 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { askChoice, askConfirm, askText } from "@/components/shared/ui/confirm-host";
+import { Icon } from "@/components/shared/ui/icon";
 import { StockDirect } from "@/components/domains/sales/stock-direct";
 import { StockExcelButtons } from "@/components/domains/sales/stock-excel";
 import { pickPhotos, uploadPhoto } from "@/components/domains/sales/sn-photos";
@@ -429,10 +430,32 @@ export function StockTab({ onOpenPurchase }: { onOpenPurchase?: (purchaseId: num
     </td>
   );
   /** 최근 변경 — 언제 바뀌었는지만(사용자 2026-11-19). 무엇이 바뀌었는지는 줄을 눌러 변경 이력에서 */
+  /** 관리자 지우기(사용자 2026-11-20) — [✎ 수정] 모드에서만 줄 끝 휴지통. 입고 기록은 그대로 */
+  const removeRows = async (rows: StockRow[]) => {
+    const n = rows.length;
+    if (!(await askConfirm({ title: `${stockLabel(rows[0])}${n > 1 ? ` ${n}개` : ""}를 재고 목록에서 지울까요?`, danger: true, confirmLabel: "지우기",
+                             message: "재고 목록·엑셀과 제품 S/N 관리의 판매 예정·개발 줄에서 빠집니다(A/S 기록이 있으면 S/N 은 남김). 구매 건의 입고 기록은 그대로이고, 다시 저장해도 되살아나지 않습니다. 변경 이력에 남습니다." }))) return;
+    try {
+      await stockRequest("/delete", { ids: rows.map((r) => r.id) });
+      await load(purpose);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "지우지 못했습니다.");
+    }
+  };
   const lastCell = (rows: StockRow[]) => {
     const at = rows.map((x) => x.last?.at ?? "").sort().at(-1);
     return (
-      <td className="px-2 py-2 text-[12px] tabular-nums text-foreground-muted">{at ? stamp(at) : <Muted>-</Muted>}</td>
+      <td className="px-2 py-2 text-[12px] tabular-nums text-foreground-muted">
+        <span className="flex items-start justify-between gap-1">
+          <span>{at ? stamp(at) : <Muted>-</Muted>}</span>
+          {edit && data?.me?.admin && (
+            <button type="button" aria-label={`${stockLabel(rows[0])} 지우기`} title="재고 목록에서 지우기(관리자)"
+                    onClick={(e) => { e.stopPropagation(); void removeRows(rows); }}
+                    className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-foreground-subtle hover:bg-red-500/10 hover:text-red-600">
+              <Icon name="trash" className="h-4 w-4" /></button>
+          )}
+        </span>
+      </td>
     );
   };
   const statusChip = (s: string, n?: number) => (

@@ -18,7 +18,7 @@ type Params = { params: Promise<{ path?: string[] }> };
 
 async function target(params: Params["params"], req: NextRequest) {
   const { path = [] } = await params;
-  const ok = path.length === 0 || (path.length === 1 && (path[0] === "bulk" || path[0] === "export"))
+  const ok = path.length === 0 || (path.length === 1 && (path[0] === "bulk" || path[0] === "export" || path[0] === "delete"))
     || (path.length === 2 && path[0] === "import" && (path[1] === "preview" || path[1] === "apply"))
     // 재고 직접 등록 — direct/draft · direct/{id} · direct/{id}/delete
     || (path[0] === "direct" && ((path.length === 2 && (path[1] === "draft" || /^\d{1,12}$/.test(path[1])))

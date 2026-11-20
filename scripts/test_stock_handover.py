@@ -167,6 +167,8 @@ async def run() -> None:
         sid = rows[0]["id"]
         await expect_err(stock.update_item(db, sid, UID, {"status": "대기 중"}), "'대여 중'은 손으로 빼지 않음", "자동으로")
         await db.rollback()
+        await expect_err(stock.delete_items(db, [sid], UID), "대여 중인 제품은 지울 수 없음(관리자 지우기)", "회수한 뒤")
+        await db.rollback()
         rid = (await unit_of(db, "QH-U9"))["id"]
         await db.execute(text("UPDATE product_units SET status = '회수' WHERE id = :i"), {"i": rid})   # 회수 완료
         await db.commit()
@@ -182,6 +184,21 @@ async def run() -> None:
               "S/N 이력 — 자체 개발 입고 → 대여 → 회수 → 재고로(재고 줄이 다시 생겨도 이어짐)", tl)
         await expect_err(stock.update_item(db, sid, UID, {"status": stock.RENTED}), "'대여 중'은 손으로 넣지 않음", "자동으로")
         await db.rollback()
+
+        # 관리자 지우기(사용자 2026-11-20) — 재고 목록·S/N 표에서 빠지고, 입고 기록을 다시 맞춰도 안 되살아남
+        u2 = await unit_of(db, "QH-U2")
+        s2 = u2["stock_item_id"]
+        n = await stock.delete_items(db, [s2], UID)
+        rows = [r for r in (await stock.list_items(db, "sale"))["rows"] if r["purchase_id"] == pid]
+        check(n == 1 and s2 not in {r["id"] for r in rows} and await unit_of(db, "QH-U2") is None,
+              "관리자 지우기 — 재고 목록·S/N 표(SP)에서 빠짐", (n, [r["id"] for r in rows]))
+        await stock.sync(db, pid)
+        await db.commit()
+        rows = [r for r in (await stock.list_items(db, "sale"))["rows"] if r["purchase_id"] == pid]
+        check(s2 not in {r["id"] for r in rows} and await unit_of(db, "QH-U2") is None,
+              "입고 기록을 다시 맞춰도 지운 줄은 안 되살아남", [r["id"] for r in rows])
+        h = await stock.history(db, s2)
+        check(any(x.get("action") == "delete" or x.get("label") == "삭제(관리자)" for x in h), "이력에 '삭제(관리자)'", h[:1])
 
 
 async def main() -> None:

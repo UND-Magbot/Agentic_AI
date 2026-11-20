@@ -10,6 +10,7 @@
 - GET  /v1/stock/direct/{pid}       → 직접 등록 건(고치기 화면 값 — 구매 건 보기와 같은 꼴)
 - POST /v1/stock/direct/{pid}       → 직접 등록 저장·고치기 {purpose, date, supplier, region, location, note, lines}
 - POST /v1/stock/direct/{pid}/delete → 직접 등록 지우기(관리자, 등록 전 빈 건은 누구나)
+- POST /v1/stock/delete             → 재고 줄 지우기(관리자) {ids} — 입고 기록은 그대로(사용자 2026-11-20)
 - GET  /v1/stock/export             → 재고 엑셀(판매용·보유 후 자체 개발용 두 시트, 재고 번호 열, 상태·상태 메모 칸) — 사용자 2026-11-20
 - POST /v1/stock/import/preview     → 고친 재고 엑셀 올리기 → 바뀌는 줄 미리보기(저장 안 함, 번호 → S/N → AI 추정 순으로 짝)
 - POST /v1/stock/import/apply       → 미리보기에서 고른 줄만 반영 {items: [{id, status, status_note}]}
@@ -162,6 +163,22 @@ async def direct_delete(pid: int, user: User = Depends(require_sales), db: Async
         await db.rollback()
         raise _pfail(e) from e
     return {"ok": True}
+
+
+class StockDeleteIn(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=stock.BULK_MAX)
+
+
+@router.post("/delete")
+async def delete_stock(body: StockDeleteIn, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    if not is_admin(user):
+        raise HTTPException(status_code=403, detail="재고 줄은 관리자만 지울 수 있습니다.")
+    try:
+        n = await stock.delete_items(db, body.ids, user.id)
+    except stock.StockError as e:
+        await db.rollback()
+        raise _fail(e) from e
+    return {"ok": True, "count": n}
 
 
 @router.post("/bulk")
