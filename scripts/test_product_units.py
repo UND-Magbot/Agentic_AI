@@ -148,7 +148,7 @@ async def bind_flow(db) -> None:
     await db.rollback()
     ship = {"date": today, "carrier": "택배", "tracking": "", "items": "", "purpose": "판매",
             "lines": [{"name": "TCV3 툴체인저", "qty": 1, "line_no": 0}], "unit_ids": []}
-    await expect_error(svc.add_shipment(db, deal_id, None, dict(ship)), "두 번째 출하도 S/N 빈칸이면 막음", "S/N을 등록")
+    await expect_error(svc.add_shipment(db, deal_id, None, dict(ship)), "두 번째 출하도 S/N 빈칸이면 묻기(2026-11-20 막지 않고 확인)", "그래도 출하를 완료")
     await db.rollback()
 
 
@@ -158,7 +158,7 @@ async def flow(db, deal_id: int, qid: int) -> None:
     check(d["units"] and (d["units"]["total"], d["units"]["done"], d["units"]["issue_no"]) == (4, 0, NO),
           "영업 건 상세 = 수주 판 시리얼 현황(4개 중 0개)", str(d["units"]))
     ship = {"date": today, "carrier": "택배", "tracking": "", "items": "", "lines": [], "purpose": "판매"}
-    await expect_error(svc.add_shipment(db, deal_id, None, dict(ship)), "S/N 미등록이면 출하 막음", "S/N을 등록")
+    await expect_error(svc.add_shipment(db, deal_id, None, dict(ship)), "S/N 미등록이면 출하 전에 묻기(serials_ok 없으면)", "그래도 출하를 완료")
     await db.rollback()
 
     v = await units.issue_units(db, deal_id, qid, 0)
@@ -186,8 +186,11 @@ async def flow(db, deal_id: int, qid: int) -> None:
     check(got == (qid, 0), "나눠 출하 — 이 출하 품목의 S/N 만 다 적었으면 통과(다른 줄 미등록이어도)", str(got))
     await expect_error(svc.add_shipment(db, deal_id, None, {**ship, "lines": [{"name": "TOOL", "qty": 2, "line_no": 1}],
                                                             "unit_ids": [ids[s2]]}),
-                       "출하 수량보다 S/N 이 적으면 그 품목 이름과 함께 막음", "S/N을 등록")
+                       "출하 수량보다 S/N 이 적으면 그 품목 이름과 함께 묻기", "TOOL. 그래도 출하를 완료")
     await db.rollback()
+    got = await units.check_before_ship(db, d0, {"lines": [{"name": "TOOL", "qty": 2, "line_no": 1}], "unit_ids": [ids[s2]],
+                                                 "serials_ok": True})
+    check(got == (qid, 0), "S/N 이 모자라도 '그래도 완료'(serials_ok)면 출하 통과(사용자 2026-11-20)", str(got))
     keep = [{"id": u["id"], "serial": u["serial"], "warranty_months": u["warranty_months"]} for ln in v["lines"] for u in ln["units"]]
     await expect_error(units.save_units(db, deal_id, None, qid, 0, [
         {"line_no": 1, "units": [{"serial": s2}, {"serial": s2.lower()}]}]), "같은 시리얼 두 번 → 막음", "두 번")

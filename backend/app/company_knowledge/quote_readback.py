@@ -284,7 +284,8 @@ def _to_supply(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for r in rows:
         r = dict(r)
         if r.get("row") != "nego" and isinstance(r.get("unit_price"), (int, float)):
-            r["unit_price"] = round(r["unit_price"] / 1.1)
+            from .. import money             # 원 미만 절삭(사용자 2026-11-20) — 견적서에 찍은 × 1.1 절삭을 되돌림
+            r["unit_price"] = money.supply_of(r["unit_price"])
         out.append(r)
     return out
 

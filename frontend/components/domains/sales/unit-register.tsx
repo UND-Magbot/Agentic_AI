@@ -5,6 +5,7 @@
 "use client";
 
 import { useState } from "react";
+import { askConfirm } from "@/components/shared/ui/confirm-host";
 import { Icon } from "@/components/shared/ui/icon";
 import { SnPhotoCell, type SnPhotoApi, uploadPhoto } from "@/components/domains/sales/sn-photos";
 import { ITEM_BTN, primaryBtn, secondaryBtn } from "@/components/domains/sales/proposal-actions";
@@ -152,7 +153,22 @@ export function SnPanel({ dealId, view, line, need, editIndex, bindIndex, bindEx
     return true;
   };
 
-  const save = async () => {
+  /** UND S/N 을 적으면 이미 등록된 제품(재고 입고·다른 건)의 제조사 S/N·제조사를 불러온다(사용자 2026-11-20). 제조사 S/N 을 이미 적었으면 그대로 */
+  const lookupUnd = async (key: string, und: string) => {
+    const v = und.trim();
+    if (!v) return;
+    try {
+      const r = await fetch(`/api/sales-deals/units/search?q=${encodeURIComponent(v)}`, { cache: "no-store" });
+      if (!r.ok) return;
+      const d = (await r.json()) as { items?: ProductUnit[] };
+      const hit = (d.items ?? []).find((u) => (u.und_serial ?? "").trim().toLowerCase() === v.toLowerCase() && !u.no_serial);
+      if (!hit) return;
+      setRows((rs) => rs.map((x) => (x.key !== key || x.locked || x.serial.trim() || x.und_serial.trim().toLowerCase() !== v.toLowerCase() ? x
+        : { ...x, serial: hit.serial, maker: hit.maker || x.maker })));
+    } catch { /* 못 불러오면 손으로 적는다 */ }
+  };
+
+  const save = async (takeStock = false): Promise<void> => {
     setBusy(true);
     setError(null);
     try {
@@ -165,9 +181,17 @@ export function SnPanel({ dealId, view, line, need, editIndex, bindIndex, bindEx
       const r = await fetch(`/api/sales-deals/${dealId}/units`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ quote_id: view.quote_id, revision: view.revision, partial: true, lines: [{ line_no: line.line_no, units }],
-                               shipment_index: bindIndex ?? null, shipment_expect: bindIndex != null ? bindExpect ?? null : null }),
+                               shipment_index: bindIndex ?? null, shipment_expect: bindIndex != null ? bindExpect ?? null : null,
+                               take_stock: takeStock }),
       });
       const d = await r.json().catch(() => ({}));
+      // 재고(판매용·자체 개발용 입고) 제품과 같은 S/N — '판매하시겠습니까?/대여하시겠습니까?'(사용자 2026-11-20)
+      if (r.status === 409 && d?.code === "STOCK_MATCH" && typeof d.detail === "string") {
+        const [title, ...rest] = d.detail.split("\n");
+        setBusy(false);
+        if (await askConfirm({ title, message: rest.join("\n"), confirmLabel: title.includes("대여하시겠") ? "대여" : "판매", cancelLabel: "취소" })) await save(true);
+        return;
+      }
       if (!r.ok) throw new Error(typeof d?.detail === "string" ? d.detail : Array.isArray(d?.detail) ? "입력값을 확인해 주세요." : "저장하지 못했습니다.");
       onSaved(d as IssueUnits);
       onClose();
@@ -187,16 +211,16 @@ export function SnPanel({ dealId, view, line, need, editIndex, bindIndex, bindEx
           {!noSn && <> · 사진 <b>{photoN}/{rows.length}</b></>}</span>
         {/* 무상 기간은 모든 제품 출하일부터 1년 고정(사용자 2026-10-30) */}
         <span className="text-[11.5px] text-foreground-subtle">무상 기간 출하일부터 1년</span>
-        <span className="ml-auto text-[11.5px] text-foreground-subtle">제조사 S/N·UND S/N 두 줄을 함께 적습니다(우리 제품은 같은 번호) · S/N이 없는 품목은 &lsquo;특주&rsquo;</span>
+        <span className="ml-auto text-[11.5px] text-foreground-subtle">제조사 S/N·UND S/N 을 적습니다(우리 제품은 UND S/N 만 · UND S/N 을 적으면 등록된 제조사 S/N 을 불러옴) · S/N이 없는 품목은 &lsquo;특주&rsquo;</span>
       </div>
       {earlier.length > 0 && (
         <p className="mb-2 text-[11.5px] text-foreground-subtle">
-          앞선 출하로 나간 S/N: {earlier.map((u) => u.serial).join(", ")}
+          앞선 출하로 나간 S/N: {earlier.map((u) => u.serial || u.und_serial || "").join(", ")}
         </p>
       )}
       {waiting.length > 0 && (
         <p className="mb-2 text-[11.5px] text-foreground-subtle">
-          아직 출하 전으로 적어 둔 S/N(이 출하에 묶지 않음): {waiting.map((u) => u.serial).join(", ")}
+          아직 출하 전으로 적어 둔 S/N(이 출하에 묶지 않음): {waiting.map((u) => u.serial || u.und_serial || "").join(", ")}
         </p>
       )}
       <label className="mb-2 inline-flex items-center gap-1.5 text-[12.5px]">
@@ -222,7 +246,8 @@ export function SnPanel({ dealId, view, line, need, editIndex, bindIndex, bindEx
               </label>
               <label className={ROW_LABEL}><span>UND S/N</span>
                 <input className={cn(HEAD_FIELD, "font-mono")} value={d.und_serial} maxLength={80} placeholder="UND S/N" aria-label={`${i + 1}번 UND S/N`}
-                       disabled={busy} onChange={(e) => setRow(d.key, { und_serial: e.target.value })} />
+                       disabled={busy} onChange={(e) => setRow(d.key, { und_serial: e.target.value })}
+                       onBlur={(e) => { if (!d.serial.trim()) void lookupUnd(d.key, e.target.value); }} />
               </label>
               <label className={ROW_LABEL}><span>부품명</span>
                 <input className={HEAD_FIELD} value={d.part_name} maxLength={120} aria-label={`${i + 1}번 부품명`} disabled={busy}
@@ -275,7 +300,7 @@ export function SnPanel({ dealId, view, line, need, editIndex, bindIndex, bindEx
         <span className="text-[11.5px] text-foreground-subtle">여러 S/N을 줄바꿈으로 복사해 한 칸에 붙여 넣으면 아래 칸으로 나눠 들어갑니다.</span>
         <span className="ml-auto flex gap-2">
           <button type="button" onClick={onClose} disabled={busy} className={secondaryBtn}>닫기</button>
-          <button type="button" onClick={() => void save()} disabled={busy} className={primaryBtn}>
+          <button type="button" onClick={() => void save(false)} disabled={busy} className={primaryBtn}>
             <Icon name="check" className="h-4 w-4" /> {busy ? "저장 중…" : "S/N 저장"}
           </button>
         </span>

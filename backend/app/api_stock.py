@@ -10,6 +10,9 @@
 - GET  /v1/stock/direct/{pid}       → 직접 등록 건(고치기 화면 값 — 구매 건 보기와 같은 꼴)
 - POST /v1/stock/direct/{pid}       → 직접 등록 저장·고치기 {purpose, date, supplier, region, location, note, lines}
 - POST /v1/stock/direct/{pid}/delete → 직접 등록 지우기(관리자, 등록 전 빈 건은 누구나)
+- GET  /v1/stock/export             → 재고 엑셀(판매용·보유 후 자체 개발용 두 시트, 재고 번호 열, 상태·상태 메모 칸) — 사용자 2026-11-20
+- POST /v1/stock/import/preview     → 고친 재고 엑셀 올리기 → 바뀌는 줄 미리보기(저장 안 함, 번호 → S/N → AI 추정 순으로 짝)
+- POST /v1/stock/import/apply       → 미리보기에서 고른 줄만 반영 {items: [{id, status, status_note}]}
 권한은 구매 건 관리와 같다(영업 또는 전체 부서 누구나).
 """
 from __future__ import annotations
@@ -17,16 +20,18 @@ from __future__ import annotations
 import datetime as dt
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .api_purchases import ReceiptLineIn
+from .api_purchases import ReceiptLineIn, require_category
 from .api_sales_deals import is_admin, require_sales
 from .database import get_db
 from .models import User
 from .purchases import service as psvc
 from .purchases import stock
+from .purchases import stock_excel
 
 router = APIRouter(prefix="/v1/stock", tags=["Stock"])
 
@@ -49,6 +54,48 @@ class StockBulkIn(StockPatchIn):
 
 def _fail(e: stock.StockError) -> HTTPException:
     return HTTPException(status_code=e.status, detail=str(e))
+
+
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+EXCEL_MAX_BYTES = 10 * 1024 * 1024
+
+
+@router.get("/export")
+async def export_stock(_: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> Response:
+    data = await stock_excel.export(db)
+    name = f"공장제품재고_{psvc.kst_today().strftime('%Y%m%d')}.xlsx"
+    from urllib.parse import quote
+    return Response(data, media_type=XLSX_MIME, headers={
+        "Content-Disposition": f"attachment; filename=\"stock.xlsx\"; filename*=UTF-8''{quote(name)}",
+        "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
+
+@router.post("/import/preview")
+async def import_preview(file: UploadFile = File(...), _: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    if not (file.filename or "").lower().endswith(".xlsx"):
+        raise HTTPException(status_code=400, detail="엑셀 파일(.xlsx)만 올릴 수 있습니다.")
+    data = await file.read(EXCEL_MAX_BYTES + 1)
+    if len(data) > EXCEL_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="엑셀 파일이 너무 큽니다(10MB 까지).")
+    try:
+        return await stock_excel.preview(db, data)
+    except stock_excel.ExcelError as e:
+        raise HTTPException(status_code=e.status, detail=str(e)) from e
+
+
+class ImportPickIn(BaseModel):
+    id: int = Field(gt=0)
+    status: str = Field(max_length=20)
+    status_note: str = Field(default="", max_length=500)
+
+
+class ImportApplyIn(BaseModel):
+    items: list[ImportPickIn] = Field(min_length=1, max_length=stock.BULK_MAX)
+
+
+@router.post("/import/apply")
+async def import_apply(body: ImportApplyIn, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    return await stock_excel.apply(db, user.id, [x.model_dump() for x in body.items])
 
 
 @router.get("")
@@ -93,6 +140,7 @@ async def direct_get(pid: int, user: User = Depends(require_sales), db: AsyncSes
 
 @router.post("/direct/{pid}")
 async def direct_save(pid: int, body: DirectIn, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    require_category(body.lines)
     try:
         await psvc.save_direct(db, pid, user.id, user.alias or user.username, body.model_dump())
     except psvc.PurchaseError as e:

@@ -219,6 +219,10 @@ class ReceiptUnitIn(BaseModel):
     photos: list[str] = Field(default_factory=list, max_length=200)          # S/N 사진
     sw_owner: str = Field(default="", max_length=100)
     item_photos: list[str] = Field(default_factory=list, max_length=200)     # 낱개 품목 사진
+    # 판매용 — 그 대의 고객사·우리 측 담당자·메모(사용자 2026-11-20 판매용도 대마다 한 줄)
+    customer: str = Field(default="", max_length=200)
+    owner: str = Field(default="", max_length=100)
+    note: str = Field(default="", max_length=500)
 
 
 class ReceiptPartIn(BaseModel):
@@ -247,6 +251,12 @@ class ReceiptLineIn(BaseModel):
     no_sn: bool = False                                                 # S/N 없는 품목(소모품 등, 사용자 2026-11-19)
     category: str = Field(default="", max_length=20)                    # 재고 구분(비우면 '-', 사용자 2026-11-19)
     parts: list[ReceiptPartIn] = Field(default_factory=list, max_length=100)     # 판매용 같은 품목 줄 나누기(2026-11-19)
+
+
+def require_category(lines: list[ReceiptLineIn]) -> None:
+    """입고 기록·재고 직접 등록 — 받은 품목(수량 있음)마다 구분 필수(사용자 2026-11-20). 화면이 먼저 막고 여기서 한 번 더."""
+    if any((ln.qty or 0) > 0 and not ln.category.strip() for ln in lines):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="품목마다 구분을 골라 주세요.")
 
 
 class SerialLineIn(BaseModel):
@@ -692,12 +702,14 @@ async def ship_undo(pid: int, user: User = Depends(require_sales), db: AsyncSess
 
 @router.post("/{pid}/receipt")
 async def receipt(pid: int, body: ReceiptIn, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    require_category(body.lines)
     return await _act(db, pid, svc.add_receipt(db, pid, user.id, _name(user), body.model_dump()))
 
 
 @router.post("/{pid}/receipt/{index}/edit")
 async def receipt_edit(pid: int, index: int, body: ReceiptIn, user: User = Depends(require_sales),
                        db: AsyncSession = Depends(get_db)) -> dict:
+    require_category(body.lines)
     return await _act(db, pid, svc.update_receipt(db, pid, user.id, _name(user), index, body.model_dump()))
 
 

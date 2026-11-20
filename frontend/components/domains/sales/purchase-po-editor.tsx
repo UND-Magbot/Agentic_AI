@@ -17,6 +17,7 @@ import {
   type PurchaseRow, type ReopenLine,
 } from "@/lib/shared/purchases";
 import { fileBugReport, readFailureContent } from "@/lib/shared/bug-report";
+import { supplyOf } from "@/lib/shared/money";
 import { cn, scrollChatToEnd } from "@/lib/shared/utils";
 import { ITEM_BTN, primaryBtn, secondaryBtn } from "./proposal-actions";
 import { AutoTextarea, LineArea } from "./quote-blocks";
@@ -255,7 +256,7 @@ export function PurchasePoEditor({ id, reissue = false, currentNo = null, curren
                 currentNo ? "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300" : "bg-amber-500/15 text-amber-700 dark:text-amber-300")}>
                 {currentNo ? "발행" : d.source === "draft" ? "작성 중 저장본" : "작성 중"}
               </span>
-              <span className="rounded-md bg-foreground/[0.06] px-1.5 py-0.5 text-[11.5px] font-semibold text-foreground-muted">{en ? "해외 · US$" : "국내 · 원 · VAT 별도"}</span>
+              <span className="rounded-md bg-foreground/[0.06] px-1.5 py-0.5 text-[11.5px] font-semibold text-foreground-muted">{en ? "해외 · US$" : `국내 · 원 · ${vatText(!!h.vat_included)}`}</span>
             </div>
             {problems.length > 0 ? (
               <ul className="flex flex-col gap-0.5 text-[12px] text-amber-700 dark:text-amber-300">
@@ -316,7 +317,8 @@ export function PurchasePoEditor({ id, reissue = false, currentNo = null, curren
           <section className={cn(HEAD_CARD, "gap-3")}>
             <div className="flex flex-wrap items-baseline gap-2">
               <h3 className="text-[17px] font-extrabold tracking-tight text-foreground">Goods Description &amp; Details</h3>
-              <span className="text-[12.5px] text-foreground-muted">{en ? "단가는 달러(US$)" : "단가는 원화 · VAT 별도"} · Commodity(모델명)와 Description(설명)은 발주서에 두 칸으로 나갑니다</span>
+              <span className="text-[12.5px] text-foreground-muted">{en ? "단가는 달러(US$)" : "단가는 원화"} · Commodity(모델명)와 Description(설명)은 발주서에 두 칸으로 나갑니다</span>
+              {!en && <VatToggle value={!!h.vat_included} disabled={!!busy} onChange={(v) => setH({ vat_included: v })} />}
             </div>
             <ul className="flex flex-col gap-2.5">
               {d.items.map((it, i) => (
@@ -382,8 +384,10 @@ export function PurchasePoEditor({ id, reissue = false, currentNo = null, curren
             {/* 합계 막대 — 견적서 화면처럼 이 화면의 결론이라 가장 크게 */}
             <div className="-mx-5 flex flex-wrap items-center gap-x-6 gap-y-2 border-y border-blue-500/20 bg-gradient-to-b from-blue-500/[0.06] to-blue-500/[0.02] px-5 py-4">
               <div className="ml-auto flex flex-col items-end gap-0.5">
-                <span className="text-[12px] font-semibold text-foreground-muted">TOTAL{en ? " (US$)" : " (VAT 별도)"}</span>
+                <span className="text-[12px] font-semibold text-foreground-muted">TOTAL{en ? " (US$)" : ` (${vatText(!!h.vat_included)})`}</span>
                 <span className="text-[24px] font-extrabold tracking-tight text-foreground">{won(total, cur)}</span>
+                {/* 발주 금액은 늘 공급가액(VAT 별도, 사용자 2026-11-20) */}
+                {!en && h.vat_included && <span className="text-[12px] text-foreground-muted">발주 금액(공급가액 · VAT 별도) <b className="tabular-nums">{won(supplyOf(total), cur)}</b></span>}
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -485,7 +489,7 @@ export function PurchasePoEditor({ id, reissue = false, currentNo = null, curren
       )}
 
       <ConfirmDialog open={issueAsk} icon="help" variant="default" title={reissue ? "발주서를 고쳐 다시 발행할까요?" : "발주서를 발행할까요?"}
-                     description={`새 발주번호가 붙고 합계 ${won(total, cur)}${en ? "" : "(VAT 별도)"}, ${d.expected_date ? `${en ? "납기일" : "입고 예정일"} ${d.expected_date}로` : "납기일 없이"} 확정됩니다.`}
+                     description={`새 발주번호가 붙고 합계 ${won(total, cur)}${en ? "" : `(${vatText(!!h.vat_included)})`}, ${d.expected_date ? `${en ? "납기일" : "입고 예정일"} ${d.expected_date}로` : "납기일 없이"} 확정됩니다.`}
                      confirmLabel={reissue ? "재발행" : "발행"} onClose={() => setIssueAsk(false)}
                      onConfirm={() => { setIssueAsk(false); void issue(); }} />
       <ConfirmDialog open={!!blocked} icon="help" variant="default" title="발주서를 발행할 수 없습니다"
@@ -501,7 +505,7 @@ export function PurchasePoEditor({ id, reissue = false, currentNo = null, curren
                      onConfirm={() => { setBlocked(null); if (blockedGo && onGoto) onGoto(blockedGo.step); }} />
       {reopen && <ReopenConfirm lines={reopen} onOk={() => { setReopen(null); void issue(true); }} onCancel={() => setReopen(null)} />}
       {uploading && <PoUploadDialog id={id} currentNo={currentNo} currentExpected={currentExpected ?? d.expected_date ?? null} currency={cur}
-                                    initials={d.initials}
+                                    initials={d.initials} vatIncluded={!!h.vat_included}
                                     onClose={() => setUploading(false)} onIssued={(row) => { setUploading(false); onIssued(row); }} />}
     </Shell>
   );
@@ -521,8 +525,25 @@ function Shell({ children }: { children: React.ReactNode }) {
 // ① 파일(엑셀·PDF)을 고르거나 끌어 놓고 [올리고 읽기] → ② Order No.·발주일·품목을 확인·수정 → [이 내용으로 발행].
 // 발주번호는 파일의 Order No.(고칠 수 있음), 비우면 이니셜로 새 번호. 지금 발주서와 같은 번호면 교체를 확인받는다(사용자 2026-11-16 —
 // 번호 하나 = 발주서 하나): 판 그대로 이 파일로 바꾸고, 교체 전 파일은 보관(다시 받을 수 있음). 따로 남기려면 번호를 바꿔 올린다.
-function PoUploadDialog({ id, currentNo, currentExpected, currency, initials: myInitials, onClose, onIssued }: {
+const vatText = (inc: boolean) => (inc ? "VAT 포함" : "VAT 별도");
+
+/** 국내 발주서 금액 VAT 별도 / VAT 포함(사용자 2026-11-20) — 발주서 품목 표 위 글자, 송금 회차 공급가액·부가세 포함 금액 계산 */
+function VatToggle({ value, disabled, onChange }: { value: boolean; disabled?: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <span role="radiogroup" aria-label="단가 VAT" className="inline-flex items-center rounded-lg border border-border p-0.5 text-[12px]">
+      {([false, true] as const).map((v) => (
+        <button key={String(v)} type="button" role="radio" aria-checked={value === v} disabled={disabled} onClick={() => onChange(v)}
+                className={cn("rounded-md px-2.5 py-1 font-semibold", value === v ? "bg-accent text-white" : "text-foreground-muted hover:text-foreground")}>
+          {vatText(v)}</button>
+      ))}
+    </span>
+  );
+}
+
+function PoUploadDialog({ id, currentNo, currentExpected, currency, initials: myInitials, vatIncluded = false, onClose, onIssued }: {
   id: number; currentNo: string | null; currentExpected: string | null; currency: PurchaseCurrency;
+  /** 지금 발주서의 VAT 포함/별도 — 파일에 'VAT 포함/별도' 글자가 있으면 그 값으로(사용자 2026-11-20) */
+  vatIncluded?: boolean;
   /** 발행자 이니셜 기본값(작성 창 값) — 번호를 비우면 이 이니셜로 새 번호 */
   initials?: string;
   onClose: () => void; onIssued: (row: PurchaseRow) => void;
@@ -540,6 +561,7 @@ function PoUploadDialog({ id, currentNo, currentExpected, currency, initials: my
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [askSame, setAskSame] = useState(false);
+  const [vat, setVat] = useState(vatIncluded);
   const usd = currency === "USD";
   const total = Math.round(items.reduce((s, it) => s + lineAmount(it, usd), 0) * 100) / 100;
   const same = !!docNo.trim() && docNo.trim().toUpperCase() === (currentNo ?? "").toUpperCase();
@@ -564,6 +586,7 @@ function PoUploadDialog({ id, currentNo, currentExpected, currency, initials: my
       setRead(r);
       setDocNo(r.doc_no ?? "");
       if (r.date) setDate(r.date);
+      if (typeof r.header?.vat_included === "boolean") setVat(r.header.vat_included);
       setItems(r.items.length ? r.items : [{ ...EMPTY_ITEM, qty: 1 }]);
     } catch (e) {
       setError(e instanceof Error ? e.message : "파일을 올리지 못했습니다.");
@@ -599,7 +622,7 @@ function PoUploadDialog({ id, currentNo, currentExpected, currency, initials: my
     setBusy("발행 중…");
     setError(null);
     try {
-      onIssued(await purchaseRequest(`/${id}/po/upload/confirm`, { upload: read.upload, doc_no: docNo.trim(), initials, date, expected_date: expected, items, header: read.header ?? {},
+      onIssued(await purchaseRequest(`/${id}/po/upload/confirm`, { upload: read.upload, doc_no: docNo.trim(), initials, date, expected_date: expected, items, header: { ...(read.header ?? {}), ...(usd ? {} : { vat_included: vat }) },
                                                                        forced: !!forced, bug_report: forced ?? "", same_no: sameNo,
                                                                        reopen_ok: reopenOk }));
     } catch (e) {
@@ -697,7 +720,9 @@ function PoUploadDialog({ id, currentNo, currentExpected, currency, initials: my
                       disabled={items.length >= MAX_ITEMS} onClick={() => setItems((xs) => [...xs, { ...EMPTY_ITEM, qty: 1 }])}>
                 <Icon name="plus" className="h-3.5 w-3.5" /> 품목 추가
               </button>
-              <span className="text-[13px]">합계{usd ? "" : "(공급가액)"} <b className="tabular-nums">{won(total, currency)}</b></span>
+              <span className="flex flex-wrap items-center gap-2 text-[13px]">
+                {!usd && <VatToggle value={vat} disabled={!!busy} onChange={setVat} />}
+                합계{usd ? "" : `(${vatText(vat)})`} <b className="tabular-nums">{won(total, currency)}</b></span>
             </div>
             <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-surface px-3 py-2 text-[12.5px]">
               <label className="flex flex-wrap items-center gap-2">

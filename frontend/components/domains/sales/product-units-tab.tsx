@@ -7,7 +7,7 @@ import { useCallback, useEffect, useState } from "react";
 import { askConfirm } from "@/components/shared/ui/confirm-host";
 import { Icon } from "@/components/shared/ui/icon";
 import { GroupHead } from "@/components/domains/sales/deal-flow";
-import { INPUT, Muted, todayIso, UnitStateBadge } from "@/components/domains/sales/deal-format";
+import { INPUT, Muted, stamp, todayIso, UnitStateBadge } from "@/components/domains/sales/deal-format";
 import { primaryBtn, secondaryBtn } from "@/components/domains/sales/proposal-actions";
 import { HEAD_AREA, HEAD_FIELD, ROW_BTN, ROW_LABEL } from "@/components/domains/sales/quote-styles";
 import type { AsCase, AsCaseEvent, DealBiz, ProductUnit, UnitDetail } from "@/lib/shared/sales-deals";
@@ -77,7 +77,7 @@ export function ProductUnitsTab({ onOpenDeal, onOpenPurchase }: {
           </button>
         ))}
         <span className="ml-auto text-[12px] text-foreground-subtle">
-          S/N은 영업 건 출하 기록의 [S/N 등록]에서, 자체 개발 제품(SD)은 구매 건의 &lsquo;보유 후 자체 개발용&rsquo; 입고 기록에서 들어옵니다.
+          S/N은 영업 건 출하 기록의 [S/N 등록]에서, 판매 예정(SP)·자체 개발(SD) 제품은 구매 건의 판매용·보유 후 자체 개발용 입고 기록에서 들어옵니다.
         </span>
       </div>
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
@@ -127,36 +127,42 @@ function UnitSearch({ openId, onOpen }: { openId: number | null; onOpen: (id: nu
       {more && items && <Muted>최근 {items.length}개만 보입니다 — 찾는 S/N이 없으면 검색어를 더 자세히 적어 주세요.</Muted>}
       {items === null ? <Muted>불러오는 중…</Muted> : items.length === 0 ? <Muted>{q ? "맞는 S/N이 없습니다." : "아직 등록한 S/N이 없습니다."}</Muted> : (
         <ul className="flex flex-col gap-1.5">
-          {items.map((u) => (
+          {items.map((u) => {
+            // 재고에 있는 제품(입고만 하고 아직 영업 건으로 안 넘어감) — 판매용 SP · 자체 개발용 SD(사용자 2026-11-20)
+            const inStock = !!u.stock_item_id && !u.deal_id;
+            return (
             <li key={u.id}>
               <button type="button" onClick={() => onOpen(u.id)}
                       className={cn("w-full rounded-lg border px-3 py-2 text-left text-[12.5px] hover:bg-foreground/[0.03]",
                         openId === u.id ? "border-accent bg-accent/[0.05]" : "border-border")}>
                 <div className="flex flex-wrap items-center gap-2">
                   <UnitStateBadge code={u.purpose} status={u.status} rentalDeal={u.deal_biz === "rental"} />
-                  {u.stock_item_id && u.no_serial ? <b className="text-foreground-muted">S/N 미기재</b> : (
-                    <b className={cn("font-mono", u.no_serial && "text-foreground-muted")}>{u.serial}</b>)}
-                  {u.und_serial && u.und_serial !== u.serial && <span className="whitespace-nowrap font-mono text-[12px] text-foreground-muted">UND {u.und_serial}</span>}
-                  {u.no_serial && !u.stock_item_id && <span className="text-[11px] text-foreground-subtle">(S/N 없음)</span>}
+                  {inStock && u.no_serial ? <b className="text-foreground-muted">S/N 미기재</b> : (
+                    <b className={cn("font-mono", u.no_serial && "text-foreground-muted")}>{u.serial || (u.und_serial ? `UND ${u.und_serial}` : "-")}</b>)}
+                  {!!u.serial && u.und_serial && u.und_serial !== u.serial && <span className="whitespace-nowrap font-mono text-[12px] text-foreground-muted">UND {u.und_serial}</span>}
+                  {u.no_serial && !inStock && <span className="text-[11px] text-foreground-subtle">(S/N 없음)</span>}
                   <span className="truncate">{u.part_name}</span>
                   <span className="ml-auto"><WarrantyChip state={u.warranty_state} /></span>
                 </div>
                 <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11.5px] text-foreground-muted">
-                  {!u.stock_item_id && u.status !== DEV_GONE && <BizChip biz={u.deal_biz} />}
+                  {!inStock && u.status !== DEV_GONE && <BizChip biz={u.deal_biz} />}
                   {u.status === UNIT_DELETED
                     ? <span className="font-semibold text-red-700 dark:text-red-300">지운 건의 S/N</span>
                     : u.status === DEV_GONE ? <span className="font-semibold text-red-700 dark:text-red-300">입고 기록에서 빠진 자체 개발 S/N</span>
-                    : u.stock_item_id ? <span>자체 개발 · {u.stock_supplier}{u.stock_po_no ? ` · ${u.stock_po_no}` : ""}
+                    : inStock && u.stock_purpose === "sale" ? <span>판매 예정 · {u.stock_customer || "고객사 미정"}{u.stock_owner ? ` · 담당 ${u.stock_owner}` : ""}
+                        {` · ${u.stock_supplier}`}{u.stock_po_no ? ` · ${u.stock_po_no}` : ""}{u.stock_status ? ` · 재고 ${u.stock_status}` : ""}</span>
+                    : inStock ? <span>자체 개발 · {u.stock_supplier}{u.stock_po_no ? ` · ${u.stock_po_no}` : ""}
                         {u.stock_status ? ` · 재고 ${u.stock_status}` : ""}{u.stock_sw_owner ? ` · S/W ${u.stock_sw_owner}` : ""}</span>
                     : <span>{u.customer ?? "고객사 없음"}{u.deal_title ? ` · ${u.deal_title}` : ""}</span>}
                   {u.issue_no && <span className="font-mono">{u.issue_no}</span>}
-                  {!u.stock_item_id && <span>{u.maker}</span>}
+                  {!inStock && <span>{u.maker}</span>}
                   {!!u.as_count && <span className={cn(u.as_open ? "font-semibold text-amber-700 dark:text-amber-300" : "")}>
                     A/S {u.as_count}건{u.as_open ? ` (진행 ${u.as_open})` : ""}</span>}
                 </div>
               </button>
             </li>
-          ))}
+            );
+          })}
         </ul>
       )}
     </div>
@@ -350,36 +356,40 @@ function UnitPanel({ unitId, onOpenDeal, onOpenPurchase }: {
   if (error) return <p className="text-[12.5px] text-red-600">{error}</p>;
   if (!u) return <Muted>불러오는 중…</Muted>;
   const st = u.stock;
-  // 사진 주소 — 영업 건 S/N 은 출하 사진, 자체 개발 제품은 구매 입고 사진
-  const photoUrl = (ph: string) => (st ? `/api/purchases/${st.purchase_id}/receipt-photos/${ph}` : `/api/sales-deals/${u.deal_id}/ship-photos/${ph}`);
-  const thumbs = (key: string, list: string[], alt: string) => (
+  // 재고에 있는 제품(영업 건으로 안 넘어감) — 판매용 SP · 자체 개발용 SD(사용자 2026-11-20)
+  const inStock = !!st && !u.deal_id;
+  const saleStock = inStock && st?.purpose === "sale";
+  // 사진 주소 — 영업 건 S/N 은 출하 사진, 재고 제품은 구매 입고 사진(품목 사진은 늘 입고 사진)
+  const receiptUrl = (ph: string) => `/api/purchases/${st?.purchase_id}/receipt-photos/${ph}`;
+  const photoUrl = (ph: string) => (inStock ? receiptUrl(ph) : `/api/sales-deals/${u.deal_id}/ship-photos/${ph}`);
+  const thumbs = (key: string, list: string[], alt: string, url = photoUrl) => (
     <span key={key} className="flex flex-wrap gap-1">{list.map((ph) => (
-      <a key={ph} href={photoUrl(ph)} target="_blank" rel="noreferrer">
+      <a key={ph} href={url(ph)} target="_blank" rel="noreferrer">
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={photoUrl(ph)} alt={alt} className="h-10 w-10 rounded object-cover" />
+        <img src={url(ph)} alt={alt} className="h-10 w-10 rounded object-cover" />
       </a>))}</span>
   );
   const rows: [string, React.ReactNode][] = [
-    ["제조사 S/N", <span key="s" className="font-mono">{u.no_serial && st ? "- (S/N 미기재)" : `${u.serial}${u.no_serial ? " (S/N 없음)" : ""}`}</span>],
+    ["제조사 S/N", <span key="s" className="font-mono">{u.no_serial && inStock ? "- (S/N 미기재)" : u.serial ? `${u.serial}${u.no_serial ? " (S/N 없음)" : ""}` : "-"}</span>],
     ["UND S/N", <span key="und" className="font-mono">{u.und_serial || "-"}</span>],
     ...(u.photos?.length ? [["S/N 사진", thumbs("ph", u.photos, "S/N 사진")] as [string, React.ReactNode]] : []),
-    ...(st?.line_photos.length ? [["품목 사진", thumbs("lph", st.line_photos, "품목 사진")] as [string, React.ReactNode]] : []),
+    ...(st?.line_photos.length ? [["품목 사진", thumbs("lph", st.line_photos, "품목 사진", receiptUrl)] as [string, React.ReactNode]] : []),
     ...(u.item_photos?.length ? [["낱개 품목 사진", thumbs("iph", u.item_photos, "낱개 품목 사진")] as [string, React.ReactNode]] : []),
     ["품목", u.part_name],
     ["제조사", u.maker],
     ["상태", <UnitStateBadge key="st" code={u.purpose} status={u.status} rentalDeal={u.deal_biz === "rental"} />],
-    ...(st ? ([
+    ...(st && inStock ? ([
       ...(st.display_name ? [["재고 표시 이름", `${st.display_name} (발주서: ${st.po_name})`] as [string, React.ReactNode]] : []),
       ["구매 건", <span key="pc">{st.supplier}{st.po_no ? <span className="ml-1.5 font-mono text-[11.5px] text-foreground-muted">{st.po_no}</span> : null}</span>],
       ["입고일", st.received_on ?? "-"],
       ["구분", st.category || "-"],
       ["재고 상태", <span key="ss">{st.status}{st.status_note ? <span className="block text-[11.5px] text-foreground-muted">{st.status_note}</span> : null}</span>],
-      ["영업팀 담당자", st.owner || "-"],
-      ["S/W 담당자", st.sw_owner || "-"],
+      ...(saleStock ? [["판매 고객사", st.customer || "-"], ["우리 측 담당자", st.owner || "-"]] as [string, React.ReactNode][]
+        : [["영업팀 담당자", st.owner || "-"], ["S/W 담당자", st.sw_owner || "-"]] as [string, React.ReactNode][]),
     ] as [string, React.ReactNode][]) : u.stock_item_id === null && u.status === DEV_GONE ? ([
       ["구매 건", "입고 기록에서 빠짐 (메모에 구매 건)"],
     ] as [string, React.ReactNode][]) : ([
-    ["프로젝트", u.deal_id ? (
+    ["영업 건", u.deal_id ? (
       <span key="pj" className="flex flex-wrap items-center gap-1.5">
         <BizChip biz={u.deal_biz} />
         <span>{u.customer ?? "고객사 없음"}{u.deal_title ? ` · ${u.deal_title}` : ""}</span>
@@ -388,6 +398,10 @@ function UnitPanel({ unitId, onOpenDeal, onOpenPurchase }: {
     ["견적서", u.issue_no ? `${u.issue_no}${u.quote_revision != null ? ` v${u.quote_revision + 1}` : ""}` : "-"],
     ["출하", u.shipment ? `${u.shipment.date ?? "-"}${u.shipment.carrier ? ` · ${u.shipment.carrier}` : ""}` : "출하 전"],
     ["무상 기간", u.warranty_months == null ? "미정" : u.warranty_months === 0 ? "무상 없음 (0개월)" : `${u.warranty_months}개월${u.warranty_until ? ` (${u.warranty_start} ~ ${u.warranty_until})` : ""}`],
+    // 재고(판매용·자체 개발용 입고)에서 넘어온 제품 — 구매 건도 같이(사용자 2026-11-20)
+    ...(st ? [["구매 건", <span key="pc2">{st.supplier}{st.po_no ? <span className="ml-1.5 font-mono text-[11.5px] text-foreground-muted">{st.po_no}</span> : null}
+                <span className="ml-1.5 text-[11.5px] text-foreground-muted">{st.purpose === "sale" ? "판매용 입고" : "자체 개발용 입고"} {st.received_on ?? ""}</span></span>]
+              ] as [string, React.ReactNode][] : []),
     ] as [string, React.ReactNode][])),
   ];
   return (
@@ -396,23 +410,54 @@ function UnitPanel({ unitId, onOpenDeal, onOpenPurchase }: {
         <h3 className="text-[15px] font-semibold">{u.part_name}</h3>
         <UnitStateBadge code={u.purpose} status={u.status} rentalDeal={u.deal_biz === "rental"} />
         <WarrantyChip state={u.warranty_state} />
-        {u.deal_id && onOpenDeal && (
-          <button type="button" onClick={() => onOpenDeal(u.deal_id as number, u.deal_biz ?? "sale", !!u.deal_free)}
-                  className="ml-auto inline-flex items-center gap-1 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-accent/90">
-            프로젝트 건 열기 →
-          </button>
-        )}
+        <span className="ml-auto flex flex-wrap gap-1.5">
         {st && onOpenPurchase && (
           <button type="button" onClick={() => onOpenPurchase(st.purchase_id)}
-                  className="ml-auto inline-flex items-center gap-1 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-accent/90">
+                  className={cn("inline-flex items-center gap-1 rounded-lg px-3 py-1.5 text-[12px] font-semibold",
+                    u.deal_id ? "border border-border text-foreground hover:border-accent hover:text-accent" : "bg-accent text-white hover:bg-accent/90")}>
             구매 건 열기 →
           </button>
         )}
+        {u.deal_id && onOpenDeal && (
+          <button type="button" onClick={() => onOpenDeal(u.deal_id as number, u.deal_biz ?? "sale", !!u.deal_free)}
+                  className="inline-flex items-center gap-1 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-accent/90">
+            영업 건 열기 →
+          </button>
+        )}
+        </span>
       </div>
       <dl className="grid grid-cols-[110px_minmax(0,1fr)] gap-x-3 gap-y-1 text-[12.5px]">
         {rows.map(([k, v]) => <div key={k} className="contents"><dt className="text-foreground-muted">{k}</dt><dd className="min-w-0 break-words">{v}</dd></div>)}
       </dl>
       {u.note && <p className="text-[12px] text-foreground-muted">메모: {u.note}</p>}
+
+      {/* S/N 이력(사용자 2026-11-20) — 언제 어느 건에서 생겨 어떻게 관리됐는지, 오래된 것부터 */}
+      <div className="border-t border-border pt-3">
+        <div className="flex items-center gap-2"><b>S/N 이력</b><span className="text-[12px] text-foreground-muted">{u.timeline?.length ?? 0}건</span></div>
+        {!u.timeline?.length ? <Muted>이력이 없습니다.</Muted> : (
+          <ol className="mt-2 flex flex-col">
+            {u.timeline.map((t, k) => (
+              <li key={k} className="relative grid grid-cols-[96px_minmax(0,1fr)] gap-x-3 pb-2.5 pl-4 last:pb-0">
+                <span aria-hidden className={cn("absolute left-[3px] top-[7px] h-2 w-2 rounded-full", t.as_case ? "bg-amber-500" : "bg-accent")} />
+                {k < u.timeline!.length - 1 && <span aria-hidden className="absolute bottom-0 left-[6px] top-[16px] w-px bg-border" />}
+                <span className="whitespace-nowrap text-[12px] tabular-nums text-foreground-muted">
+                  {t.at ? (t.day ? t.at.slice(2, 10).replaceAll("-", ".") : stamp(t.at)) : "-"}</span>
+                <div className="min-w-0 text-[12.5px]">
+                  <div className="flex flex-wrap items-center gap-x-2">
+                    <b className={cn(t.as_case != null && "text-amber-800 dark:text-amber-300")}>{t.title}</b>
+                    {t.link && (t.link.kind === "purchase" ? onOpenPurchase : onOpenDeal) && (
+                      <button type="button" className="text-[11.5px] font-semibold text-accent hover:underline"
+                              onClick={() => { const l = t.link!; if (l.kind === "purchase") onOpenPurchase?.(l.id); else onOpenDeal?.(l.id, l.biz, l.free); }}>
+                        {t.link.kind === "purchase" ? "구매 건 →" : "영업 건 →"}</button>
+                    )}
+                  </div>
+                  {(t.detail || t.by) && <div className="break-words text-[12px] text-foreground-muted">{[t.detail, t.by].filter(Boolean).join(" · ")}</div>}
+                </div>
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
 
       <div className="flex items-center gap-2 border-t border-border pt-3">
         <b>A/S 이력</b><span className="text-[12px] text-foreground-muted">{u.cases.length}건</span>
@@ -599,7 +644,7 @@ export function DealAsIntake({ units, onDone }: { units: ProductUnit[]; onDone: 
   const [loading, setLoading] = useState<number[]>([]);
   const [error, setError] = useState<string | null>(null);
   const key = q.trim().toLowerCase();
-  const shown = units.filter((u) => !key || `${u.serial} ${u.part_name}`.toLowerCase().includes(key));
+  const shown = units.filter((u) => !key || `${u.serial} ${u.und_serial ?? ""} ${u.part_name}`.toLowerCase().includes(key));
   const load = async (ids: number[]) => {
     const need = ids.filter((id) => !loaded[id]);
     if (!need.length) return;
@@ -655,7 +700,7 @@ export function DealAsIntake({ units, onDone }: { units: ProductUnit[]; onDone: 
                 <label className={cn("flex min-w-0 cursor-pointer items-center gap-3 rounded-[10px] border px-3 py-2.5 transition-colors",
                                      on ? "border-accent/50 bg-accent/[0.06]" : "border-border bg-surface-raised hover:border-accent/35")}>
                   <input type="checkbox" checked={on} onChange={(e) => toggle(u.id, e.target.checked)}
-                         aria-label={`${u.serial} A/S 접수 선택`} className="h-4 w-4 shrink-0 accent-accent" />
+                         aria-label={`${u.serial || u.und_serial} A/S 접수 선택`} className="h-4 w-4 shrink-0 accent-accent" />
                   <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">{u.part_name}</span>
                   <span className="whitespace-nowrap font-mono text-[12.5px] text-foreground-muted">{u.serial}</span>
                   {u.und_serial && u.und_serial !== u.serial && <span className="whitespace-nowrap font-mono text-[12px] text-foreground-muted">UND {u.und_serial}</span>}

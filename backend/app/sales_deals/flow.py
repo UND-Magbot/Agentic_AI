@@ -14,6 +14,8 @@ import datetime as dt
 import re
 from typing import Any
 
+from .. import money
+
 VAT_RATE = 0.1
 PAY_TOLERANCE = 1_000            # 송금 수수료 등으로 생기는 원 단위 차이까지는 받은 것으로 본다
 
@@ -26,7 +28,7 @@ def supply_total(d: dict) -> float | None:
     (사용자 2026-10-22). 견적 없는 옛 건만 명세서 → 옛 계산서 → 출하 금액 합."""
     q = d.get("quote") or {}
     if q.get("amount"):
-        return round(float(q["amount"]) / (1 + VAT_RATE)) if q.get("vat_included") else float(q["amount"])
+        return float(money.supply_of(q["amount"])) if q.get("vat_included") else float(q["amount"])
     st = d.get("statement") or {}
     if (st.get("totals") or {}).get("supply"):
         return float(st["totals"]["supply"])
@@ -48,7 +50,7 @@ def statement_lines(d: dict) -> list[dict]:
             continue
         up = it.get("unit_price")
         if vat and isinstance(up, (int, float)):
-            up = round(up / (1 + VAT_RATE))
+            up = money.supply_of(up)
         out.append({"item": it, "qty": it.get("qty"), "unit_price": up})
     return out
 
@@ -88,12 +90,73 @@ def terms(d: dict) -> list[dict[str, Any]]:
     out, used = [], 0
     pays = d.get("payments") or []
     for i, t in enumerate(raw):
-        amt = round(total * (t.get("pct") or 0) / 100) if i < len(raw) - 1 else round(total - used)
+        # 원화는 원 미만 절삭(사용자 2026-11-20), 마지막 회차가 끝전
+        cut = money.won if ((d.get("quote") or {}).get("currency") or "KRW") == "KRW" else round
+        amt = cut(total * (t.get("pct") or 0) / 100) if i < len(raw) - 1 else cut(total - used)
         used += amt
         got = [p for p in pays if p.get("term") == i]
         out.append({"label": t.get("label"), "pct": t.get("pct"), "when": t.get("when") or "", "expected_date": t.get("expected_date"),
                     "index": i, "amount": amt, "confirmed": bool(got), "paid_date": got[-1].get("date") if got else None})
     return out
+
+
+# ── 세금계산서 회차(사용자 2026-11-20) ────────────────────────────────────────
+# 결제 조건과 따로 — 선금·중도금(1·2·… 늘릴 수 있음)·잔금 % (합 100) 로 공급가액을 나누고, 회차마다 발행일을 적어 [확인].
+# 처음엔 결제 조건 % 를 그대로 보여 주고(저장 전 초안), 고치거나 처음 [확인]할 때 저장한다.
+# 매출일 = 마지막 회차(잔금)까지 모두 확인했을 때 마지막 회차의 발행일(수주일 대신, 사용자 2026-11-20).
+TAX_MAX_ROWS = 12
+
+
+def clean_tax_terms(raw: list[dict]) -> list[dict]:
+    """세금계산서 회차 {label, pct} 정리 — 구분 이름, % 는 0 보다 크고 합 100. 잘못되면 ValueError."""
+    out = []
+    for t in raw or []:
+        label = re.sub(r"\s+", " ", str((t or {}).get("label") or "")).strip()[:20]
+        try:
+            pct = float((t or {}).get("pct"))
+        except (TypeError, ValueError):
+            pct = 0.0
+        if not label:
+            raise ValueError("세금계산서 회차마다 구분(선금·중도금·잔금)을 적어 주세요.")
+        if not 0 < pct <= 100:
+            raise ValueError(f"'{label}' 비율(%)을 0보다 크게 적어 주세요.")
+        out.append({"label": label, "pct": round(pct, 4)})
+    if not out:
+        raise ValueError("세금계산서 회차를 하나 이상 정해 주세요.")
+    if len(out) > TAX_MAX_ROWS:
+        raise ValueError(f"세금계산서 회차는 {TAX_MAX_ROWS}개까지입니다.")
+    if abs(sum(t["pct"] for t in out) - 100) > 1e-6:
+        raise ValueError(f"세금계산서 회차 비율의 합이 100% 가 돼야 합니다(지금 {sum(t['pct'] for t in out):g}%).")
+    return out
+
+
+def tax_invoices(d: dict) -> dict[str, Any]:
+    """세금계산서 회차 화면 값 — rows[{index, label, pct, amount(공급가액), vat, total, date, confirmed, by, at}],
+    saved(저장했는지 — 아니면 결제 조건에서 가져온 초안), done(모두 확인), revenue_date(매출일)."""
+    saved = list(d.get("tax_invoices") or [])
+    rows = saved or [{"label": t.get("label"), "pct": t.get("pct")} for t in d.get("pay_terms") or [] if t.get("pct")]
+    total = supply_total(d) or 0
+    krw = ((d.get("quote") or {}).get("currency") or "KRW") == "KRW"
+    cut = money.won if krw else round
+    out, used = [], 0
+    for i, t in enumerate(rows):
+        last = i == len(rows) - 1
+        amt = cut(total * float(t.get("pct") or 0) / 100) if not last else cut(total - used)
+        used += amt
+        vat = money.vat_of(amt) if krw else 0
+        out.append({"index": i, "label": t.get("label"), "pct": t.get("pct"), "amount": amt, "vat": vat, "total": amt + vat,
+                    "date": t.get("date"), "confirmed": bool(t.get("confirmed")), "by": t.get("by"), "at": t.get("at")})
+    done = bool(saved) and all(r["confirmed"] for r in out)
+    return {"rows": out, "saved": bool(saved), "done": done, "revenue_date": out[-1]["date"] if done and out else None}
+
+
+def revenue_date(d: dict) -> str | None:
+    """매출일 — 세금계산서 마지막 회차(잔금)까지 모두 확인했으면 그 마지막 회차 발행일, 아니면 None(사용자 2026-11-20).
+    엑셀에서 옮긴 예전 건의 보기 전용 계산서 기록은 매출에 넣지 않는다(사용자 결정)."""
+    saved = d.get("tax_invoices") or []
+    if not saved or not all(t.get("confirmed") and t.get("date") for t in saved):
+        return None
+    return saved[-1]["date"]
 
 
 def paid(d: dict) -> float:

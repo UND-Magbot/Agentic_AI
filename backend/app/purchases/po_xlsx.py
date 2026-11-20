@@ -8,7 +8,8 @@
       + 같은 양식의 최근 PDF(나우티앤에스 Lu261013 — 오른쪽 위 magbot 로고).
 - 'Purchasing order' 제목은 WordArt 도형이라 openpyxl 로 옮길 수 없어 PDF 에서 잘라 낸 그림(data/po_title.png)으로 넣는다.
 - 서명·직인·로고는 견적서와 같은 회사 그림(company_knowledge/data/quote) — 양식의 그림과 같은 파일이다.
-- 금액 칸은 수식(수량×단가, 합계 SUM)이라 엑셀에서 수량을 고치면 다시 계산된다. 금액은 VAT 별도(양식 그대로).
+- 금액 칸은 수식(수량×단가, 합계 SUM)이라 엑셀에서 수량을 고치면 다시 계산된다. 금액은 VAT 별도(양식 그대로) 또는
+  발주서 작성 때 고른 VAT 포함(header.vat_included, 사용자 2026-11-20 — 품목 표 위 글자만 바뀜).
 """
 from __future__ import annotations
 
@@ -211,7 +212,7 @@ def _build_ko(header: dict[str, Any], items: list[dict[str, Any]]) -> bytes:
 
     # 19행~ — 품목 표
     _cell(ws, "A19", "Goods Description & Details", size=11, h="left", border=False)
-    _cell(ws, "G19", "VAT 별도", border=False)
+    _cell(ws, "G19", "VAT 포함" if header.get("vat_included") else "VAT 별도", border=False)
     # Commodity(모델명) · Description(설명) 칸을 나눈다(사용자 2026-11-11, 에이딘로보틱스 발주서 예시)
     _cell(ws, "A20", "Commodity", size=9)
     _cell(ws, "B20", "Description", size=9, merge="C20")

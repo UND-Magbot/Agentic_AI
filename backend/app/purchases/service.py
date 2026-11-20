@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..sales_deals import doc_numbers as dn
 from ..sales_deals.service import kst_today
+from .. import money
 from . import flow
 from . import po_xlsx as px
 from . import stock
@@ -109,6 +110,8 @@ def view(d: dict, today: dt.date) -> dict:
                      "files": [_file_view(f) for f in (d.get("approval") or {}).get("files") or []]},
         "po": {"no": po.get("no"), "date": po.get("date"), "total": po.get("total"), "issued_at": po.get("issued_at"),
                "forced": po.get("forced"),
+               "vat_included": flow.vat_included(d),          # 국내 발주서 금액 VAT 포함(사용자 2026-11-20) — total 은 발주서에 찍힌 합계
+               "supply": flow.po_total(d),                     # 발주 금액 = 늘 공급가액(VAT 별도, 사용자 2026-11-20)
                "issued_by": po.get("issued_by"), "revision": po.get("revision"), "file_name": po.get("file_name"),
                "items": po.get("items") or [], "has_draft": bool(po.get("draft")), "currency": po.get("currency"),
                # 고친 발주서 파일로 발행했으면 그 파일(사용자 2026-11-11) — 내려받기는 그 파일 그대로
@@ -116,6 +119,9 @@ def view(d: dict, today: dt.date) -> dict:
                "replaced": _replaced_view(po),
                "history": [{**{k: h.get(k) for k in ("no", "date", "total", "issued_at", "issued_by", "revision", "file_name",
                                                      "cancelled_at", "cancelled_by")},
+                            "vat_included": bool((h.get("header") or {}).get("vat_included")),
+                            "supply": (float(money.supply_of(h["total"])) if (h.get("header") or {}).get("vat_included")
+                                       and h.get("total") is not None else h.get("total")),
                             "upload": _upload_view(h.get("upload")), "replaced": _replaced_view(h)} for h in po.get("history") or []]},
         "pay_terms": [{k: v for k, v in t.items() if k != "check"} for t in d.get("pay_terms") or []],   # 대조 결과는 terms 에
         "terms": flow.terms(d),
@@ -492,7 +498,9 @@ def clean_po(p: dict, lang: str = "ko") -> tuple[dict, list[dict]]:
               "swift": _clean(h.get("swift"), 40),
               "account_no": _clean(h.get("account_no"), 60), "account_holder": _clean(h.get("account_holder"), 80),
               "issuer": {k: _clean(i.get(k), 160) for k in ("name", "title", "address", "tel", "fax", "attn")},
-              "comments": str(h.get("comments") or "").strip()[:600]}
+              "comments": str(h.get("comments") or "").strip()[:600],
+              # 국내 발주서 금액 VAT 포함/별도(사용자 2026-11-20) — 해외는 늘 별도(표기 없음)
+              "vat_included": bool(h.get("vat_included")) and lang == "ko"}
     return header, clean_items(p.get("items"))
 
 
@@ -687,7 +695,8 @@ async def issue_po(db: AsyncSession, pid: int, user_id: int | None, user_name: s
     old = d.get("po") or {}
     cur = CURRENCY[d["region"]]
     paid = any(t["confirmed"] for t in flow.terms(d)) or any(x.get("simple") for x in d.get("payments") or [])
-    if old.get("no") and paid and abs(px.total(items, cur) - float(old.get("total") or 0)) > 0.005:
+    if old.get("no") and paid and (abs(px.total(items, cur) - float(old.get("total") or 0)) > 0.005
+                                   or bool(header.get("vat_included")) != flow.vat_included(d)):
         raise PurchaseError("송금 확인을 한 건이라 발주 금액을 바꿀 수 없습니다. 송금 칸의 [확인 취소]로 송금 확인을 먼저 취소해 주세요.", 409,
                             {"code": "PAID_LOCK"})       # 화면: 팝업 → [송금 칸으로 가기]
     day = dt.date.fromisoformat(header["date"])
@@ -761,6 +770,8 @@ def _merge_header(cur: dict, read: dict, lang: str) -> dict:
     top = {k: v for k, v in read.items() if k in ("bank", "address", "swift", "account_no", "account_holder", "comments")
            and str(v or "").strip()}
     merged = {**cur, **top, "supplier": sup}
+    if isinstance(read.get("vat_included"), bool):    # 화면에서 고른 값(처음엔 파일에서 읽은 'VAT 포함/별도')
+        merged["vat_included"] = read["vat_included"]
     header, _ = clean_po({"header": {**merged, "date": cur.get("date") or kst_today().isoformat()}}, lang)
     return header
 
@@ -820,7 +831,10 @@ async def upload_po(db: AsyncSession, pid: int, user_id: int | None, user_name: 
     old = d.get("po") or {}
     cur = CURRENCY[d["region"]]
     paid = any(t["confirmed"] for t in flow.terms(d)) or any(x.get("simple") for x in d.get("payments") or [])
-    if old.get("no") and paid and abs(px.total(items, cur) - float(old.get("total") or 0)) > 0.005:
+    # 고친 파일 발행 — 화면에서 고른 VAT 포함/별도(안 보냈으면 지금 값). 해외는 늘 별도
+    new_vat = (bool((p.get("header") or {}).get("vat_included", flow.vat_included(d)))) and not flow.overseas(d)
+    if old.get("no") and paid and (abs(px.total(items, cur) - float(old.get("total") or 0)) > 0.005
+                                   or new_vat != flow.vat_included(d)):
         raise PurchaseError("송금 확인을 한 건이라 발주 금액을 바꿀 수 없습니다. 송금 칸의 [확인 취소]로 송금 확인을 먼저 취소해 주세요.", 409,
                             {"code": "PAID_LOCK"})       # 화면: 팝업 → [송금 칸으로 가기]
     given = str(p.get("doc_no") or "").strip()
@@ -1165,9 +1179,10 @@ def _photos(raw: Any) -> list[str]:
     return out[:PHOTO_MAX]
 
 
-def _units(name: str, qty: float, raw: Any) -> list[dict]:
-    """자체 개발용 입고의 제품 한 대씩 — 제조사 S/N · UND S/N · S/W 담당자 + 낱개 품목 사진 · S/N 사진(사용자 2026-11-18·19).
-    빈 칸은 나중에 채워도 된다. 같은 줄 안 S/N 겹침·입고 수량보다 많은 칸은 거절."""
+def _units(name: str, qty: float, raw: Any, purpose: str = "dev") -> list[dict]:
+    """입고의 제품 한 대씩 — 제조사 S/N · UND S/N + 낱개 품목 사진 · S/N 사진(사용자 2026-11-18·19).
+    자체 개발용은 S/W 담당자, 판매용은 고객사·우리 측 담당자·메모(사용자 2026-11-20 — 판매용도 대마다 S/N 두 줄).
+    빈 칸은 나중에 채워도 된다(화면이 저장 전에 알림). 같은 줄 안 S/N 겹침·입고 수량보다 많은 칸은 거절."""
     out: list[dict] = []
     seen: set[str] = set()
     for u in raw or []:
@@ -1181,9 +1196,14 @@ def _units(name: str, qty: float, raw: Any) -> list[dict]:
                 if key in seen:
                     raise PurchaseError(f"'{name}' {what} S/N {sn} 를 두 번 적었습니다.")
                 seen.add(key)
-        out.append({"maker_sn": m, "und_sn": n, "photos": ph, "sw_owner": _clean(u.get("sw_owner"), 100),
-                    "item_photos": _photos(u.get("item_photos"))})
-    while out and not (out[-1]["maker_sn"] or out[-1]["und_sn"] or out[-1]["photos"] or out[-1]["sw_owner"] or out[-1]["item_photos"]):
+        one = {"maker_sn": m, "und_sn": n, "photos": ph, "sw_owner": _clean(u.get("sw_owner"), 100),
+               "item_photos": _photos(u.get("item_photos"))}
+        if purpose == "sale":
+            one = {**one, "sw_owner": "", "customer": _clean(u.get("customer"), 200), "owner": _clean(u.get("owner"), 100),
+                   "note": str(u.get("note") or "").strip()[:500]}
+        out.append(one)
+    while out and not (out[-1]["maker_sn"] or out[-1]["und_sn"] or out[-1]["photos"] or out[-1]["sw_owner"] or out[-1]["item_photos"]
+                       or out[-1].get("customer") or out[-1].get("owner") or out[-1].get("note")):
         out.pop()                                     # 뒤쪽 빈 칸은 버린다
     if len(out) > max(int(-(-qty // 1)), 0):
         raise PurchaseError(f"'{name}' S/N 칸이 입고 수량({qty:g})보다 많습니다.")
@@ -1255,9 +1275,11 @@ def _receipt_entry(d: dict, p: dict, others: list[dict], user_name: str) -> dict
         if cat:
             line["category"] = cat
         if purpose == "sale":
-            # 판매용 — S/N 은 받지 않는다(출하 때). no_sn 은 예전 표시(지금 재고 묶기는 나눈 줄 기준)
+            # 판매용도 대마다 S/N 두 줄 + 고객사·담당자(사용자 2026-11-20). [한 줄로 합치기](no_sn) = S/N 없는 품목 — 줄 값만
+            no_sn = bool(ln.get("no_sn"))
             line.update(customer=_clean(ln.get("customer"), 200), owner=_clean(ln.get("owner"), 100),
-                        note=str(ln.get("note") or "").strip()[:500], no_sn=bool(ln.get("no_sn")))
+                        note=str(ln.get("note") or "").strip()[:500], no_sn=no_sn,
+                        units=[] if no_sn else _units(name, qty, ln.get("units"), "sale"))
         else:
             no_sn = bool(ln.get("no_sn"))             # S/N 없는 품목 — 낱개 칸 없이 전체 사진만(사용자 2026-11-19)
             line.update(sw_owner=_clean(ln.get("sw_owner"), 100), no_sn=no_sn, units=[] if no_sn else _units(name, qty, ln.get("units")))

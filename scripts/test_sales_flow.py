@@ -94,17 +94,21 @@ check(derive({**deal(SPLIT, confirmed=(0, 1, 2)), "paid_full": True}, date(2026,
       and derive({**deal(SPLIT, confirmed=(0, 1, 2), shipped=True), "paid_full": True}, date(2026, 10, 7))["stage"] == "완료 (출하·완납)",
       "결제 조건 건: 완납이어도 출하 전에는 '완료'가 아님")
 
-# 5) 분기별 수주금액·올해 매출(출하일 기준) — 공급가액, 드랍 제외(예전 실주 기록 포함)
+# 5) 분기별 수주금액(AI 답용)·분기별 매출 — 공급가액, 드랍 제외(예전 실주 기록 포함).
+#    매출일 = 잔금(마지막 회차) 세금계산서 발행일(사용자 2026-11-20, 예전 출하일 기준을 바꿈)
 from app.sales_deals.service import kpi  # noqa: E402
 from app.sales_deals import doc_numbers as dn  # noqa: E402
-rows = [{**deal(SPLIT, shipped=True), "won_date": "2026-02-10"},
-        {**deal(SPLIT), "won_date": "2026-08-01"},
-        {**deal(SPLIT, shipped=True), "won_date": "2026-05-01", "dropped": True},
-        {**deal(SPLIT), "won_date": "2025-12-01", "shipments": [{"date": "2026-01-05"}]},
+TAX = lambda last: [{"label": "선금", "pct": 30, "date": "2026-02-20", "confirmed": True},  # noqa: E731
+                    {"label": "잔금", "pct": 70, "date": last, "confirmed": True}]
+rows = [{**deal(SPLIT, shipped=True), "won_date": "2026-02-10", "tax_invoices": TAX("2026-11-05")},
+        {**deal(SPLIT), "won_date": "2026-08-01", "tax_invoices": [{**TAX("2026-09-01")[0]}, {**TAX("2026-09-01")[1], "confirmed": False}]},
+        {**deal(SPLIT, shipped=True), "won_date": "2026-05-01", "dropped": True, "tax_invoices": TAX("2026-05-10")},
+        {**deal(SPLIT), "won_date": "2025-12-01", "shipments": [{"date": "2026-01-05"}], "tax_invoices": TAX("2026-01-20")},
         {**deal(SPLIT), "won": False, "won_date": "2026-03-01"}]
 k = kpi(rows, date(2026, 10, 8))
-check(k["won_by_quarter"] == [3_700_000, 0, 3_700_000, 0] and k["won_total"] == 7_400_000 and k["sales"] == 7_400_000
-      and k["quarter"] == 4 and k["won_estimated"] == 0, "분기별 수주·올해 매출(출하일 기준, 작년 수주 올해 출하 포함, 드랍 제외(예전 실주 기록 포함))", str(k))
+check(k["won_by_quarter"] == [3_700_000, 0, 3_700_000, 0] and k["won_total"] == 7_400_000
+      and k["sales_by_quarter"] == [3_700_000, 0, 0, 3_700_000] and k["sales"] == 7_400_000 and k["quarter"] == 4,
+      "분기별 매출 = 잔금 계산서 발행일(2월 수주 → 11월 잔금이면 4분기, 작년 수주 → 1월 잔금 1분기, 잔금 미확인·드랍 제외)", str(k))
 legacy = {**deal(None, statement=False), "won_date": None, "quote": None, "imported": True,
           "invoices": [{"date": "2026-05-03", "supply": 2_000_000}, {"date": "2026-07-01", "supply": 1_000_000}]}
 k = kpi([legacy], date(2026, 10, 8))

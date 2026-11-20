@@ -24,12 +24,12 @@ from .status import STAGES, derive
 
 COLS = ("id, deal_no, meeting, kind, customer, contact, owner, title, base_date, quote, pay_terms, won, won_date, "
         "invoices, payments, paid_full, shipments, shipped_note, note, review_alerts, review_done, imported, "
-        "legacy, proposal_id, po_files, statement, pay_case, version, cur_no, dropped, drop_reason, created_at, updated_at")
+        "legacy, proposal_id, po_files, statement, pay_case, version, cur_no, dropped, drop_reason, created_at, updated_at, tax_invoices")
 KST = ZoneInfo("Asia/Seoul")
 # 히스토리에서 문서 발행 줄 — 발행번호를 보여 주고, 같은 문서가 다시 발행되면 예전 줄은 '버전 업데이트됨'(사용자 2026-10-12)
 QUOTE_ACTIONS = ("create", "quote", "quote_revision", "quote_upload", "quote_replace")
 JSON_COLS = ("quote", "pay_terms", "invoices", "payments", "shipments", "review_alerts", "legacy", "po_files", "statement",
-             "meeting")
+             "meeting", "tax_invoices")
 ENTRY_KINDS = ("invoices", "payments", "shipments", "po_files")
 
 
@@ -67,6 +67,8 @@ def view(d: dict, today: dt.date) -> dict:
           "pay_case_label": " · ".join(f"{t['label']} {t['pct']:g}%" + (f"({t['when']})" if t.get("when") else "") for t in ts) or None,
           "total": flow.expected_total(d), "paid": flow.paid(d), "due": flow.next_due(d),
           "overdue": flow.overdue(d, today),
+          # 세금계산서 회차(사용자 2026-11-20) — 회차·공급가액·발행일·확인, 매출일
+          "tax": flow.tax_invoices(d),
           # 무상 대여(합계 0원, 사용자 2026-10-30) — 목록 금액 '무상', 수주 진행은 거래명세서·입금 없이 출하로
           "free": flow.free(d)}
     # 표시 번호(사용자 2026-10-12) = 최근 견적서 발행번호(QT-LU20261012-01), 거래명세서를 발행했으면 최근 명세서 번호도(statement_no).
@@ -179,10 +181,12 @@ def _won_day(r: dict) -> tuple[str | None, bool]:
 
 
 def kpi(rows: list[dict], today: dt.date) -> dict:
-    """올해 분기별 수주금액(수주일 기준)·올해 매출액(출하일 기준) — 공급가액(사용자 2026-10-08). 드랍 제외.
-    수주일이 없는 옮긴 건은 _won_day 로 대신 셈하고 그 건수를 won_estimated 로 알린다(화면에 표시)."""
+    """올해 분기별 매출액·올해 매출액 — 공급가액, 매출일 = 잔금(마지막 회차) 세금계산서 발행일(사용자 2026-11-20 — 수주일·출하일 기준을
+    바꿈: 9월 수주라도 11월에 잔금 계산서를 끊었으면 11월 매출). 드랍 제외, 세금계산서 회차를 끝까지 확인하지 않은 건은 아직 매출 아님.
+    수주금액(수주일 기준, won_*)은 AI 답(deal_query)이 '수주 금액'을 물을 때 쓰려고 함께 둔다."""
     y = str(today.year)
     quarters = [0.0, 0.0, 0.0, 0.0]
+    sales_q = [0.0, 0.0, 0.0, 0.0]
     sales = 0.0
     estimated = 0
     for r in rows:
@@ -193,11 +197,13 @@ def kpi(rows: list[dict], today: dt.date) -> dict:
         if day and day.startswith(y):
             quarters[(int(day[5:7]) - 1) // 3] += amt
             estimated += guessed
-        ship_dates = sorted(s.get("date") for s in r.get("shipments") or [] if s.get("date"))
-        if ship_dates and ship_dates[0].startswith(y):
+        rev = flow.revenue_date(r)
+        if rev and rev.startswith(y):
+            sales_q[(int(rev[5:7]) - 1) // 3] += amt
             sales += amt
     return {"year": today.year, "quarter": (today.month - 1) // 3 + 1, "won_by_quarter": [round(q) for q in quarters],
-            "won_total": round(sum(quarters)), "sales": round(sales), "won_estimated": estimated}
+            "won_total": round(sum(quarters)), "sales": round(sales), "sales_by_quarter": [round(q) for q in sales_q],
+            "won_estimated": estimated}
 
 
 async def get_deal(db: AsyncSession, deal_id: int, today: dt.date) -> dict:
@@ -447,8 +453,9 @@ async def set_rental_return(db: AsyncSession, deal_id: int, user_id: int | None,
         if ret.get("done"):
             # 회수한 S/N 이 이미 다른 건에 다시 등록됐으면 막는다 — 같은 제품이 두 건에서 대여 중이 되지 않게(사용자 2026-11-16)
             again = (await db.execute(text(
-                "SELECT u.serial, s.customer, s.deal_no FROM product_units u JOIN product_units o "
-                "  ON lower(o.maker) = lower(u.maker) AND lower(o.serial) = lower(u.serial) AND o.id <> u.id AND o.status <> '회수' "
+                "SELECT COALESCE(NULLIF(u.serial, ''), u.und_serial) AS serial, s.customer, s.deal_no FROM product_units u JOIN product_units o "
+                "  ON ((u.serial <> '' AND lower(o.maker) = lower(u.maker) AND lower(o.serial) = lower(u.serial)) "
+                "      OR (u.und_serial <> '' AND lower(o.und_serial) = lower(u.und_serial))) AND o.id <> u.id AND o.status <> '회수' "
                 "LEFT JOIN sales_deals s ON s.id = o.deal_id "
                 "WHERE u.deal_id = :d AND u.status = '회수' AND NOT u.no_serial AND NOT o.no_serial LIMIT 3"), {"d": deal_id})).mappings().all()
             if again:
@@ -781,12 +788,14 @@ def _expected_supply(d: dict) -> float | None:
     amount = q.get("amount")
     if not amount:
         return None
-    return amount / (1 + VAT_RATE) if q.get("vat_included") else amount
+    from .. import money
+    return float(money.supply_of(amount)) if q.get("vat_included") else amount
 
 
 async def add_invoice(db: AsyncSession, deal_id: int, user_id: int | None, p: dict) -> None:
     d = await _lock(db, deal_id)
-    vat = p["vat"] if p.get("vat") is not None else round(p["supply"] * VAT_RATE)
+    from .. import money
+    vat = p["vat"] if p.get("vat") is not None else money.vat_of(p["supply"])     # 원 미만 절삭(사용자 2026-11-20)
     entry = {"date": p["date"].isoformat(), "supply": p["supply"], "vat": vat, "total": p["supply"] + vat,
              "issuer_note": p.get("issuer_note") or None, "partial": False}
     invoices = d["invoices"] + [entry]
@@ -1082,7 +1091,7 @@ async def reset_to_quote(db: AsyncSession, deal_id: int, user_id: int | None) ->
     await dn.release(db, _statement_nos(d.get("statement")))       # 지운 거래명세서 번호는 다시 쓴다(사용자 2026-11-18)
     await db.execute(text(
         "UPDATE sales_deals SET won = NULL, won_date = NULL, pay_case = NULL, statement = NULL, order_state = NULL, "
-        "pay_terms = '[]'::jsonb, payments = '[]'::jsonb, shipments = '[]'::jsonb, invoices = '[]'::jsonb, "
+        "pay_terms = '[]'::jsonb, payments = '[]'::jsonb, shipments = '[]'::jsonb, invoices = '[]'::jsonb, tax_invoices = '[]'::jsonb, "
         "po_files = '[]'::jsonb, paid_full = FALSE, shipped_note = FALSE, dropped = FALSE, drop_reason = NULL, "
         "updated_at = NOW() WHERE id = :i"), {"i": deal_id})
     from . import units                                # 시리얼 기록은 남기고 출하만 풀기(사용자 2026-10-19)
@@ -1162,6 +1171,72 @@ async def unconfirm_term(db: AsyncSession, deal_id: int, user_id: int | None, in
     await _save(db, deal_id, payments=keep, paid_full=False)
     await _log(db, deal_id, user_id, "remove_payment", {"term": index})
     await db.commit()
+
+
+# ── 세금계산서 회차(사용자 2026-11-20) ────────────────────────────────────────
+
+def _tax_rows(d: dict) -> list[dict]:
+    """저장한 회차, 없으면 결제 조건에서 가져온 초안(그대로 저장 가능한지 검사)."""
+    saved = list(d.get("tax_invoices") or [])
+    if saved:
+        return [dict(t) for t in saved]
+    try:
+        return flow.clean_tax_terms([{"label": t.get("label"), "pct": t.get("pct")} for t in d.get("pay_terms") or []])
+    except ValueError as e:
+        raise DealError("세금계산서 회차를 먼저 정해 주세요 — [회차 고치기]에서 선금·중도금·잔금 %(합 100)를 적습니다.") from e
+
+
+async def set_tax_terms(db: AsyncSession, deal_id: int, user_id: int | None, raw: list[dict]) -> None:
+    """세금계산서 회차(구분·%) 저장. 확인한 회차가 있으면 구분·% 를 바꿀 수 없다(발행일·확인은 [확인 취소]로)."""
+    d = await _lock(db, deal_id)
+    try:
+        ts = flow.clean_tax_terms(raw)
+    except ValueError as e:
+        raise DealError(str(e)) from e
+    old = list(d.get("tax_invoices") or [])
+    if any(t.get("confirmed") for t in old):
+        same = len(old) == len(ts) and all(o.get("label") == n["label"] and float(o.get("pct") or 0) == n["pct"] for o, n in zip(old, ts))
+        if not same:
+            raise DealError("확인한 세금계산서 회차가 있어 회차를 바꿀 수 없습니다 — 회차마다 [확인 취소]를 먼저 눌러 주세요.", 409)
+        return
+    keep = {i: o for i, o in enumerate(old) if i < len(ts) and o.get("label") == ts[i]["label"]}
+    rows = [{**ts[i], **({"date": keep[i]["date"]} if keep.get(i, {}).get("date") else {})} for i in range(len(ts))]
+    await _save(db, deal_id, tax_invoices=rows)
+    await _log(db, deal_id, user_id, "tax_terms", {"terms": [f"{t['label']} {t['pct']:g}%" for t in ts]})
+    await db.commit()
+
+
+async def confirm_tax(db: AsyncSession, deal_id: int, user_id: int | None, user_name: str, index: int, day: dt.date) -> None:
+    """세금계산서 회차 [확인] — 발행일 필수. 처음이면 결제 조건 초안을 그대로 저장한 뒤 확인. 모두 확인되면 마지막 회차 발행일이 매출일."""
+    d = await _lock(db, deal_id)
+    rows = _tax_rows(d)
+    if not 0 <= index < len(rows):
+        raise DealError("세금계산서 회차가 없습니다. 화면을 새로 열어 주세요.", 404)
+    if rows[index].get("confirmed"):
+        raise DealError("이미 확인한 세금계산서 회차입니다.")
+    rows[index] = {**rows[index], "date": day.isoformat(), "confirmed": True, "by": user_name, "at": _now_iso()}
+    await _save(db, deal_id, tax_invoices=rows)
+    view_rows = flow.tax_invoices({**d, "tax_invoices": rows})
+    r = view_rows["rows"][index]
+    await _log(db, deal_id, user_id, "tax_confirm", {"label": r["label"], "pct": r["pct"], "date": r["date"], "supply": r["amount"],
+                                                     **({"매출일": view_rows["revenue_date"]} if view_rows["done"] else {})})
+    await db.commit()
+
+
+async def unconfirm_tax(db: AsyncSession, deal_id: int, user_id: int | None, index: int) -> None:
+    """세금계산서 회차 확인 취소 — 발행일은 남긴다(다시 확인할 때 고칠 수 있음). 매출일도 함께 풀린다."""
+    d = await _lock(db, deal_id)
+    rows = list(d.get("tax_invoices") or [])
+    if not 0 <= index < len(rows) or not rows[index].get("confirmed"):
+        raise DealError("확인하지 않은 세금계산서 회차입니다.", 404)
+    rows[index] = {k: v for k, v in rows[index].items() if k not in ("confirmed", "by", "at")}
+    await _save(db, deal_id, tax_invoices=rows)
+    await _log(db, deal_id, user_id, "tax_unconfirm", {"label": rows[index].get("label"), "date": rows[index].get("date")})
+    await db.commit()
+
+
+def _now_iso() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
 
 MEETING_FIELDS = ("customer", "contact", "meeting_date", "writer", "category", "robot", "requirements", "notes")

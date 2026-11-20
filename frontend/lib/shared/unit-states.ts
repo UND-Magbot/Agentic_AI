@@ -13,6 +13,8 @@ export const UNIT_STATES = [
 /** 자체 개발 제품(사용자 2026-11-19) — 구매 '보유 후 자체 개발용' 입고에서 자동으로 들어오는 S/N 의 상태.
  *  영업 건 S/N 등록의 상태 고르기(UNIT_STATES)에는 넣지 않는다. */
 export const DEV_STATE = { code: "SD", en: "Self-Development", label: "개발" } as const;
+/** 판매용 입고 제품(사용자 2026-11-20) — 입고하면 'SP · 판매 예정', 출하 S/N 과 같으면 그 판매 건으로 넘어간다. 고르기에는 없음 */
+export const SALE_STATE = { code: "SP", en: "Sale-Planned", label: "판매 예정" } as const;
 
 /** 상태 배지 색(사용자 2026-10-22 — 판매·대여·A/S 중이 한눈에) */
 export const UNIT_STATE_TONE: Record<string, string> = {
@@ -23,6 +25,7 @@ export const UNIT_STATE_TONE: Record<string, string> = {
   E: "bg-foreground/8 text-foreground-muted",
   O: "bg-foreground/8 text-foreground-muted",
   SD: "bg-cyan-500/12 text-cyan-700 dark:text-cyan-300",
+  SP: "bg-sky-500/12 text-sky-700 dark:text-sky-300",
 };
 
 /** 대여 단계(사용자 2026-10-27) — 따로 저장하지 않고 S/N 진행(status)으로 읽는다: 등록 = 대여 전, 출하 = 대여 중, 회수 = 대여 완료.
@@ -37,6 +40,6 @@ export function rentalPhase(code: string, status: string | null | undefined, ren
 
 /** 'S' → 'S · 판매' (모르는 값은 그대로) */
 export function unitStateText(code: string): string {
-  const s = [...UNIT_STATES, DEV_STATE].find((x) => x.code === code);
+  const s = [...UNIT_STATES, DEV_STATE, SALE_STATE].find((x) => x.code === code);
   return s ? `${s.code} · ${s.label}` : code;
 }

@@ -175,7 +175,7 @@ def build_xlsx(data: dict[str, Any]) -> bytes:
     if k.get("won_estimated"):
         sm.append([f"※ 수주일이 없는 옮긴 건 {k['won_estimated']}건은 첫 세금계산서 발행일(없으면 출하일·견적일)로 셈"])
     sm.append([])
-    sm.append([f"{k.get('year')}년 매출액(공급가액, 출하일 기준)", k.get("sales")])
+    sm.append([f"{k.get('year')}년 매출액(공급가액, 잔금 세금계산서 발행일 기준)", k.get("sales")])
     sm.append([])
     sm.append(["단계", "건수"])
     for name, n in (data.get("summary") or {}).items():

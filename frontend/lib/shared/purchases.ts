@@ -87,7 +87,9 @@ export interface PoUploadRead {
   items: PoItem[];
   /** 파일에서 읽은 머리(공급사·계좌·Comments — 예전 양식 포함). 발행하면 발주서 머리에 들어가 [발주서 고치기]에서 그대로 고친다 */
   header?: { supplier?: Partial<PoHeader["supplier"]>; bank?: string; address?: string; swift?: string; account_no?: string;
-             account_holder?: string; comments?: string };
+             account_holder?: string; comments?: string;
+             /** 파일 품목 표 위의 'VAT 포함/별도' 글자(없으면 비움) */
+             vat_included?: boolean };
 }
 
 export interface PoHeader {
@@ -103,6 +105,8 @@ export interface PoHeader {
   account_holder: string;
   issuer: { name: string; title: string; address: string; tel: string; fax: string; attn: string };
   comments: string;
+  /** 국내 발주서 금액 VAT 포함(사용자 2026-11-20) — 비우면 VAT 별도. 해외는 늘 별도 */
+  vat_included?: boolean;
 }
 
 export interface PoDraft {
@@ -122,7 +126,9 @@ export interface PoDraft {
 }
 
 /** 보유 후 자체 개발용 입고의 제품 한 대 — 제조사 S/N · UND S/N 두 줄 + S/N 사진(사용자 2026-11-18) */
-export interface ReceiptUnit { maker_sn: string; und_sn: string; photos: string[]; sw_owner?: string; item_photos?: string[] }
+export interface ReceiptUnit { maker_sn: string; und_sn: string; photos: string[]; sw_owner?: string; item_photos?: string[];
+  /** 판매용 — 그 대의 고객사·우리 측 담당자(사용자 2026-11-20) */
+  customer?: string; owner?: string }
 export interface ReceiptPart { qty: number; customer: string; owner: string; sw_owner?: string; note: string; photos?: string[] }
 
 export interface ReceiptLine {
@@ -209,11 +215,17 @@ export interface PurchaseRow {
     upload: PoUploadFile | null;
     /** AI 판독 실패로 [버그 신고 후 넘어가기] 해 파일만 발행(사용자 2026-11-11) — 품목은 [발주서 고치기]에서 채움 */
     forced?: { bug_report: string; at: string; by: string } | null;
+    /** 국내 발주서 금액 VAT 포함(사용자 2026-11-20) — total 은 발주서에 찍힌 합계 */
+    vat_included?: boolean;
+    /** 발주 금액 = 늘 공급가액(VAT 별도, 사용자 2026-11-20) — VAT 포함 발주서면 total − 부가세(원 미만 절삭) */
+    supply?: number | null;
     /** 같은 번호로 고친 파일을 올려 교체하기 전 내용(사용자 2026-11-16 — 번호 하나 = 발주서 하나, 교체 전 파일은 보관) */
     replaced: PoReplaced[];
     /** 예전 판(다시 발행하기 전) — 판마다 보기·다시 다운로드(사용자 2026-11-11, 견적서와 같게) */
     history: { no: string; date: string; total: number; issued_at: string; issued_by: string; revision: number; file_name: string | null;
                upload: PoUploadFile | null; replaced: PoReplaced[];
+               /** 그 판의 금액 VAT 포함(사용자 2026-11-20) · 공급가액(발주 금액) */
+               vat_included?: boolean; supply?: number | null;
                /** [발주서 발행 취소]로 거둔 판(사용자 2026-11-18) */
                cancelled_at?: string | null; cancelled_by?: string | null }[];
   };

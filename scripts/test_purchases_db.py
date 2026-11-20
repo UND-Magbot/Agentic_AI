@@ -300,8 +300,8 @@ async def run() -> None:
               and r0["lines"][0]["photos"] == ["a" * 32 + ".jpg"], "부분 입고 기록(운송장·사진, 잘못된 사진 이름 버림)")
         # 판매용 입고(기본) — S/N 없이 품목마다 고객사·우리 측 담당자(사용자 2026-11-18)
         check(r0["purpose"] == "sale" and r0["lines"][0]["customer"] == "LG CNS" and r0["lines"][0]["owner"] == "Lucas"
-              and "units" not in r0["lines"][0] and p["stage"] == "입고 대기" and not p["in_transit"],
-              "판매용 입고(고객사·담당자, S/N 없음), 입고 기록이 들어오면 배송 중 → 입고 대기", p["stage"])
+              and r0["lines"][0].get("units") == [] and p["stage"] == "입고 대기" and not p["in_transit"],
+              "판매용 입고(고객사·담당자, S/N 칸은 비워 둠), 입고 기록이 들어오면 배송 중 → 입고 대기", p["stage"])
         await svc.update_receipt(db, pid, uid, "test", 0, {"date": TODAY, "carrier": "경동택배", "lines": [{"line_no": 0, "qty": 100}]})
         await svc.add_receipt(db, pid, uid, "test", {"date": TODAY, "lines": [{"line_no": 0, "qty": 100}]})
         await expect_err(svc.undo_shipping(db, pid, uid, admin=False), "입고 뒤 직원 배송 시작 취소 거절", "입고 기록")

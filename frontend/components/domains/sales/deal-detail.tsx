@@ -14,6 +14,7 @@ import { clearDraft, confirmLeave, draftTime, readDraft, useUnsaved, writeDraft 
 import { Icon } from "@/components/shared/ui/icon";
 import { QuoteUploadDialog } from "@/components/domains/sales/quote-upload-dialog";
 import { DealAsIntake } from "@/components/domains/sales/product-units-tab";
+import { TaxInvoiceBlock } from "@/components/domains/sales/deal-tax-invoices";
 import { ShipForm, TERMS_CLEAR_ASK, TermsEditor, shipCancelAsk, shipmentDraft, statementCancelAsk, type ShipDraft } from "@/components/domains/sales/deal-flow";
 import { SnButton, SnPanel, flatName, loadSnView, shipmentSnLines } from "@/components/domains/sales/unit-register";
 import { DealRequestError, Field, INPUT, Muted, RegionBadge, StageChip, UnitStateBadge, dealRequest, eventDetail, eventLabel, quoteVer, shortDate, stamp, termExpect, todayIso, won } from "@/components/domains/sales/deal-format";
@@ -67,6 +68,10 @@ export function DealDetail({ row, admin = false, focus, onClose, onChanged, onMe
 
   // 닫기(Esc·바깥 누름·✕) — 저장 안 한 작성 칸이 있으면 먼저 묻는다(사용자 2026-11-18)
   const tryClose = () => { void confirmLeave().then((ok) => { if (ok) onClose(); }); };
+  // 바깥(어두운 배경) 클릭 — 출하·결제 조건·세금계산서 등 작성 칸이 열려 있으면 닫지 않는다(사용자 2026-11-20: 쓰다가 꺼지지 않게).
+  // 닫기는 X·Esc 로(저장 안 한 내용은 그때 물음)
+  const asideRef = useRef<HTMLElement>(null);
+  const backdropClose = () => { if (!asideRef.current?.querySelector('[data-editing="true"]')) tryClose(); };
   const closeRef = useRef(tryClose);
   useEffect(() => { closeRef.current = tryClose; });
   useEffect(() => {
@@ -168,8 +173,8 @@ export function DealDetail({ row, admin = false, focus, onClose, onChanged, onMe
 
   return (
     <AdminCtx.Provider value={admin}>
-    <div className="fixed inset-0 z-40 flex justify-end bg-black/25" onClick={tryClose}>
-      <aside role="dialog" aria-label={`${deal.display_no ?? deal.deal_no ?? "번호 미부여"} 상세`} onClick={(e) => e.stopPropagation()}
+    <div className="fixed inset-0 z-40 flex justify-end bg-black/25" onClick={backdropClose}>
+      <aside ref={asideRef} role="dialog" aria-label={`${deal.display_no ?? deal.deal_no ?? "번호 미부여"} 상세`} onClick={(e) => e.stopPropagation()}
              className="scroll-thin h-full w-full max-w-[680px] overflow-y-auto bg-background shadow-2xl"
              style={panelW ? { maxWidth: panelW } : undefined}>
         <div className="sticky top-0 z-10 border-b border-border bg-background/95 px-5 py-4 backdrop-blur">
@@ -319,6 +324,8 @@ export function DealDetail({ row, admin = false, focus, onClose, onChanged, onMe
 
           {!isShipOnly && <InvoiceHistory deal={deal} />}
           {!isShipOnly && !free && !beforeQuote && <div id={`deal-pay-${deal.id}`} className="scroll-mt-28"><PaymentBlock deal={deal} busy={busy} act={act} /></div>}
+          {/* 세금계산서 회차 — 출하 바로 위(사용자 2026-11-20). 마지막 회차 발행일 = 매출일 */}
+          {!isShipOnly && !free && !beforeQuote && <TaxInvoiceBlock deal={deal} busy={busy} act={act} />}
           {!beforeQuote && <ShipmentBlock deal={deal} busy={busy} act={act} onPhoto={setPhoto} onReload={reload} editReq={shipEditReq} />}
           <ConfirmDialog open={!!blocked} icon="help" variant="default" title={blocked?.title ?? "처리하지 못했습니다"}
                          description={<>

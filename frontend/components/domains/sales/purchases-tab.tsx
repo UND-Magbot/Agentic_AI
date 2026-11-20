@@ -200,7 +200,7 @@ export function PurchasesTab({ initialOpen = null }: { initialOpen?: number | nu
           <thead>
             <tr className="border-b border-border bg-foreground/[0.03] text-left text-[12px] text-foreground-muted">
               {selecting && <th className="w-10 px-3 py-2" />}
-              {["공급사 · 품목", "구매 사유", "발주번호", "담당", "발주 금액", "입고 예정일", "상태", "알림", "최근 변경"].map((h) => (
+              {["공급사 · 품목", "구매 사유", "발주번호", "담당", "발주 금액 (VAT 별도)", "입고 예정일", "상태", "알림", "최근 변경"].map((h) => (
                 <th key={h} className={cn("whitespace-nowrap px-3 py-2 font-semibold", h.startsWith("발주 금액") && "text-right")}>{h}</th>
               ))}
             </tr>
@@ -227,7 +227,6 @@ export function PurchasesTab({ initialOpen = null }: { initialOpen?: number | nu
                 <td className="whitespace-nowrap px-3 py-2">{r.owner || <Muted>-</Muted>}</td>
                 <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums">
                   {r.total == null ? <Muted>-</Muted> : won(r.total, r.currency)}
-                  {r.total != null && r.currency === "KRW" && <div className="text-[11px] text-foreground-subtle">VAT 별도</div>}
                 </td>
                 <td className="whitespace-nowrap px-3 py-2"><ExpectedDate row={r} /></td>
                 <td className="whitespace-nowrap px-3 py-2">

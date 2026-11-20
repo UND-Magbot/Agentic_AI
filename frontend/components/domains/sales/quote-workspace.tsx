@@ -12,6 +12,7 @@ import { RichText } from "@/components/domains/sales/agent-chat";
 import { ConfirmDialog, POPUP_BTN_HOVER } from "@/components/shared/ui/confirm-dialog";
 import { Icon } from "@/components/shared/ui/icon";
 import { useDragMove } from "@/components/shared/ui/use-drag-move";
+import { supplyOf, withVat as vatWithCut } from "@/lib/shared/money";
 import { cn, keepInPlace, scrollChatToEnd } from "@/lib/shared/utils";
 import { AutoTextarea, LineArea, MAIN_BLOCK, MAIN_DEFAULT, QuoteBlocks, blockOf, monthFactor, negoCut, usd, usdOf } from "./quote-blocks";
 import { QuotePurposeDialog } from "./quote-purpose-dialog";
@@ -812,7 +813,7 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
   // 부가세 포함 견적서(사용자 2026-10-28) — 견적서엔 단가부터 × 1.1(원 단위 반올림, backend quote_session.with_vat 와 같게).
   // 작성 칸·저장 값은 공급가액 그대로, 합계 칸에는 견적서에 찍힐 Total 과 공급가액을 함께
   const vatOn = !en && (!free || charges) && d.form.vat === "included";
-  const withVat = (v: number) => Math.round((v * 11) / 10);
+  const withVat = vatWithCut;                              // × 1.1 원 미만 절삭(사용자 2026-11-20, money.ts)
   const vatTotal = billed.reduce((s, l) => s + (l.qty ?? 0) * withVat(l.unit_price ?? 0) * monthFactor(l, rentMonths), 0)
     + (dv?.freight ? withVat(d.delivery.freight ?? 0) : 0)
     + (dv?.work ? (d.work.people ?? 0) * (d.work.days ?? 0) * withVat(d.work.rate ?? WORK_RATE) : 0)
@@ -820,7 +821,7 @@ export function QuoteWorkspace({ id, onBack }: { id: number; onBack: () => void 
   // 견적서 Total(월 납입금 기준) — 포함이면 × 1.1 값, 별도면 공급가액
   const docTotal = vatOn ? vatTotal : dirty ? total : q.subtotal;
   // 부가세 포함일 때 공급가액 — NEGO 는 적은 금액 ÷ 1.1(backend quote_session.nego_supply 와 같게)
-  const supplyTotal = vatOn ? baseKrw - Math.round((nego(baseKrw, false) * 10) / 11) : total;
+  const supplyTotal = vatOn ? baseKrw - supplyOf(nego(baseKrw, false)) : total;
   const hangul = q.hangul ?? [];
   // 번역 전 칸은 [발행] 때 미리보기로 먼저 번역·확인 — 발행을 막는 건 채울 것(problems)뿐
   const blocked = q.problems.length > 0;

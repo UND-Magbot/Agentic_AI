@@ -13,6 +13,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { askChoice, askConfirm, askText } from "@/components/shared/ui/confirm-host";
 import { StockDirect } from "@/components/domains/sales/stock-direct";
+import { StockExcelButtons } from "@/components/domains/sales/stock-excel";
 import { pickPhotos, uploadPhoto } from "@/components/domains/sales/sn-photos";
 import { INPUT, Muted, shortDate, stamp } from "@/components/domains/sales/deal-format";
 import { productKey, STOCK_PURPOSE_LABEL, stockDetailText, stockLabel, stockRequest, type StockHistoryEntry, type StockListData,
@@ -25,8 +26,22 @@ const STATUS_TONE: Record<string, string> = {
   "수리 필요": "bg-red-500/12 text-red-700 dark:text-red-300",
   "수리 중": "bg-amber-500/12 text-amber-800 dark:text-amber-300",
   "사용 중": "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300",
+  "대여 중": "bg-violet-500/12 text-violet-700 dark:text-violet-300",
   "기타": "bg-foreground/8 text-foreground-muted",
 };
+/** 영업 건 대여로 나간 제품(사용자 2026-11-20) — 대여 S/N 등록으로만 들어가고 회수하면 자동으로 '대기 중'. 손으로 고르지 않는다 */
+const RENTED = "대여 중";
+/** 손으로 고를 수 있는 상태 — '대여 중' 빼고(지금 그 상태면 그대로 보임) */
+const pickable = (states: string[], cur?: string) => states.filter((s) => s !== RENTED || s === cur);
+/** 제조사 S/N · UND S/N 두 줄 칸 */
+function SnLines({ r }: { r: StockRow }) {
+  return r.no_sn ? <Muted>S/N 없는 품목</Muted> : (
+    <>
+      <div><span className="mr-1 font-sans text-[11px] text-foreground-subtle">제조사</span>{r.maker_sn || <Muted>-</Muted>}</div>
+      <div><span className="mr-1 font-sans text-[11px] text-foreground-subtle">UND</span>{r.und_sn || <Muted>-</Muted>}</div>
+    </>
+  );
+}
 const SELECT = "h-8 rounded-lg border bg-surface px-2 text-[12.5px] outline-none focus:border-accent";
 /** 한 대 줄의 사진 칸에 나란히 보일 사진 수 — 넘치면 +N */
 const PHOTO_SHOW = 3;
@@ -270,7 +285,7 @@ export function StockTab({ onOpenPurchase }: { onOpenPurchase?: (purchaseId: num
 
   const heads = dev
     ? ["구분", "제조사", "제품명", "사진", "제조사 S/N · UND S/N", "S/W 담당자", "영업팀 담당자", "입고일", "상태", "최근 변경"]
-    : ["구분", "제조사", "제품명", "사진", "수량", "판매 고객사", "우리 담당자", "입고일", "상태", "최근 변경"];
+    : ["구분", "제조사", "제품명", "사진", "수량 · S/N", "판매 고객사", "우리 담당자", "입고일", "상태", "최근 변경"];
   const filtered = !!(q.trim() || cat || name || status || region || maker);
   const states = data?.states ?? [];
   const categories = data?.categories ?? [];
@@ -468,20 +483,13 @@ export function StockTab({ onOpenPurchase }: { onOpenPurchase?: (purchaseId: num
           {photoCell([r])}
           {dev ? (
             <>
-              <td className="whitespace-nowrap px-2 py-2 font-mono text-[12px] leading-5">
-                {r.no_sn ? <Muted>S/N 없는 품목</Muted> : (
-                  <>
-                    <div><span className="mr-1 font-sans text-[11px] text-foreground-subtle">제조사</span>{r.maker_sn || <Muted>-</Muted>}</div>
-                    <div><span className="mr-1 font-sans text-[11px] text-foreground-subtle">UND</span>{r.und_sn || <Muted>-</Muted>}</div>
-                  </>
-                )}
-              </td>
+              <td className="whitespace-nowrap px-2 py-2 font-mono text-[12px] leading-5"><SnLines r={r} /></td>
               {textCell([r], "sw_owner", "", "whitespace-nowrap")}
               {textCell([r], "owner", "", "whitespace-nowrap")}
             </>
           ) : (
             <>
-              <td className="px-2 py-2 tabular-nums">{sub ? "" : 1}</td>
+              <td className="whitespace-nowrap px-2 py-2 font-mono text-[12px] leading-5">{r.no_sn ? (sub ? "" : <span className="font-sans tabular-nums">1</span>) : <SnLines r={r} />}</td>
               {textCell([r], "customer", "", "max-w-[200px]")}
               {textCell([r], "owner", "", "whitespace-nowrap")}
             </>
@@ -543,7 +551,10 @@ export function StockTab({ onOpenPurchase }: { onOpenPurchase?: (purchaseId: num
             </>
           ) : (
             <>
-              <td className="px-2 py-2 font-semibold tabular-nums">{g.rows.length}</td>
+              <td className="whitespace-nowrap px-2 py-2 text-[12.5px]">
+                <b className="tabular-nums">{g.rows.length}개</b>
+                {!first.no_sn && <span className="ml-1 text-foreground-muted">S/N {g.rows.filter((r) => !noSn(r)).length}/{g.rows.length}</span>}
+              </td>
               {textCell(g.rows, "customer", "여러 고객사", "max-w-[200px]")}
               {textCell(g.rows, "owner", "여러 명", "whitespace-nowrap")}
             </>
@@ -632,8 +643,10 @@ export function StockTab({ onOpenPurchase }: { onOpenPurchase?: (purchaseId: num
             </button>
           ))}
         </div>
+        {/* 엑셀 내려받기·적용(사용자 2026-11-20) */}
+        <span className="ml-auto flex flex-wrap items-center justify-end gap-2"><StockExcelButtons onApplied={() => void load(purpose)} /></span>
         <button type="button" aria-pressed={edit} onClick={() => { setEdit((v) => !v); setDateEdit(null); }}
-                className={cn("ml-auto h-9 rounded-lg border px-3.5 text-[12.5px] font-semibold",
+                className={cn("h-9 rounded-lg border px-3.5 text-[12.5px] font-semibold",
                   edit ? "border-accent bg-accent text-white" : "border-border text-foreground hover:border-accent hover:text-accent")}>
           {edit ? "수정 마치기" : "✎ 수정"}</button>
         <button type="button" onClick={() => void startDirect()}
@@ -816,11 +829,13 @@ function StatusEditor({ row, states, onSave, onCancel }: {
   const [note, setNote] = useState(row.status_note);
   const [busy, setBusy] = useState(false);
   const changed = st !== row.status || note.trim() !== row.status_note;
+  const rented = row.status === RENTED;
   return (
     <div className="flex w-[220px] flex-col gap-1.5" onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); onCancel(); } }}>
-      <select value={st} onChange={(e) => setSt(e.target.value)} aria-label="상태" autoFocus className={cn(SELECT, "border-border")}>
-        {states.map((s) => <option key={s} value={s}>{s}</option>)}
+      <select value={st} onChange={(e) => setSt(e.target.value)} aria-label="상태" autoFocus disabled={rented} className={cn(SELECT, "border-border")}>
+        {pickable(states, row.status).map((s) => <option key={s} value={s}>{s}</option>)}
       </select>
+      {rented && <span className="text-[11.5px] text-foreground-subtle">영업 건 대여로 나간 제품 — 회수하면 자동으로 &lsquo;대기 중&rsquo;이 됩니다. 메모만 고칠 수 있습니다.</span>}
       <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} maxLength={500} placeholder="메모(선택) — 상태 아랫줄에 보입니다"
                 className={cn(INPUT, "h-auto py-1.5 text-[12.5px]")} />
       <div className="flex justify-end gap-1">
@@ -837,11 +852,11 @@ function StatusEditor({ row, states, onSave, onCancel }: {
 function CountStatusEditor({ rows, states, onSave, onCancel }: {
   rows: StockRow[]; states: string[]; onSave: (ids: number[], status: string, note: string) => Promise<void>; onCancel: () => void;
 }) {
-  const have = countByStatus(rows, states);
+  const have = countByStatus(rows, pickable(states));
   const [from, setFrom] = useState(have[0]?.[0] ?? states[0]);
   const fromRows = rows.filter((r) => r.status === from);
   const [n, setN] = useState(fromRows.length);
-  const [to, setTo] = useState(states.find((s) => s !== from) ?? states[0]);
+  const [to, setTo] = useState(pickable(states).find((s) => s !== from) ?? states[0]);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const count = Math.max(0, Math.min(Math.floor(n) || 0, fromRows.length));
@@ -861,7 +876,7 @@ function CountStatusEditor({ rows, states, onSave, onCancel }: {
       <div className="flex items-center gap-1.5">
         <span className="text-foreground-muted">→</span>
         <select value={to} onChange={(e) => setTo(e.target.value)} aria-label="바꿀 상태" className={cn(SELECT, "border-border")}>
-          {states.map((s) => <option key={s} value={s}>{s}</option>)}
+          {pickable(states).map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
         <span className="text-foreground-muted">으로</span>
       </div>

@@ -142,6 +142,30 @@ export interface DealFlow {
   due: number | null;
   /** 무상 대여(합계 0원, 사용자 2026-10-30) — 목록 금액 '무상', 거래명세서·입금 없이 출하 */
   free?: boolean;
+  /** 세금계산서 회차(사용자 2026-11-20) — 마지막 회차까지 확인하면 그 발행일이 매출일 */
+  tax?: DealTax;
+}
+
+/** 세금계산서 회차 한 줄 — 공급가액(amount, 원 미만 절삭·마지막 회차가 끝전)·발행일·확인 */
+export interface DealTaxRow {
+  index: number;
+  label: string;
+  pct: number;
+  amount: number;
+  vat: number;
+  total: number;
+  date: string | null;
+  confirmed: boolean;
+  by: string | null;
+  at: string | null;
+}
+export interface DealTax {
+  rows: DealTaxRow[];
+  /** 저장했는지 — 아니면 결제 조건 % 를 가져온 초안 */
+  saved: boolean;
+  done: boolean;
+  /** 매출일 = 마지막 회차(잔금) 세금계산서 발행일 */
+  revenue_date: string | null;
 }
 
 export interface DealMeeting {
@@ -271,13 +295,15 @@ export interface DealRow {
   events?: DealEvent[];
 }
 
-/** 올해 분기별 수주금액(수주일 기준)·올해 매출액(출하일 기준) — 공급가액, 드랍 제외 */
+/** 올해 분기별 매출액·올해 매출액 — 공급가액, 매출일 = 잔금 세금계산서 발행일(사용자 2026-11-20), 드랍 제외.
+ *  수주금액(won_*)은 AI 답에서만 씀 */
 export interface DealKpi {
   year: number;
   quarter: number;
   won_by_quarter: number[];
   won_total: number;
   sales: number;
+  sales_by_quarter: number[];
   /** 수주일이 없어(엑셀에서 옮긴 건) 첫 계산서·출하·견적일로 대신 센 건수 */
   won_estimated: number;
 }
@@ -380,6 +406,10 @@ export interface ProductUnit {
   stock_status?: string | null;
   stock_sw_owner?: string | null;
   stock_display_name?: string | null;
+  /** 재고 줄 목적(sale 판매용 입고 · dev 자체 개발용)·판매 고객사·우리 담당자(사용자 2026-11-20) */
+  stock_purpose?: string | null;
+  stock_customer?: string | null;
+  stock_owner?: string | null;
 }
 
 /** S/N 상세의 자체 개발 제품 정보 — 구매 건·담당자·재고 상태·전체 사진 */
@@ -400,6 +430,9 @@ export interface UnitStockInfo {
   po_name: string;
   /** 재고 제조사(비면 공급사) */
   maker: string;
+  /** 판매용 입고 — 판매 고객사(사용자 2026-11-20) */
+  purpose?: string;
+  customer?: string;
 }
 
 export interface WarrantyPolicy { id?: number; keyword: string; months: number | null; note: string }
@@ -462,9 +495,23 @@ export interface AsCase {
 /** A/S 이력 한 줄 — at = 한국 시각 'YYYY-MM-DD HH:MM', kind = 접수·진행 중·완료(상태) · 수정(내용만) */
 export interface AsCaseEvent { at: string; kind: "접수" | "진행 중" | "완료" | "수정"; label: string; by: string | null; detail: string }
 
+/** S/N 이력 한 줄(사용자 2026-11-20) — 구매 입고 → 판매 예정·자체 개발 → 판매·대여 → 출하 → 회수 → 재고로 */
+export interface UnitTimelineEntry {
+  /** 날짜(YYYY-MM-DD, day=true) 또는 기록한 시각(ISO) */
+  at: string | null;
+  day: boolean;
+  title: string;
+  detail: string;
+  by: string | null;
+  link?: { kind: "purchase"; id: number } | { kind: "deal"; id: number; biz: DealBiz; free: boolean };
+  /** A/S 접수·진행 중·완료 줄 — 그 A/S 기록 번호(자세한 것은 아래 A/S 이력) */
+  as_case?: number;
+}
+
 export interface UnitDetail extends ProductUnit {
   shipment: { date: string | null; carrier: string | null; tracking: string[] | null; receiver: string | null } | null;
   stock?: UnitStockInfo | null;
+  timeline?: UnitTimelineEntry[];
   cases: AsCase[];
 }
 

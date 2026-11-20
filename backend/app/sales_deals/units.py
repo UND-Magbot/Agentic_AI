@@ -205,7 +205,7 @@ async def rebind_units(db: AsyncSession, src: tuple[int, int], dst: tuple[int, i
     (다른 판이면 그 판에 그대로, 같은 판이면 품목 줄 없이 — 출하 카드·제품 검색에서 계속 보임), 출하 전 S/N 은 지운다(번호만 적어 둔 것).
     반환 = 화면·이력에 남길 안내(없으면 ""). 커밋하지 않는다."""
     rs = (await db.execute(text(
-        "SELECT u.id, u.line_no, u.line_name, u.serial, u.shipment_index, "
+        "SELECT u.id, u.line_no, u.line_name, COALESCE(NULLIF(u.serial, ''), u.und_serial) AS serial, u.shipment_index, "
         "  EXISTS (SELECT 1 FROM as_cases a WHERE a.unit_id = u.id) AS has_as "
         "FROM product_units u WHERE u.quote_id = :q AND u.quote_revision = :r AND u.status <> :gone AND u.line_no IS NOT NULL "
         "ORDER BY u.line_no, (u.shipment_index IS NULL), u.id"),
@@ -300,6 +300,7 @@ def _unit_view(r: Any) -> dict:
 
 
 DEV_STATE = "SD"   # 자체 개발 제품(purchases/stock.py) — 상태 'SD · 개발', 영업 건 S/N 상태 고르기에는 없다
+SALE_STATE = "SP"  # 판매용 입고 제품 'SP · 판매 예정'(사용자 2026-11-20) — 출하 S/N 과 같으면 그 판매 건으로 넘어간다
 DEV_GONE = "입고 삭제"   # 입고 기록에서 빠졌지만 A/S 기록이 있어 남긴 자체 개발 S/N — 같은 번호를 영업 건에 다시 쓸 수 있다
 
 
@@ -308,7 +309,9 @@ _UNIT_COLS = ("id, deal_id, quote_id, quote_revision, issue_no, line_no, line_na
 # 자체 개발 제품(stock_item_id, 사용자 2026-11-19) — 구매 건·재고 칸. 영업 건이 없어 고객사 대신 이것을 보인다
 _STOCK_JOIN = ("LEFT JOIN stock_items st ON st.id = u.stock_item_id LEFT JOIN purchases pu ON pu.id = st.purchase_id")
 _STOCK_COLS = ("st.purchase_id AS stock_purchase_id, pu.supplier AS stock_supplier, pu.po->>'no' AS stock_po_no, "
-               "st.status AS stock_status, st.sw_owner AS stock_sw_owner, st.display_name AS stock_display_name")
+               "st.status AS stock_status, st.sw_owner AS stock_sw_owner, st.display_name AS stock_display_name, "
+               # 판매용 입고(SP · 판매 예정, 사용자 2026-11-20) — 판매 고객사·우리 담당자
+               "st.purpose AS stock_purpose, st.customer AS stock_customer, st.owner AS stock_owner")
 
 
 # 시리얼이 속한 프로젝트(영업 건) — 제목·판매/대여·대여 조건. 시리얼 찾기에서 [프로젝트 건 열기]로 그 건 상세로 간다(사용자 2026-10-22)
@@ -356,12 +359,16 @@ async def issue_units(db: AsyncSession, deal_id: int, quote_id: int, revision: i
 
 
 async def save_units(db: AsyncSession, deal_id: int, user_id: int | None, quote_id: int, revision: int,
-                     payload: list[dict], *, partial: bool = False, shipment_index: int | None = None) -> dict:
+                     payload: list[dict], *, partial: bool = False, shipment_index: int | None = None,
+                     take_stock: bool = False) -> dict:
     """판 하나의 시리얼을 통째로 저장 — payload = [{line_no, units: [{id?, part_name, serial, maker, purpose,
     warranty_months, note}]}]. 빈 칸(시리얼 없음)은 저장하지 않는다. 이 판에서 빠진 줄은 지우되, 출하했거나 A/S 기록이 있으면 막는다.
     partial = 보낸 품목 줄만 저장(출하 기록의 줄마다 [S/N 등록], 사용자 2026-10-23) — 다른 줄의 S/N 은 그대로 둔다.
     shipment_index = 이미 남긴 출하 기록 번호(사용자 2026-10-23 — 출하 뒤에도 S/N 등록) — 보낸 줄의 아직 안 묶인 S/N 을
-    그 출하로 묶는다(그 출하일 = 무상 기간 시작일)."""
+    그 출하로 묶는다(그 출하일 = 무상 기간 시작일).
+    take_stock = 재고(판매용·자체 개발용 입고) 제품과 같은 S/N 을 이 건으로 가져온다(사용자 2026-11-20). False 인데 겹치면
+    STOCK_MATCH 로 알려 화면이 '판매하시겠습니까?/대여하시겠습니까?'를 묻게 한다. 가져온 S/N 줄은 재고 줄과의 연결(stock_item_id)을
+    그대로 지녀 구매 정보·A/S 이력이 이어지고, 재고 상태는 대여(R)면 '대여 중', 그 밖은 '판매 완료'(재고 목록에서 빠짐)."""
     d = await _lock(db, deal_id)
     iss = await _issue(db, d, quote_id, revision)
     ship_day = None
@@ -392,18 +399,14 @@ async def save_units(db: AsyncSession, deal_id: int, user_id: int | None, quote_
             maker0 = re.sub(r"\s+", " ", str(u.get("maker") or "")).strip()[:MAKER_MAX] or "UND"
             if serial and not und and maker0.lower() == "und" and not is_no_serial(serial):
                 und = serial                          # 우리 제품(제조사 UND) — 제조사 S/N 이 곧 UND S/N
-            uid = u.get("id") if u.get("id") in old else None
-            # 예전에 한 줄로만 남긴 S/N 을 그대로 다시 보내는 것(같은 줄의 다른 S/N 을 고칠 때)은 막지 않는다
-            legacy = uid is not None and old[uid]["serial"] == serial and not (old[uid].get("und_serial") or "") and not und
-            if not is_no_serial(serial) and not (serial and und) and not legacy:
-                raise DealError(f"'{ln['name'].splitlines()[0][:40]}' {'UND' if serial else '제조사'} S/N 을 적어 주세요 — "
-                                "제조사 S/N 과 UND S/N 은 함께 적습니다.")
+            # UND S/N 만 적은 것(우리 제품, 사용자 2026-11-20)은 그대로 저장 — 제조사 S/N 칸은 빈칸 그대로(같은 번호로 채우지 않음).
+            # 한쪽만 적은 것은 막지 않고 화면이 출하 저장 전에 '입력되지 않은 S/N 이 있는데 그래도?'로 묻는다
             part = re.sub(r"\s+", " ", str(u.get("part_name") or "")).strip()[:PART_MAX] or default_part(ln["name"])
             maker = re.sub(r"\s+", " ", str(u.get("maker") or "")).strip()[:MAKER_MAX] or "UND"
             purpose = state_code(u.get("purpose"))
             months = WARRANTY_MONTHS                       # 1년 고정(사용자 2026-10-30) — 보낸 개월 수는 무시
-            no_serial = is_no_serial(serial)
-            if not no_serial:
+            no_serial = is_no_serial(serial) if serial else not und      # 제조사 S/N 빈칸 + UND S/N = S/N 있는 제품
+            if not no_serial and serial:
                 key = (maker.lower(), serial.lower())
                 if key in seen:
                     raise DealError(f"같은 S/N이 두 번 있습니다: {serial} ({seen[key]}, {part})")
@@ -420,15 +423,42 @@ async def save_units(db: AsyncSession, deal_id: int, user_id: int | None, quote_
                                "no_serial": no_serial, "maker": maker, "purpose": purpose,
                                "warranty_months": months,
                                "note": str(u.get("note") or "")[:NOTE_MAX]}))
+    # 재고 제품과 같은 S/N(사용자 2026-11-20) — 영업 건에 아직 안 넘어간(deal_id 없음) 판매용·자체 개발용 입고 S/N 과 번호가 같으면
+    hits: dict[int, dict] = {}                           # keep 순번 → 재고 S/N 줄
+    cand = [(k, v) for k, (uid, v) in enumerate(keep) if uid is None and not v["no_serial"]]
+    if cand:
+        nums = sorted({x.lower() for _, v in cand for x in (v["serial"], v["und_serial"]) if x})
+        stock_rows = (await db.execute(text(
+            "SELECT u.id, u.serial, u.und_serial, st.id AS stock_id, st.purpose AS stock_purpose FROM product_units u "
+            "JOIN stock_items st ON st.id = u.stock_item_id WHERE u.deal_id IS NULL AND NOT u.no_serial "
+            "AND (lower(u.serial) = ANY(:n) OR (u.und_serial <> '' AND lower(u.und_serial) = ANY(:n)))"), {"n": nums})).mappings().all()
+        used: set[int] = set()
+        for k, v in cand:
+            mine = {x.lower() for x in (v["serial"], v["und_serial"]) if x}
+            r = next((r for r in stock_rows if r["id"] not in used
+                      and mine & {x.lower() for x in (r["serial"], r["und_serial"]) if x}), None)
+            if r:
+                used.add(r["id"])
+                hits[k] = dict(r)
+    if hits and not take_stock:
+        sale = any(h["stock_purpose"] == "sale" for h in hits.values())
+        rent = all(keep[k][1]["purpose"] == "R" for k in hits)
+        sns = ", ".join(dict.fromkeys(keep[k][1]["und_serial"] or keep[k][1]["serial"] for k in hits))
+        raise DealError(f"{'판매용' if sale else '자체 개발용'} 입고 제품과 겹치는 S/N이 있습니다. {'대여' if rent else '판매'}하시겠습니까?\n"
+                        f"겹치는 S/N: {sns}. 확인하면 그 제품을 이 건으로 가져옵니다 — "
+                        + ("공장 제품 재고 관리에서 '대여 중'이 되고, 회수하면 '대기 중'으로 돌아갑니다." if rent
+                           else "공장 제품 재고 관리 목록에서 빠지고 제품 S/N 관리에서 이 건으로 추적합니다."),
+                        409, code="STOCK_MATCH")
+    adopted = {h["id"] for h in hits.values()}
     gone = [i for i in old if i not in {uid for uid, _ in keep}]
     if gone:
-        busy = [old[i]["serial"] for i in gone if old[i]["shipment_index"] is not None]
+        busy = [old[i]["serial"] or old[i]["und_serial"] for i in gone if old[i]["shipment_index"] is not None]
         busy += (await db.execute(text("SELECT DISTINCT serial FROM as_cases WHERE unit_id = ANY(:g)"), {"g": gone})).scalars().all()
         if busy:
             raise DealError("출하했거나 A/S 기록이 있는 S/N은 지울 수 없습니다: " + ", ".join(dict.fromkeys(busy)))
     # 이번에 다시 쓰는 부품 밖(다른 줄·다른 판·다른 건)에 이미 있는 시리얼(같은 제조사) — 회수가 끝난 줄('회수')은 빼고:
     # 회수한 대여 제품은 다음 대여·판매 건에 새 줄로 다시 등록한다(사용자 2026-11-16)
-    reals = [(v["maker"].lower(), v["serial"].lower(), uid) for uid, v in keep if not v["no_serial"]]
+    reals = [(v["maker"].lower(), v["serial"].lower(), uid) for uid, v in keep if not v["no_serial"] and v["serial"]]
     await purge_deleted(db, [(m, s) for m, s, _ in reals])        # 지운 건에 남아 있던 같은 S/N 은 치우고 다시 쓴다(2026-11-18)
     if reals:
         dup = (await db.execute(text(
@@ -436,14 +466,14 @@ async def save_units(db: AsyncSession, deal_id: int, user_id: int | None, quote_
             "LEFT JOIN sales_deals s ON s.id = u.deal_id "
             "WHERE NOT u.no_serial AND (lower(u.maker), lower(u.serial)) IN (SELECT * FROM unnest(CAST(:m AS text[]), CAST(:s AS text[]))) "
             f"AND NOT (u.id = ANY(:own)) AND u.status NOT IN ('{RETURNED}', '{DEV_GONE}')"),
-            {"m": [m for m, _, _ in reals], "s": [s for _, s, _ in reals], "own": list(old)})).mappings().all()
+            {"m": [m for m, _, _ in reals], "s": [s for _, s, _ in reals], "own": list(old) + list(adopted)})).mappings().all()
         if dup:
             x = dup[0]
             if x["status"] == DELETED:                  # 지운 건의 S/N — 기록으로 남겨 둔 것(사용자 2026-10-26: 다시 쓰지 않는다)
                 raise DealError(f"지운 영업 건에 등록됐던 S/N입니다: {x['serial']} ({x['maker']}) — {x['note'][:80]}. "
                                 "S/N은 겹치지 않으므로 다시 등록할 수 없습니다. 번호를 확인해 주세요.")
             raise DealError(f"이미 등록된 S/N입니다: {x['serial']} ({x['maker']}) — "
-                            f"{'자체 개발 제품(제품 재고 관리)' if x['stock_item_id'] else x['customer'] or '고객사 없음'} "
+                            f"{'공장 제품 재고' if x['stock_item_id'] else x['customer'] or '고객사 없음'} "
                             f"{x['issue_no'] or ''}".rstrip())
     unds = [v["und_serial"].lower() for _, v in keep if v["und_serial"]]
     if unds:                                          # UND S/N 도 다른 건·다른 줄과 겹치지 않게(회수 끝난 줄 빼고)
@@ -453,14 +483,28 @@ async def save_units(db: AsyncSession, deal_id: int, user_id: int | None, quote_
             "SELECT u.und_serial, u.issue_no, s.customer, u.stock_item_id FROM product_units u LEFT JOIN sales_deals s ON s.id = u.deal_id "
             f"WHERE u.und_serial <> '' AND lower(u.und_serial) = ANY(:n) AND NOT (u.id = ANY(:own)) "
             f"AND u.status NOT IN ('{RETURNED}', '{DEV_GONE}')"),
-            {"n": unds, "own": list(old)})).mappings().first()
+            {"n": unds, "own": list(old) + list(adopted)})).mappings().first()
         if dup:
             raise DealError(f"이미 등록된 UND S/N입니다: {dup['und_serial']} — "
-                            f"{'자체 개발 제품(제품 재고 관리)' if dup['stock_item_id'] else dup['customer'] or '고객사 없음'} {dup['issue_no'] or ''}".rstrip())
+                            f"{'공장 제품 재고' if dup['stock_item_id'] else dup['customer'] or '고객사 없음'} {dup['issue_no'] or ''}".rstrip())
     if gone:
         await db.execute(text("DELETE FROM product_units WHERE id = ANY(:g)"), {"g": gone})
+    for k, h in hits.items():                       # 재고 S/N 줄을 이 건의 줄로(구매 정보·A/S 이력이 이어지게)
+        v = keep[k][1]
+        await db.execute(text(
+            "UPDATE product_units SET deal_id = :d, quote_id = :q, quote_revision = :r, issue_no = :no, line_no = :line_no, "
+            "line_name = :line_name, part_name = :part_name, serial = :serial, und_serial = :und_serial, "
+            "photos = CASE WHEN CAST(:photos AS jsonb) = '[]'::jsonb THEN photos ELSE CAST(:photos AS jsonb) END, "
+            "item_photos = CAST(:item_photos AS jsonb), no_serial = :no_serial, maker = :maker, purpose = :purpose, "
+            "warranty_months = :warranty_months, note = :note, status = '등록', shipment_index = NULL, warranty_start = NULL, "
+            "warranty_until = NULL, created_by = :u, created_at = NOW(), updated_by = :u, updated_at = NOW() WHERE id = :id"),
+            {**v, "d": deal_id, "q": quote_id, "r": revision, "no": iss["issue_no"], "u": user_id, "id": h["id"]})
+        keep[k] = (h["id"], v)
+        from ..purchases import stock as stock_mod
+        await stock_mod.handed_over(db, h["stock_id"], user_id, rented=v["purpose"] == "R",
+                                    where=f"{d.get('customer') or '고객사 없음'} {iss['issue_no'] or ''}".rstrip())
     for uid, v in keep:
-        if uid is None:
+        if uid is None or uid in adopted:
             continue
         o = old[uid]
         # 출하한 부품은 무상 기간을 바꾸면 종료일도 다시(시작일 = 출하일 그대로)
@@ -472,6 +516,8 @@ async def save_units(db: AsyncSession, deal_id: int, user_id: int | None, quote_
             {**v, "until": until, "u": user_id, "id": uid})
     new_ids: dict[int, list[int]] = {}
     for uid, v in keep:
+        if uid in adopted:
+            new_ids.setdefault(v["line_no"], []).append(uid)
         if uid is None:
             nid = (await db.execute(text(
                 "INSERT INTO product_units (deal_id, quote_id, quote_revision, issue_no, line_no, line_name, part_name, serial, "
@@ -591,14 +637,15 @@ async def check_before_ship(db: AsyncSession, d: dict, p: dict | None = None) ->
     if s and need and (p or {}).get("unit_ids") is not None:
         have = await _ship_counts(db, d["id"], s, p["unit_ids"])
         short = [names[no] for no, n in need.items() if have.get(no, 0) < n]
-        if short:
-            raise DealError("출하 전에 S/N을 등록해 주세요 — " + ", ".join(short) + ". S/N이 없는 품목은 '특주'처럼 적으면 됩니다.",
-                            code="SERIALS_REQUIRED")
+        # 모자라면 막지 않고 묻는다(사용자 2026-11-20) — 화면이 확인하면 serials_ok 로 다시 보낸다
+        if short and not (p or {}).get("serials_ok"):
+            raise DealError("S/N이 입력되지 않은 품목이 있습니다 — " + ", ".join(short) + ". 그래도 출하를 완료하시겠습니까?",
+                            409, code="SERIALS_REQUIRED")
         _over(need, have, names, strict=True)
         return s["quote_id"], s["revision"]
-    if s and s["missing"] > 0:
-        raise DealError(f"출하 전에 S/N을 등록해 주세요 — {s['issue_no']} 기준 {s['total']}개 중 {s['done']}개 등록. "
-                        "S/N이 없는 품목은 '특주'처럼 적으면 됩니다.", code="SERIALS_REQUIRED")
+    if s and s["missing"] > 0 and not (p or {}).get("serials_ok"):
+        raise DealError(f"S/N이 입력되지 않은 품목이 있습니다 — {s['issue_no']} 기준 {s['total']}개 중 {s['done']}개 입력. "
+                        "그래도 출하를 완료하시겠습니까?", 409, code="SERIALS_REQUIRED")
     return (s["quote_id"], s["revision"]) if s else None
 
 
@@ -653,7 +700,7 @@ async def shipment_removed(db: AsyncSession, deal_id: int, index: int | None) ->
     회수했는데도 다른 건에 다시 쓸 수 없게 됐다."""
     cond = "" if index is None else " AND u.shipment_index = :x"
     asn = (await db.execute(text(
-        "SELECT DISTINCT u.serial FROM product_units u JOIN as_cases a ON a.unit_id = u.id "
+        "SELECT DISTINCT COALESCE(NULLIF(u.serial, ''), u.und_serial) FROM product_units u JOIN as_cases a ON a.unit_id = u.id "
         f"WHERE u.deal_id = :d AND u.shipment_index IS NOT NULL{cond}"), {"d": deal_id, "x": index})).scalars().all()
     if asn:
         raise DealError("A/S 기록이 있는 S/N이 묶인 출하 기록은 지울 수 없습니다(무상 기간의 기준이 사라짐): "
@@ -680,9 +727,9 @@ async def deal_units(db: AsyncSession, deal_id: int) -> list[dict]:
 # ── 조회(제품·A/S 탭) ────────────────────────────────────────────────────────
 
 def warranty_state(u: dict, day: dt.date) -> str:
-    """'무상 기간 (D-120)' / '무상 기간 지남' / '무상 없음'(0개월) / '출하 전' / '무상 기간 미정' / '자체 개발'(출하 없는 SD)."""
-    if not u.get("warranty_start") and u.get("stock_item_id"):
-        return "자체 개발"
+    """'무상 기간 (D-120)' / '무상 기간 지남' / '무상 없음'(0개월) / '출하 전' / '무상 기간 미정' / '자체 개발'(SD) / '판매 전'(SP)."""
+    if not u.get("warranty_start") and u.get("stock_item_id") and not u.get("deal_id"):
+        return "판매 전" if u.get("purpose") == SALE_STATE else "자체 개발"
     if not u.get("warranty_start"):
         return "출하 전"
     if u.get("warranty_months") == 0:
@@ -697,6 +744,8 @@ def warranty_state(u: dict, day: dt.date) -> str:
 async def search_units(db: AsyncSession, q: str, today: dt.date, limit: int = 50) -> list[dict]:
     """시리얼·부품명·고객사·발행번호로 찾기(비우면 최근 등록 순). A/S 건수·진행 중 건수를 같이."""
     q = q.strip()[:80]
+    from ..purchases import stock                       # 회수·삭제로 돌아온 재고 제품을 먼저 정리(사용자 2026-11-20)
+    await stock.release(db)
     rs = (await db.execute(text(
         f"SELECT {', '.join('u.' + c.strip() for c in _UNIT_COLS.split(','))}, s.customer, s.deal_no, {_DEAL_COLS}, {_STOCK_COLS}, "
         "  (SELECT COUNT(*) FROM as_cases a WHERE a.unit_id = u.id) AS as_count, "
@@ -706,6 +755,7 @@ async def search_units(db: AsyncSession, q: str, today: dt.date, limit: int = 50
         "  OR u.issue_no ILIKE :p OR u.maker ILIKE :p OR u.note ILIKE :p OR pu.po->>'no' ILIKE :p OR st.sw_owner ILIKE :p "
         "  OR st.display_name ILIKE :p "
         "  OR (u.purpose = 'SD' AND ('sd 개발' ILIKE :p OR '자체 개발' ILIKE :p)) "
+        "  OR (u.purpose = 'SP' AND ('sp 판매 예정' ILIKE :p OR '판매용 입고' ILIKE :p)) OR st.customer ILIKE :p OR st.owner ILIKE :p "
         "ORDER BY u.updated_at DESC, u.id DESC LIMIT :n"),
         # %·_ 는 글자 그대로 찾는다(검증 2026-10-26 — 와일드카드로 동작해 '_' 하나로 전부 나오던 일). LIKE 기본 이스케이프 = 역슬래시
         {"q": q, "p": "%" + re.sub(r"([\\%_])", r"\\\1", q) + "%", "n": limit})).mappings().all()
@@ -728,13 +778,143 @@ async def unit_detail(db: AsyncSession, unit_id: int, today: dt.date) -> dict:
     ship = ships[u["shipment_index"]] if u.get("shipment_index") is not None and u["shipment_index"] < len(ships) else None
     # A/S 이력은 같은 제품(같은 제조사·S/N)의 모든 건 기록 — 회수 뒤 다른 건에 다시 나가도 고장 이력이 이어지게(사용자 2026-11-16)
     ids = [unit_id] if u.get("no_serial") else (await db.execute(text(
-        "SELECT id FROM product_units WHERE NOT no_serial AND lower(maker) = lower(:m) AND lower(serial) = lower(:s)"),
-        {"m": u.get("maker") or "", "s": u["serial"]})).scalars().all()
+        "SELECT id FROM product_units WHERE NOT no_serial AND ((:s <> '' AND lower(maker) = lower(:m) AND lower(serial) = lower(:s)) "
+        "OR (:und <> '' AND lower(und_serial) = lower(:und)))"),
+        {"m": u.get("maker") or "", "s": u["serial"] or "", "und": u.get("und_serial") or ""})).scalars().all()
     from ..purchases import stock                       # 자체 개발 제품의 구매·재고 정보(사용자 2026-11-19)
+    cases = await list_cases(db, unit_ids=list(ids) or [unit_id])
     return {**u, "warranty_state": warranty_state(u, today),
             "shipment": {k: ship.get(k) for k in ("date", "carrier", "tracking", "receiver")} if ship else None,
             "stock": await stock.unit_extra(db, u["stock_item_id"]) if u.get("stock_item_id") else None,
-            "cases": await list_cases(db, unit_ids=list(ids) or [unit_id])}
+            "timeline": await unit_timeline(db, u, cases),
+            "cases": cases}
+
+
+# ── S/N 이력(사용자 2026-11-20) ───────────────────────────────────────────────
+# 이 제품(같은 제조사 S/N 또는 같은 UND S/N)이 언제 어디서 생겨 어떻게 관리됐는지 — 따로 저장하지 않고 남아 있는 기록을 모은다.
+#   구매 입고(재고 이력 'in') → 재고 상태 변경 → 판매·대여로 넘어감('handover') → 영업 건 S/N 등록 → 출하 → 회수 → 재고로 돌아옴('back')
+_BIZ = {"sale": "판매", "rental": "대여"}
+
+
+_KST = dt.timezone(dt.timedelta(hours=9))
+
+
+def _when(v: Any) -> str | None:
+    """시각은 한국 시각으로(날짜만 있는 업무 날짜와 같은 기준으로 정렬되게)"""
+    if isinstance(v, dt.datetime):
+        return (v.astimezone(_KST) if v.tzinfo else v).isoformat()
+    return v.isoformat() if isinstance(v, dt.date) else (str(v) if v else None)
+
+
+def _after(stamp: str | None, day: str | None) -> str:
+    """날짜만 있는 일(출하·회수)의 정렬 기준 — 그 날짜가 기록한 때보다 뒤면 그 날짜 첫머리, 아니면 기록한 때"""
+    return max(x for x in (stamp or "", f"{day}T00:00:00+09:00" if day else "") if x) if (stamp or day) else ""
+
+
+def _detail_text(detail: dict) -> str:
+    if "from" in detail and "to" in detail:
+        rest = {k: v for k, v in detail.items() if k not in ("from", "to")}
+        return " · ".join([f"{detail['from']} → {detail['to']}", *(f"{k} {v}" for k, v in rest.items() if v not in (None, ""))])
+    return " · ".join(f"{k} {v}" for k, v in detail.items() if v not in (None, "") and k != "입고일")
+
+
+async def unit_timeline(db: AsyncSession, u: dict, cases: list[dict] | None = None) -> list[dict]:
+    """S/N 이력 — 오래된 것부터. 줄마다 {at, day, title, detail, by, link?: {kind: purchase|deal, id, biz?, free?}}.
+    day = 날짜만 있는 업무 날짜(입고일·출하일·회수일), 아니면 기록한 시각."""
+    if u.get("no_serial"):
+        rows = (await db.execute(text(
+            f"SELECT u.id, u.deal_id, u.stock_item_id, u.issue_no, u.status, u.shipment_index, u.purpose, u.created_at, u.updated_at, "
+            f"(SELECT COALESCE(x.alias, x.username) FROM users x WHERE x.id = u.created_by) AS by, s.customer, s.shipments, {_DEAL_COLS} "
+            "FROM product_units u LEFT JOIN sales_deals s ON s.id = u.deal_id WHERE u.id = :i"), {"i": u["id"]})).mappings().all()
+    else:
+        rows = (await db.execute(text(
+            f"SELECT u.id, u.deal_id, u.stock_item_id, u.issue_no, u.status, u.shipment_index, u.purpose, u.created_at, u.updated_at, "
+            f"(SELECT COALESCE(x.alias, x.username) FROM users x WHERE x.id = u.created_by) AS by, s.customer, s.shipments, {_DEAL_COLS} "
+            "FROM product_units u LEFT JOIN sales_deals s ON s.id = u.deal_id WHERE NOT u.no_serial AND "
+            "((:s <> '' AND lower(u.maker) = lower(:m) AND lower(u.serial) = lower(:s)) OR (:und <> '' AND lower(u.und_serial) = lower(:und)))"),
+            {"m": u.get("maker") or "", "s": u["serial"], "und": u.get("und_serial") or ""})).mappings().all()
+    out: list[dict] = []
+    for r in rows:
+        if r["deal_id"] is None:
+            if r["status"] in (DELETED, DEV_GONE):
+                out.append({"at": _when(r["updated_at"]), "day": False, "title": "입고 기록에서 빠짐", "detail": "A/S 기록이 있어 S/N 은 남김", "by": None})
+            continue                                     # 재고에 있는 줄 — 재고 이력(아래)이 기준
+        biz = "대여" if r["deal_biz"] == "rental" or r["purpose"] == "R" else "판매"     # 판매 견적 건에서 R 로 등록한 대여도
+        where = " ".join(x for x in (r["customer"] or "고객사 없음", r["issue_no"] or r["deal_display_no"] or "") if x)
+        link = {"kind": "deal", "id": r["deal_id"], "biz": r["deal_biz"] or "sale", "free": bool(r["deal_free"])}
+        out.append({"at": _when(r["created_at"]), "day": False, "title": f"{biz} 건에 S/N 등록", "detail": where, "by": r["by"], "link": link})
+        ships = r["shipments"] if isinstance(r["shipments"], list) else json.loads(r["shipments"] or "[]")
+        if r["shipment_index"] is not None and r["shipment_index"] < len(ships):
+            sh = ships[r["shipment_index"]] or {}
+            out.append({"at": sh.get("date"), "day": True, "sort": _after(_when(r["created_at"]), sh.get("date")),
+                        "title": "대여 출하" if biz == "대여" else "출하",
+                        "detail": " · ".join(x for x in (where, sh.get("carrier") or "") if x), "by": None, "link": link})
+        if r["status"] == RETURNED:
+            ret = ((r["deal_rental"] or {}) if isinstance(r["deal_rental"], dict) else json.loads(r["deal_rental"] or "{}")).get("return") or {}
+            out.append({"at": ret.get("done") or _when(r["updated_at"]), "day": bool(ret.get("done")),
+                        "sort": _after(_when(r["updated_at"]), ret.get("done")), "title": "대여 회수",
+                        "detail": where, "by": None, "link": link})
+        elif r["status"] == DELETED:
+            out.append({"at": _when(r["updated_at"]), "day": False, "title": "영업 건 삭제", "detail": where, "by": None})
+    # 재고(구매 입고) 이력 — 이 S/N 이 붙어 있는 재고 줄
+    sids = sorted({r["stock_item_id"] for r in rows if r["stock_item_id"]})
+    if sids:
+        from ..purchases import stock as stock_mod
+        evs = (await db.execute(text(
+            "SELECT e.item_id, e.action, e.detail, e.created_at, COALESCE(x.alias, x.username) AS by, s.purpose, s.purchase_id, "
+            "p.supplier, p.po->>'no' AS po_no, p.direct FROM stock_events e JOIN stock_items s ON s.id = e.item_id "
+            "JOIN purchases p ON p.id = s.purchase_id LEFT JOIN users x ON x.id = e.user_id WHERE e.item_id = ANY(:i) ORDER BY e.id"),
+            {"i": sids})).mappings().all()
+        for e in evs:
+            d = e["detail"] if isinstance(e["detail"], dict) else json.loads(e["detail"] or "{}")
+            kind = "판매용" if e["purpose"] == "sale" else "보유 후 자체 개발용"
+            plink = {"kind": "purchase", "id": e["purchase_id"]}
+            src = "직접 등록" if e["direct"] else " ".join(x for x in (e["supplier"] or "", e["po_no"] or "") if x)
+            if e["action"] == "in":
+                out.append({"at": d.get("입고일") or _when(e["created_at"]), "day": bool(d.get("입고일")), "sort": _when(e["created_at"]),
+                            "title": f"{kind} 입고" + (" → 판매 예정" if e["purpose"] == "sale" else " → 자체 개발"),
+                            "detail": src, "by": e["by"], "link": plink})
+            elif e["action"] == "handover":
+                out.append({"at": _when(e["created_at"]), "day": False,
+                            "title": "재고에서 대여로" if d.get("상태") == stock_mod.RENTED else "재고에서 판매로",
+                            "detail": f"{d.get('건') or ''} · 재고 {d.get('상태') or ''}".strip(" ·"), "by": e["by"]})
+            elif e["action"] == "back":
+                out.append({"at": _when(e["created_at"]), "day": False, "title": "재고로 돌아옴",
+                            "detail": f"{d.get('까닭') or ''} · 재고 {d.get('상태') or ''}".strip(" ·"), "by": e["by"], "link": plink})
+            else:
+                label = stock_mod.ACTION_LABEL.get(e["action"], e["action"])
+                out.append({"at": _when(e["created_at"]), "day": False,
+                            "title": "재고 상태" if e["action"] == "status" else f"재고 {label}",
+                            "detail": _detail_text(d), "by": e["by"], "link": plink})
+    # A/S — 접수·진행 중·완료만 짧게(자세한 내용·수정 기록은 아래 A/S 이력, 사용자 2026-11-20)
+    for c in cases or []:
+        brief = " · ".join(x for x in (c.get("cause") or "", c.get("charge") or "", (c.get("symptom") or "").splitlines()[0][:40] if c.get("symptom") else "") if x)
+        # 기록 원본(history)의 시각 그대로 — 화면용 events 는 분까지라 같은 분의 다른 일과 순서가 어긋났다
+        for h in c.get("history") or []:
+            if not isinstance(h, dict):
+                continue
+            new = ((h.get("changed") or {}).get("status") or [None, None])[1]
+            title = "A/S 접수" if h.get("what") == "접수" else _STATUS_EVENT.get(new) if new else None
+            if not title:
+                continue
+            try:
+                at = _when(dt.datetime.fromisoformat(str(h.get("at"))))
+            except ValueError:
+                at = str(h.get("at") or "") or None
+            out.append({"at": at, "day": False, "title": title, "detail": brief, "by": h.get("by"), "as_case": c.get("id")})
+    by_ids = {x["by"] for x in out if isinstance(x.get("by"), int)}       # A/S 기록은 사람 번호로 남아 있어 이름으로
+    if by_ids:
+        names = dict((await db.execute(text("SELECT id, COALESCE(alias, username) FROM users WHERE id = ANY(:i)"), {"i": list(by_ids)})).all())
+        for x in out:
+            if isinstance(x.get("by"), int):
+                x["by"] = names.get(x["by"])
+    # 기록한 때 순서(입고는 입고 기록을 남긴 때, 출하·회수는 날짜만 있어 같은 날이면 그 S/N 등록 뒤로). 보이는 날짜는 업무 날짜(at).
+    # 같은 때(한 번에 저장)면 일의 순서대로 — 재고에서 넘어감 → S/N 등록 → 출하 → 회수 → 재고로 돌아옴
+    order = {"재고에서 판매로": 0, "재고에서 대여로": 0, "대여 출하": 2, "출하": 2, "대여 회수": 3, "재고로 돌아옴": 4}
+    out.sort(key=lambda x: (str(x.get("sort") or x["at"] or ""), order.get(x["title"], 1)))
+    for x in out:
+        x.pop("sort", None)
+    return out
 
 
 # ── A/S 기록 ─────────────────────────────────────────────────────────────────
@@ -869,7 +1049,7 @@ async def _no_open_case(db: AsyncSession, unit_id: int, serial: str, *, except_i
 
 async def create_case(db: AsyncSession, user_id: int | None, unit_id: int, p: dict, *, commit: bool = True) -> dict:
     """A/S 접수 — 무상·유상을 고르지 않았으면 접수일·원인으로 제안한 값. commit=False 면 여러 건을 한 번에 저장할 때(create_cases)."""
-    u = (await db.execute(text("SELECT u.id, u.deal_id, u.serial, u.part_name, u.warranty_until, u.stock_item_id, s.customer FROM product_units u "
+    u = (await db.execute(text("SELECT u.id, u.deal_id, COALESCE(NULLIF(u.serial, ''), u.und_serial) AS serial, u.part_name, u.warranty_until, u.stock_item_id, s.customer FROM product_units u "
                                "LEFT JOIN sales_deals s ON s.id = u.deal_id WHERE u.id = :i"), {"i": unit_id})).mappings().first()
     if not u:
         raise DealError("S/N을 찾을 수 없습니다.", 404)
@@ -939,10 +1119,11 @@ async def _follow_unit_state(db: AsyncSession, case: dict, status: str) -> dict:
         before = next((h["unit_state"][0] for h in reversed(case.get("history") or [])
                        if isinstance(h, dict) and (h.get("unit_state") or [None, None])[1] == "A"), None)
         if before is None:                                   # 기록이 없으면 건의 판매·대여로
-            biz = (await db.execute(text("SELECT CASE WHEN u.stock_item_id IS NOT NULL AND u.deal_id IS NULL THEN 'dev' "
+            biz = (await db.execute(text("SELECT CASE WHEN u.stock_item_id IS NOT NULL AND u.deal_id IS NULL THEN "
+                                         "(SELECT CASE WHEN st.purpose = 'sale' THEN 'stock_sale' ELSE 'dev' END FROM stock_items st WHERE st.id = u.stock_item_id) "
                                          "ELSE COALESCE(s.quote->>'biz', 'sale') END FROM product_units u "
                                          "LEFT JOIN sales_deals s ON s.id = u.deal_id WHERE u.id = :i"), {"i": uid})).scalar()
-            before = DEV_STATE if biz == "dev" else "R" if biz == "rental" else "S"
+            before = DEV_STATE if biz == "dev" else SALE_STATE if biz == "stock_sale" else "R" if biz == "rental" else "S"
         new = before
     await db.execute(text("UPDATE product_units SET purpose = :p, updated_at = NOW() WHERE id = :i"), {"p": new, "i": uid})
     return {"unit_state": [cur, new]}

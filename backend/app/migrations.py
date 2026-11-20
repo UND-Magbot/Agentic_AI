@@ -880,6 +880,8 @@ _SALES_DEALS_STMTS = [
     # 히스토리 번호(사용자 2026-10-08): 견적서 첫 발행 AL20261008-01 → 바뀔 때마다 -02·-03…, 날짜가 바뀌면 그 날짜(AL20261010-05).
     # 이력 한 줄 = 한 번호(ver_no), 그때 단계·견적 판(snap). 히스토리 줄 지우기는 기록만 숨김(hidden, 번호는 다시 안 씀).
     text("ALTER TABLE sales_deals ADD COLUMN IF NOT EXISTS cur_no VARCHAR(24)"),
+    # 세금계산서 회차(사용자 2026-11-20 승인) — [{label, pct, date, confirmed, by, at}]. 마지막 회차(잔금)까지 확인하면 그 발행일이 매출일
+    text("ALTER TABLE sales_deals ADD COLUMN IF NOT EXISTS tax_invoices JSONB NOT NULL DEFAULT '[]'::jsonb"),
     text("ALTER TABLE sales_deal_events ADD COLUMN IF NOT EXISTS ver_no VARCHAR(24)"),
     text("ALTER TABLE sales_deal_events ADD COLUMN IF NOT EXISTS snap JSONB"),
     text("ALTER TABLE sales_deal_events ADD COLUMN IF NOT EXISTS hidden_at TIMESTAMPTZ"),
@@ -1039,8 +1041,10 @@ _SALES_DEALS_STMTS = [
     # 같은 S/N 은 동시에 한 건에서만(사용자 2026-11-16 — 회수한 대여 로봇을 다음 대여·판매 건에 다시 등록할 수 있게).
     # 예전: 대장 전체에 한 줄만(ux_product_units_maker_serial) → 회수가 끝난 줄('회수')은 빼고 겹치지 않게. 건마다 한 줄씩 기록이 남는다.
     text("DROP INDEX IF EXISTS ux_product_units_maker_serial"),
-    text("CREATE UNIQUE INDEX IF NOT EXISTS ux_product_units_active_serial ON product_units(lower(maker), lower(serial)) "
-         "WHERE NOT no_serial AND status <> '회수'"),
+    # 제조사 S/N 이 빈칸인 줄(UND S/N 만 적은 우리 제품, 사용자 2026-11-20 승인)은 빼고 — 그 줄의 겹침은 UND S/N 색인이 막는다
+    text("DROP INDEX IF EXISTS ux_product_units_active_serial"),
+    text("CREATE UNIQUE INDEX IF NOT EXISTS ux_product_units_active_serial2 ON product_units(lower(maker), lower(serial)) "
+         "WHERE NOT no_serial AND status <> '회수' AND serial <> ''"),
     # S/N 두 줄(사용자 2026-11-18 — 제조사 S/N · UND S/N 을 늘 함께) + S/N 사진. 기존 serial 은 제조사 S/N.
     # 제조사가 UND 인 예전 S/N 은 UND S/N 도 같은 번호(우리 제품)로 채운다. UND S/N 도 겹치지 않게(회수 끝난 줄 빼고)
     text("ALTER TABLE product_units ADD COLUMN IF NOT EXISTS und_serial TEXT NOT NULL DEFAULT ''"),
@@ -1054,7 +1058,7 @@ _SALES_DEALS_STMTS = [
     # 이니셜 도입 전 한글로 저장한 값을 코드로 바꾼다.
     text("ALTER TABLE product_units ALTER COLUMN purpose SET DEFAULT 'S'"),
     text("UPDATE product_units SET purpose = CASE purpose WHEN '판매' THEN 'S' WHEN '대여' THEN 'R' "
-         "WHEN 'A/S 교체' THEN 'E' ELSE 'O' END WHERE purpose NOT IN ('S', 'R', 'D', 'A', 'E', 'O', 'SD')"),   # SD = 자체 개발(2026-11-19)
+         "WHEN 'A/S 교체' THEN 'E' ELSE 'O' END WHERE purpose NOT IN ('S', 'R', 'D', 'A', 'E', 'O', 'SD', 'SP')"),   # SD = 자체 개발(2026-11-19), SP = 판매 예정(2026-11-20)
     # 무상 0개월 = 무상 없음(사용자 2026-10-26) — 예전엔 종료일을 비워 '미정'으로 보였다. 이미 출하한 것은 출하 전날로 채운다(구조 변경 없음)
     text("UPDATE product_units SET warranty_until = warranty_start - 1 "
          "WHERE warranty_months = 0 AND warranty_start IS NOT NULL AND warranty_until IS NULL"),
@@ -1229,7 +1233,9 @@ _PURCHASES_STMTS = [
     text("CREATE UNIQUE INDEX IF NOT EXISTS ux_product_units_stock_item ON product_units(stock_item_id) WHERE stock_item_id IS NOT NULL"),
     # SD 를 몰랐던 위 상태 정리(ELSE 'O')가 자체 개발 S/N 을 O 로 바꿨던 것 되돌리기(개발 DB, 2026-11-19) — 자체 개발 S/N 은 화면에서 상태를
     # 고를 수 없어 O 일 까닭이 없다(A/S 중 A 는 그대로)
-    text("UPDATE product_units SET purpose = 'SD' WHERE stock_item_id IS NOT NULL AND purpose = 'O'"),
+    # 영업 건으로 넘어간 재고 S/N(deal_id, 2026-11-20)은 그 건에서 고른 상태라 빼고, 판매용 입고 S/N 은 SP
+    text("UPDATE product_units u SET purpose = CASE WHEN st.purpose = 'sale' THEN 'SP' ELSE 'SD' END FROM stock_items st "
+         "WHERE st.id = u.stock_item_id AND u.deal_id IS NULL AND u.purpose = 'O'"),
 ]
 
 async def run_migrations(db: AsyncSession) -> None:

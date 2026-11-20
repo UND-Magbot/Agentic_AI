@@ -60,13 +60,15 @@ def vat_included(state: dict[str, Any]) -> bool:
 
 
 def with_vat(v: float) -> float:
-    """공급가액 → 부가세 포함 금액(10%, 원 단위 반올림 — 0.5 는 올림)."""
-    return float((Decimal(str(v)) * (1 + VAT_RATE)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    """공급가액 → 부가세 포함 금액(× 1.1, 원 미만 절삭 — 회사 규칙, 사용자 2026-11-20)."""
+    from .. import money
+    return float(money.with_vat(v))
 
 
 def without_vat(v: float) -> float:
-    """부가세 포함 금액 → 공급가액(÷ 1.1, 원 단위 반올림 — 0.5 는 올림)."""
-    return float((Decimal(str(v)) / (1 + VAT_RATE)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    """부가세 포함 금액 → 공급가액(합계 − 합계 ÷ 11 절삭, money.supply_of — 사용자 2026-11-20)."""
+    from .. import money
+    return float(money.supply_of(v))
 
 
 def nego_supply(state: dict[str, Any], cut: float) -> float:
@@ -228,9 +230,11 @@ def nego_amount(state: dict[str, Any], base: float) -> float:
     if not isinstance(v, (int, float)) or v <= 0:
         return 0.0
     amt = base * v / 100 if n.get("mode") == "percent" else float(v)
-    # 0.5 는 올림 — 화면(Math.round)·엑셀 ROUND 와 같게(검증 QT-016, 2026-10-15: 파이썬 round 로 1원 달랐다)
-    step = Decimal("0.01") if state["form"].get("lang") == "en" else Decimal("1")
-    return float(Decimal(str(amt)).quantize(step, rounding=ROUND_HALF_UP))
+    # 원화는 원 미만 절삭(사용자 2026-11-20, 화면 negoCut 과 같게), 달러는 센트 반올림 그대로
+    if state["form"].get("lang") == "en":
+        return float(Decimal(str(amt)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+    from .. import money
+    return float(money.won(amt))
 
 
 def nego_label(state: dict[str, Any]) -> str:

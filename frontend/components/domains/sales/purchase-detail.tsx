@@ -72,6 +72,10 @@ export function PurchaseDetail({ id, onClose, onChanged }: {
   }, [onChanged]);
   // 닫기(Esc·바깥 누름·×) — 저장 안 한 작성 칸이 있으면 먼저 묻는다(사용자 2026-11-18)
   const tryClose = useCallback(() => { void confirmLeave().then((ok) => { if (ok) onClose(); }); }, [onClose]);
+  // 바깥(어두운 배경) 클릭 — 입고 기록·품목 고르기·기본 정보·결제 조건 등 작성 칸이 열려 있으면 닫지 않는다(사용자 2026-11-20, 영업 건 상세와 같게).
+  // 닫기는 × · Esc 로(저장 안 한 내용은 그때 물음)
+  const asideRef = useRef<HTMLElement>(null);
+  const backdropClose = () => { if (!asideRef.current?.querySelector('[data-editing="true"]')) tryClose(); };
   // Esc 로 상세 닫기(사용자 2026-11-18 — 영업 건 상세와 같게, 안 닫혀서 다른 버튼을 누르게 됐음).
   // 팝업·발주서 작성 창이 떠 있으면 그것만 닫히게 상세는 그대로 둔다
   useEffect(() => {
@@ -120,8 +124,8 @@ export function PurchaseDetail({ id, onClose, onChanged }: {
   const afterOrder = over ? "발주서를 발행한 뒤에 기록합니다." : AFTER_ORDER;
 
   return (
-    <div className="fixed inset-0 z-40 flex justify-end bg-black/25" onClick={tryClose}>
-      <aside role="dialog" aria-label={`${p.supplier} 구매 건 상세`} onClick={(e) => e.stopPropagation()}
+    <div className="fixed inset-0 z-40 flex justify-end bg-black/25" onClick={backdropClose}>
+      <aside ref={asideRef} role="dialog" aria-label={`${p.supplier} 구매 건 상세`} onClick={(e) => e.stopPropagation()}
              className="scroll-thin h-full w-full max-w-[max(800px,50vw)] overflow-y-auto bg-background shadow-2xl">
         <div className="sticky top-0 z-10 border-b border-border bg-background/95 px-6 py-4 backdrop-blur">
           <div className="flex items-start justify-between gap-3">
@@ -226,7 +230,7 @@ export function PurchaseDetail({ id, onClose, onChanged }: {
           {/* 3. 발주 — 발주서 발행 + 입고 예정일(사용자 2026-11-02: 입고 예정일을 적어야 다음 단계로) */}
           <Section id="order" n={num.order} title="발주" done={step.order.done} locked={lock("order") && !p.po.no} mark={marks["order"]}
                    lockText="재가를 마친 뒤 발주서를 작성합니다."
-                   hint={`회사 ${over ? "해외(Purchasing order, 달러)" : "국내(원화, VAT 별도)"} 양식으로 작성·발행합니다. 엑셀에서 고친 발주서는 작성 창의 [고친 파일로 발행]으로 올립니다. ${over ? "납기일은 알면 적습니다(선택)." : "입고 예정일을 적어야 다음 단계로 넘어갑니다."}`}>
+                   hint={`회사 ${over ? "해외(Purchasing order, 달러)" : "국내(원화, VAT 별도·포함 중 선택)"} 양식으로 작성·발행합니다. 엑셀에서 고친 발주서는 작성 창의 [고친 파일로 발행]으로 올립니다. ${over ? "납기일은 알면 적습니다(선택)." : "입고 예정일을 적어야 다음 단계로 넘어갑니다."}`}>
             {p.po.no ? (
               <div className="space-y-2">
                 <PoDocs id={id} p={p} onEdit={p.dropped ? undefined : () => setPoOpen(true)}
@@ -348,7 +352,7 @@ export function PurchaseDetail({ id, onClose, onChanged }: {
 
           <Section id="receipt" n={num.receipt} title="입고" done={step.receipt.done} locked={lock("receipt")} lockText={afterOrder}
                    mark={marks["receipt"]}
-                   hint="판매용과 보유 후 자체 개발용을 따로 기록합니다 — 섞여 들어오면 [○○ 기록 작성]에서 그 목적의 품목과 수량만 골라 적고, 나머지는 다른 목적으로 적습니다. 판매용은 품목마다 고객사·담당자·메모(S/N 은 판매할 때), 자체 개발용은 제조사·UND S/N 과 S/N 사진·S/W 담당자. 적은 줄 그대로 제품 재고 관리에 들어가니, 같은 품목을 따로 관리하려면 [같은 품목 줄 나누기]로 나눠 적으세요. 발주 수량을 다 받거나 '입고 완료'로 남기면 끝.">
+                   hint="판매용과 보유 후 자체 개발용을 따로 기록합니다 — 섞여 들어오면 [○○ 기록 작성]에서 그 목적의 품목과 수량만 골라 적고, 나머지는 다른 목적으로 적습니다. 두 목적 모두 한 대마다 제조사 S/N·UND S/N(우리 제품은 UND S/N 만)과 S/N 사진을 적고, 판매용은 대마다 고객사·우리 측 담당자, 자체 개발용은 S/W 담당자를 적습니다. 케이블처럼 S/N 으로 추적하지 않을 품목은 [한 줄로 합치기]. 적은 그대로 공장 제품 재고 관리와 제품 S/N 관리(판매 예정·개발)에 들어갑니다. 발주 수량을 다 받거나 '입고 완료'로 남기면 끝.">
             <ReceiptSection id={id} p={p} admin={admin} busy={busy} ready={step.receipt.ready}
                             onSave={(index, body) => act("receipt", () => purchaseRequest(index == null ? `/${id}/receipt` : `/${id}/receipt/${index}/edit`,
                                                                              index == null ? body : { ...body, ...recAt(index) }),
@@ -433,7 +437,7 @@ function PoItems({ p, over }: { p: PurchaseRow; over: boolean }) {
   return (
     <div className="rounded-xl border border-border bg-surface px-4 py-3.5">
       <div className="mb-2 text-[12.5px] font-semibold text-foreground-muted">
-        발주 품목 · {p.po.no} {over ? "· USD" : "· 부가세 별도"}
+        발주 품목 · {p.po.no} {over ? "· USD" : p.po.vat_included ? "· 단가 부가세 포함" : "· 부가세 별도"}
       </div>
       <table className="w-full border-collapse text-[12.5px]">
         <thead>
@@ -462,9 +466,15 @@ function PoItems({ p, over }: { p: PurchaseRow; over: boolean }) {
         </tbody>
         <tfoot>
           <tr>
-            <td colSpan={5} className="pt-3 text-right text-[12px] font-semibold uppercase tracking-[0.04em] text-foreground-muted">합계{over ? "" : " (VAT 별도)"}</td>
+            <td colSpan={5} className="pt-3 text-right text-[12px] font-semibold uppercase tracking-[0.04em] text-foreground-muted">합계{over ? "" : p.po.vat_included ? " (VAT 포함)" : " (VAT 별도)"}</td>
             <td className="pt-3 text-right text-[15px] font-extrabold tabular-nums tracking-tight">{won(p.po.total, p.currency)}</td>
           </tr>
+          {p.po.vat_included && (
+            <tr>
+              <td colSpan={5} className="pt-1 text-right text-[12px] font-semibold text-foreground-muted">발주 금액 (공급가액 · VAT 별도)</td>
+              <td className="pt-1 text-right text-[14px] font-bold tabular-nums">{won(p.po.supply ?? null, p.currency)}</td>
+            </tr>
+          )}
         </tfoot>
       </table>
     </div>
@@ -485,7 +495,8 @@ function flashStep(step: string): void {
  *  판 = 발행·재발행(새 번호)마다 하나 — 번호 하나 = 발주서 하나. 같은 번호로 고친 파일을 올리면 그 판이 바뀌고(견적서 '파일 교체'와 같음),
  *  교체 전 파일은 판 아래 '교체 전'으로 남아 다시 받을 수 있다(사용자 2026-11-16). */
 function PoDocs({ id, p, onEdit, onCancel }: { id: number; p: PurchaseRow; onEdit?: () => void; onCancel?: () => void }) {
-  type Ver = { no: string; revision: number; total: number | null; issued_at: string | null; issued_by: string | null;
+  type Ver = { no: string; revision: number; total: number | null; issued_at: string | null; issued_by: string | null; vat_included?: boolean;
+               supply?: number | null;
                file_name: string | null; upload: PurchaseRow["po"]["upload"]; current: boolean; replaced: PoReplaced[];
                /** 교체 전 파일 순번(이 판의 replaced) — 있으면 그 파일을 보기·받기 */
                rep?: number; cancelled_at?: string | null; cancelled_by?: string | null };
@@ -495,7 +506,7 @@ function PoDocs({ id, p, onEdit, onCancel }: { id: number; p: PurchaseRow; onEdi
   // 지금 발주서가 없으면(발행 취소, 사용자 2026-11-18) 예전 판만
   const vers: Ver[] = [
     ...(po.no ? [{ no: po.no, revision: po.revision ?? 1, total: po.total, issued_at: po.issued_at, issued_by: po.issued_by,
-                   file_name: po.file_name, upload: po.upload, current: true, replaced: po.replaced ?? [] }] : []),
+                   file_name: po.file_name, upload: po.upload, current: true, replaced: po.replaced ?? [], vat_included: po.vat_included, supply: po.supply }] : []),
     ...[...po.history].reverse().map((h) => ({ ...h, current: false, replaced: h.replaced ?? [] })),
   ];
   const fileUrlOf = (v: Ver, fmt: string) => `/api/purchases/${id}/po/file?fmt=${fmt}&revision=${v.revision}${v.rep != null ? `&replaced=${v.rep}` : ""}`;
@@ -554,7 +565,7 @@ function PoDocs({ id, p, onEdit, onCancel }: { id: number; p: PurchaseRow; onEdi
           </div>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             <span className="text-foreground-subtle">{v.issued_at ? stamp(v.issued_at) : ""}{v.issued_by ? ` · ${v.issued_by}` : ""}</span>
-            <span className="text-[14px] font-bold tabular-nums tracking-tight text-foreground">{won(v.total, p.currency)}{p.currency === "KRW" ? <span className="ml-1 text-[11.5px] font-normal text-foreground-subtle">VAT 별도</span> : ""}</span>
+            <span className="text-[14px] font-bold tabular-nums tracking-tight text-foreground">{won(v.supply ?? v.total, p.currency)}{p.currency === "KRW" ? <span className="ml-1 text-[11.5px] font-normal text-foreground-subtle">VAT 별도{v.vat_included ? ` · 발주서 ${won(v.total, p.currency)} VAT 포함` : ""}</span> : ""}</span>
             <button type="button" className="ml-auto inline-flex items-center gap-1 font-semibold text-accent hover:underline" onClick={() => setViewing(v)}>
               <Icon name="eye" className="h-3.5 w-3.5" /> 보기
             </button>
@@ -874,8 +885,9 @@ function ProgressBand({ p, marks }: { p: PurchaseRow; marks: Record<string, Mark
       {p.po.total != null && (
         <div className="hidden shrink-0 border-l border-border pl-5 text-right sm:block">
           <div className="text-[10.5px] font-bold uppercase tracking-[0.08em] text-foreground-subtle">발주 금액</div>
-          <div className="text-[17px] font-extrabold tabular-nums tracking-tight">{won(p.po.total, p.currency)}</div>
+          <div className="text-[17px] font-extrabold tabular-nums tracking-tight">{won(p.po.supply ?? p.po.total, p.currency)}</div>
           <div className="text-[11px] text-foreground-subtle">{p.currency === "KRW" ? "VAT 별도" : "USD"}</div>
+          {p.po.vat_included && <div className="text-[11px] text-foreground-subtle">발주서 {won(p.po.total, p.currency)} (VAT 포함)</div>}
         </div>
       )}
     </div>
@@ -1031,15 +1043,13 @@ const PURPOSE_LABEL: Record<ReceiptPurpose, string> = { sale: "판매용 입고"
 const PURPOSES: ReceiptPurpose[] = ["sale", "dev"];
 
 /** 자체 개발용 한 대 — 제조사 S/N · UND S/N · S/W 담당자 + S/N 사진(photos) · 낱개 품목 사진(item_photos) (사용자 2026-11-19) */
-type FormUnit = { maker_sn: string; und_sn: string; photos: string[]; sw_owner: string; item_photos: string[] };
-/** 판매용 [같은 품목 줄 나누기] 한 줄 — 수량·고객사·담당자·메모·사진(사용자 2026-11-19) */
-type FormPart = { qty: number | null; customer: string; owner: string; sw_owner: string; note: string; photos: string[] };
+type FormUnit = { maker_sn: string; und_sn: string; photos: string[]; sw_owner: string; item_photos: string[];
+                  /** 판매용 — 그 대의 고객사·우리 측 담당자(사용자 2026-11-20 대마다 한 줄) */
+                  customer: string; owner: string };
 type FormLine = {
   /** 발주 품목 줄 — null 이면 직접 적은 자유 형식 줄([품목 모두 비우기]) */
   line_no: number | null; name: string; qty: number | null; photos: string[];
-  customer: string; owner: string; note: string;          // 판매용
-  /** 판매용 나눈 줄 — 2줄 이상이면 나눈 것(재고 목록에도 이 줄 그대로), 비면 나누지 않음(사용자 2026-11-19) */
-  parts: FormPart[];
+  customer: string; owner: string; note: string;          // 판매용([한 줄로 합치기] 때 줄 값)
   sw_owner: string; units: FormUnit[];                     // 보유 후 자체 개발용
   /** S/N 없는 품목(소모품 등) — 낱개 칸 없이 품목 사진만(사용자 2026-11-19) */
   no_sn: boolean;
@@ -1060,25 +1070,35 @@ type ReceiptDraft = { index: number | null; body: ReceiptBody };
 
 const photoUrl = (id: number, name: string) => `/api/purchases/${id}/receipt-photos/${name}`;
 const blankLine = (): FormLine => ({ line_no: null, name: "", qty: null, photos: [], customer: "", owner: "", note: "", sw_owner: "", units: [],
-                                     no_sn: false, parts: [], category: "" });
-/** 나눈 줄 최대 수(서버 ReceiptLineIn.parts max_length) */
-const PARTS_MAX = 100;
-const blankPart = (): FormPart => ({ qty: null, customer: "", owner: "", sw_owner: "", note: "", photos: [] });
-/** 나눈 줄 수량 합 */
-const partsSum = (ln: FormLine) => (ln.parts ?? []).reduce((n, x) => n + (x.qty ?? 0), 0);
+                                     no_sn: false, category: "" });
+const blankUnit = (): FormUnit => ({ maker_sn: "", und_sn: "", photos: [], sw_owner: "", item_photos: [], customer: "", owner: "" });
+/** UND S/N 을 안 적은 대 — UND S/N 만 있으면 다 적은 것(우리 제품, 사용자 2026-11-20) */
+const unitMissing = (u: FormUnit) => !u.und_sn.trim();
 const unitsOf = (ln: FormLine): FormUnit[] => {
   if (ln.no_sn) return [];
   const n = Math.max(Math.ceil(ln.qty ?? 0), ln.units.length);
   return Array.from({ length: n }, (_, k) => {
     const u = ln.units[k];
-    return u ? { ...u, sw_owner: u.sw_owner ?? "", item_photos: u.item_photos ?? [] } : { maker_sn: "", und_sn: "", photos: [], sw_owner: "", item_photos: [] };
+    return u ? { ...u, sw_owner: u.sw_owner ?? "", item_photos: u.item_photos ?? [], customer: u.customer ?? "", owner: u.owner ?? "" } : blankUnit();
   });
 };
-const lineFromRecord = (ln: PurchaseRow["receipt"]["records"][number]["lines"][number]): FormLine => ({
-  line_no: ln.line_no, name: ln.name, qty: ln.qty, photos: ln.photos ?? [], customer: ln.customer ?? "", owner: ln.owner ?? "",
-  note: ln.note ?? "", sw_owner: ln.sw_owner ?? "", units: (ln.units ?? []).map((u) => ({ ...u, photos: u.photos ?? [], sw_owner: u.sw_owner ?? "", item_photos: u.item_photos ?? [] })),
-  no_sn: !!ln.no_sn, category: ln.category ?? "", parts: (ln.parts ?? []).map((x) => ({ ...x, sw_owner: x.sw_owner ?? "", photos: x.photos ?? [] })),
-});
+const lineFromRecord = (ln: PurchaseRow["receipt"]["records"][number]["lines"][number], purpose: ReceiptPurpose = "sale"): FormLine => {
+  const units: FormUnit[] = (ln.units ?? []).map((u) => ({ ...u, photos: u.photos ?? [], sw_owner: u.sw_owner ?? "", item_photos: u.item_photos ?? [],
+                                                           customer: u.customer ?? "", owner: u.owner ?? "" }));
+  // 예전에 [같은 품목 줄 나누기]로 적은 기록 — 대마다 한 줄로 펼친다(나눈 줄 값을 그 대들에, 나눈 줄 사진은 품목 사진으로, 2026-11-20)
+  const parts = ln.parts ?? [];
+  const spread = parts.flatMap((x) => Array.from({ length: Math.max(Math.ceil(x.qty ?? 0), 0) }, () => x));
+  const fromParts = parts.length > 1 && !ln.no_sn
+    ? spread.map((x, k) => ({ ...(units[k] ?? blankUnit()), customer: units[k]?.customer || x.customer || "", owner: units[k]?.owner || x.owner || "",
+                              sw_owner: units[k]?.sw_owner || x.sw_owner || "" })) : units;
+  const photos = [...(ln.photos ?? []), ...parts.flatMap((x) => x.photos ?? [])];
+  return {
+    line_no: ln.line_no, name: ln.name, qty: ln.qty, photos: [...new Set(photos)], customer: ln.customer ?? "", owner: ln.owner ?? "",
+    // 대마다 S/N 을 받기 전(2026-11-20 전)에 남긴 판매용 줄(units 칸 없음)은 [한 줄로 합침]으로 연다 — 로봇이면 [대마다 나누기]
+    note: ln.note ?? "", sw_owner: ln.sw_owner ?? "", units: fromParts, category: ln.category ?? "",
+    no_sn: !!ln.no_sn || (purpose === "sale" && ln.units === undefined && fromParts.length === 0),
+  };
+};
 /** 낱개 칸 처음 펼침 — 수량 3대 이하면 펼치고, 많으면 접어 둔다(사용자 2026-11-19) */
 const OPEN_UNITS_MAX = 3;
 
@@ -1130,7 +1150,7 @@ function ReceiptSection({ id, p, admin, busy, ready, onSave, onRemove }: {
             <div className="flex flex-wrap items-center gap-2">
               <b className={cn("text-[13.5px]", !r && !here && "text-foreground-subtle")}>{PURPOSE_LABEL[pp]}</b>
               {pp === "dev" && <span className="text-[11.5px] text-foreground-subtle">제조사·UND S/N · S/N 사진 · S/W 담당자</span>}
-              {pp === "sale" && <span className="text-[11.5px] text-foreground-subtle">품목마다 고객사·담당자·메모(S/N 은 판매할 때)</span>}
+              {pp === "sale" && <span className="text-[11.5px] text-foreground-subtle">제조사·UND S/N · S/N 사진 · 고객사·담당자</span>}
               {r && <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-emerald-500/12 px-2 py-0.5 text-[11.5px] font-semibold text-emerald-700 dark:text-emerald-300">
                 <Icon name="check" className="h-3.5 w-3.5" /> 기록함</span>}
             </div>
@@ -1206,7 +1226,7 @@ function ItemPicker({ lines, purpose, onDone, onCancel }: {
   const toggle = (no: number) => setOn((s) => { const n = new Set(s); if (n.has(no)) n.delete(no); else n.add(no); return n; });
   const bad = lines.some((ln) => qtyBad(ln.line_no));
   return (
-    <div className="mt-2 rounded-lg border border-accent/40 bg-accent/[0.03] p-3 text-[12.5px]">
+    <div className="mt-2 rounded-lg border border-accent/40 bg-accent/[0.03] p-3 text-[12.5px]" data-editing="true">
       <p className="mb-2 font-semibold">{PURPOSE_LABEL[purpose]}으로 받은 품목을 고르세요</p>
       {lines.length === 0 ? <p className="text-foreground-subtle">아직 받을 발주 품목이 없습니다. 아래 [직접 적기]로 품목을 적을 수 있습니다.</p> : (
         // 심플하게(사용자 2026-11-19) — 남은 수량은 위 꼬리표(0/3)로 보고, 고르면 옆에 수량 칸만. [취소] [작성]
@@ -1277,7 +1297,7 @@ function RecordView({ id, r }: { id: number; r: PurchaseRow["receipt"]["records"
               {ln.photos.length > 0 && <span className="text-[11.5px] text-foreground-subtle">품목 사진</span>}
               {ln.photos.map(thumb)}
             </div>
-            {dev && (ln.units ?? []).length > 0 && (
+            {(ln.units ?? []).length > 0 && (
               <ul className="mt-1 space-y-1">
                 {(ln.units ?? []).map((u, k) => (
                   <li key={k} className="flex flex-wrap items-center gap-2 text-[12px]">
@@ -1285,6 +1305,8 @@ function RecordView({ id, r }: { id: number; r: PurchaseRow["receipt"]["records"
                     <span>제조사 <b className="font-mono">{u.maker_sn || "-"}</b></span>
                     <span>UND <b className="font-mono">{u.und_sn || "-"}</b></span>
                     {u.sw_owner && <span className="text-foreground-muted">S/W {u.sw_owner}</span>}
+                    {[u.customer && `고객사 ${u.customer}`, u.owner && `담당 ${u.owner}`].filter(Boolean).map((t) => (
+                      <span key={String(t)} className="text-foreground-muted">{t}</span>))}
                     {(u.item_photos ?? []).map(thumb)}
                     {(u.photos ?? []).map(thumb)}
                   </li>
@@ -1331,7 +1353,7 @@ export function ReceiptForm({ id, p, purpose, initial, picked, leftOf, remaining
   const [start] = useState<ReceiptBody>(() => ({
     purpose, date: initial?.date ?? todayIso(), carrier: initial?.carrier ?? "", tracking: initial?.tracking.join(" ") ?? "",
     receiver: initial?.receiver ?? "", location: initial?.location ?? "", note: initial?.note ?? "", final: initial?.final ?? false,
-    lines: initial ? initial.lines.map(lineFromRecord) : picked.length ? picked.map((x) => pickedLine(x.no, x.qty)) : [blankLine()],
+    lines: initial ? initial.lines.map((ln) => lineFromRecord(ln, initial.purpose ?? "sale")) : picked.length ? picked.map((x) => pickedLine(x.no, x.qty)) : [blankLine()],
     ...(direct ? { final: true, supplier: p.supplier === "직접 등록" ? "" : p.supplier, region: p.region } : {}),
   }));
   const [b, setB] = useState<ReceiptBody>(() => resume ?? start);
@@ -1365,89 +1387,34 @@ export function ReceiptForm({ id, p, purpose, initial, picked, leftOf, remaining
   });
   const freeBad = b.lines.some((l) => l.line_no == null && (l.qty ?? 0) > 0 && !l.name.trim());
   const qtyOk = b.lines.some((l) => (l.qty ?? 0) > 0) || b.final;
-  // 나눈 줄 — 나눈 수량 합이 그 품목 수량과 같아야, 나눈 줄마다 수량이 있어야(판매용·자체 개발용)
-  const partsBad = b.lines.some((l) => (l.parts ?? []).length > 1
-    && (Math.abs(partsSum(l) - (l.qty ?? 0)) > 1e-9 || l.parts.some((x) => !(x.qty && x.qty > 0))));
-  const canSave = !busy && (!!b.date || direct) && qtyOk && !freeBad && !partsBad;
-  /** [같은 품목 줄 나누기] 편집 칸(판매용·자체 개발용 공용, 사용자 2026-11-19) — 나눈 줄 하나 = 재고 목록 한 줄 */
-  const partsBlock = (l: FormLine, i: number) => (
-                <div className="space-y-1.5 text-[11.5px] text-foreground-muted">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-semibold text-foreground">나눈 줄</span>
-                    <span className={cn("tabular-nums", Math.abs(partsSum(l) - (l.qty ?? 0)) > 1e-9 ? "font-semibold text-red-600" : "text-foreground-subtle")}>
-                      수량 합 {partsSum(l)} / {l.qty ?? 0}</span>
-                    <span className="text-foreground-subtle">— 나눈 줄 하나가 재고 목록 한 줄이 됩니다{purpose === "dev" ? " · S/N 은 아래 낱개 칸에" : ""}</span>
-                    <button type="button" className="ml-auto text-[12px] text-foreground-subtle hover:underline"
-                            onClick={() => { const f = l.parts[0]; setLine(i, { parts: [], customer: f.customer, owner: f.owner, sw_owner: f.sw_owner || l.sw_owner, note: f.note,
-                                                                                   photos: [...l.photos, ...l.parts.flatMap((x) => x.photos).filter((y) => !l.photos.includes(y))] }); }}>
-                      나누기 취소(한 줄로)</button>
-                  </div>
-                  {l.parts.map((x, k) => {
-                    const setPart = (patch: Partial<FormPart>) => setLine(i, { parts: l.parts.map((y, kk) => (kk === k ? { ...y, ...patch } : y)) });
-                    return (
-                      <div key={k} className="space-y-1 rounded-md border border-border/70 px-2 py-1.5">
-                        <div className="grid items-end gap-2 sm:grid-cols-[64px_1fr_1fr_1fr_auto]">
-                          <label className="grid gap-0.5">수량
-                            <input type="number" min={0} step="any" className={cn(INPUT, "h-8 px-2 text-right tabular-nums", !(x.qty && x.qty > 0) && "border-red-500")}
-                                   value={x.qty ?? ""} onChange={(e) => setPart({ qty: e.target.value === "" ? null : Number(e.target.value) })} /></label>
-                          {purpose === "sale" ? (
-                            <>
-                              <label className="grid gap-0.5">고객사<input className={cn(INPUT, "h-8")} value={x.customer} placeholder="예: LG CNS" maxLength={200} onChange={(e) => setPart({ customer: e.target.value })} /></label>
-                              <label className="grid gap-0.5">우리 측 담당자<input className={cn(INPUT, "h-8")} value={x.owner} placeholder="예: Lucas" maxLength={100} onChange={(e) => setPart({ owner: e.target.value })} /></label>
-                            </>
-                          ) : (
-                            <label className="grid gap-0.5 sm:col-span-2">S/W 담당자<input className={cn(INPUT, "h-8")} value={x.sw_owner} placeholder="정해지지 않았으면 비워 두기" maxLength={100} onChange={(e) => setPart({ sw_owner: e.target.value })} /></label>
-                          )}
-                          <label className="grid gap-0.5">메모<input className={cn(INPUT, "h-8")} value={x.note} maxLength={500} onChange={(e) => setPart({ note: e.target.value })} /></label>
-                          {/* 휴지통 — 줄 지우기. 2줄에서 하나를 지우면 나누기가 풀리고 남은 줄 값이 품목 줄로(사용자 2026-11-19) */}
-                          <button type="button" aria-label="이 나눈 줄 지우기" title="이 줄 지우기"
-                                  onClick={() => {
-                                    const rest = l.parts.filter((_, kk) => kk !== k);
-                                    if (rest.length > 1) { setLine(i, { parts: rest }); return; }
-                                    const f = rest[0] ?? blankPart();
-                                    setLine(i, { parts: [], customer: f.customer, owner: f.owner, sw_owner: f.sw_owner || l.sw_owner, note: f.note,
-                                                 photos: [...l.photos, ...f.photos.filter((y) => !l.photos.includes(y))] });
-                                  }}
-                                  className="mb-1 grid h-8 w-8 place-items-center rounded-md text-foreground-subtle hover:bg-red-500/10 hover:text-red-600">
-                            <Icon name="trash" className="h-4 w-4" /></button>
-                        </div>
-                        <SnPhotoCell api={photoApi} photos={x.photos} label="사진"
-                                     onAdd={(ids) => setPart({ photos: [...x.photos, ...ids.filter((y) => !x.photos.includes(y))] })}
-                                     onRemove={(ph) => setPart({ photos: x.photos.filter((y) => y !== ph) })} />
-                      </div>
-                    );
-                  })}
-                  <button type="button" className="text-[12px] font-semibold text-accent hover:underline"
-                          onClick={() => setLine(i, { parts: [...l.parts, blankPart()] })}>+ 나눈 줄 추가</button>
-                </div>
-  );
-  const splitBtn = (l: FormLine, i: number) => (l.qty ?? 0) >= 2 && (
-    <button type="button" className="justify-self-start text-[12px] font-semibold text-accent hover:underline sm:col-span-3"
-            onClick={() => {
-              // 1개씩 수량만큼 나눈다(사용자 2026-11-19 — 3개면 1·1·1). 나눈 줄은 최대 100줄이라 넘으면 마지막 줄에 나머지
-              const qty = l.qty ?? 0;
-              const n = Math.min(Math.ceil(qty), PARTS_MAX);
-              const base = { customer: l.customer, owner: l.owner, sw_owner: l.sw_owner, note: l.note };
-              setLine(i, { parts: Array.from({ length: n }, (_, k) => ({ ...base, photos: [], qty: k < n - 1 ? 1 : qty - (n - 1) })) });
-            }}>
-      + 같은 품목 줄 나누기 (따로 관리할 때)</button>
-  );
-
+  // 구분 필수(사용자 2026-11-20) — 받은 품목(수량 있음)마다
+  const catBad = (l: FormLine) => (l.qty ?? 0) > 0 && !l.category;
+  const catMissing = b.lines.some(catBad);
+  const canSave = !busy && (!!b.date || direct) && qtyOk && !freeBad && !catMissing;
   const send = (body: ReceiptBody) => onSave({
     ...body, reclose: initial ? body.final : undefined,
     date: body.date || todayIso(),                       // 직접 등록에서 입고일을 비우면 오늘
     lines: body.lines.map((l) => ({
       ...l, name: l.name.trim(),
-      units: purpose === "dev" ? unitsOf(l).map((u) => ({ ...u, maker_sn: u.maker_sn.trim(), und_sn: u.und_sn.trim(), sw_owner: u.sw_owner.trim() })) : [],
-      parts: (l.parts ?? []).length > 1
-        ? l.parts.map((x) => ({ ...x, customer: x.customer.trim(), owner: x.owner.trim(), sw_owner: x.sw_owner.trim(), note: x.note.trim() })) : [],
+      // 판매용·자체 개발용 모두 대마다 S/N(사용자 2026-11-20). 나눈 줄(parts)은 더 쓰지 않는다
+      units: unitsOf(l).map((u) => ({ ...u, maker_sn: u.maker_sn.trim(), und_sn: u.und_sn.trim(), sw_owner: u.sw_owner.trim(),
+                                      customer: u.customer.trim(), owner: u.owner.trim() })),
+      parts: [],
     })),
   });
-  const submit = () => send(b);
+  // UND S/N 을 안 적은 대가 있으면 저장 전에 한 번 묻는다(사용자 2026-11-20 — 케이블 같은 것은 [한 줄로 합치기])
+  const missingUnits = b.lines.reduce((n, l) => n + unitsOf(l).slice(0, Math.ceil(l.qty ?? 0)).filter(unitMissing).length, 0);
+  const submit = async () => {
+    if (missingUnits > 0 && !(await askConfirm({
+      title: `S/N 을 안 적은 제품이 ${missingUnits}대 있습니다. 그래도 저장할까요?`,
+      message: "제조사 S/N·UND S/N 을 적어 주세요(우리 제품은 UND S/N 만). 케이블처럼 S/N 으로 추적하지 않을 품목은 [한 줄로 합치기(S/N 없는 품목)]를 누르면 묻지 않습니다. 나중에 [수정]으로 채울 수 있습니다.",
+      confirmLabel: "그래도 저장", cancelLabel: "S/N 마저 적기" }))) return;
+    await send(b);
+  };
   // 닫을 때 '저장 안 한 칸' — 팝업의 [변경사항 저장]은 이 칸의 저장과 같은 일
   useUnsaved(PURPOSE_LABEL[purpose], dirty, canSave ? submit : null);
   return (
-    <div className="space-y-3 rounded-xl border border-dashed border-accent/50 bg-accent/[0.03] px-4 py-3.5">
+    <div className="space-y-3 rounded-xl border border-dashed border-accent/50 bg-accent/[0.03] px-4 py-3.5" data-editing="true">
       <div className="grid grid-cols-2 gap-x-3 gap-y-2.5 text-[12px] text-foreground-muted">
         {direct ? (
           // 재고 직접 등록 — 비우면 오늘로 등록, 칸 어디를 눌러도 달력(사용자 2026-11-19)
@@ -1494,11 +1461,12 @@ export function ReceiptForm({ id, p, purpose, initial, picked, leftOf, remaining
                          placeholder="품목(자유 형식)" maxLength={200} onChange={(e) => setLine(i, { name: e.target.value })} />
                 )}
                 {po && <span className="text-[11.5px] text-foreground-subtle">발주 {po.ordered ?? "-"} · 받음 {po.received}</span>}
-                {/* 재고 구분(사용자 2026-11-19) — 고르지 않으면 재고에서 '-' */}
-                <select className="h-9 rounded-lg border border-border bg-surface px-2 text-[12.5px] outline-none focus:border-accent"
-                        aria-label="구분" title="재고 구분(고르지 않으면 '-')" value={l.category}
+                {/* 재고 구분 — 필수(사용자 2026-11-20), 고르지 않으면 빨간 칸·저장 막음 */}
+                <select className={cn("h-9 rounded-lg border bg-surface px-2 text-[12.5px] outline-none focus:border-accent",
+                                      catBad(l) ? "border-red-500 text-red-600 dark:text-red-400" : "border-border")}
+                        aria-label="구분" aria-required title="재고 구분(필수)" value={l.category}
                         onChange={(e) => setLine(i, { category: e.target.value })}>
-                  <option value="">구분 -</option>
+                  <option value="">구분 선택 *</option>
                   {STOCK_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
                 </select>
                 <input className="h-9 w-24 rounded-lg border border-border bg-surface px-2 text-right text-[13px] font-bold tabular-nums outline-none focus:border-accent"
@@ -1512,14 +1480,7 @@ export function ReceiptForm({ id, p, purpose, initial, picked, leftOf, remaining
               <SnPhotoCell api={photoApi} photos={l.photos} label="품목 사진"
                            onAdd={(ids) => setLine(i, { photos: [...l.photos, ...ids.filter((x) => !l.photos.includes(x))] })}
                            onRemove={(ph) => setLine(i, { photos: l.photos.filter((x) => x !== ph) })} />
-              {purpose === "sale" && (l.parts ?? []).length > 1 ? partsBlock(l, i) : purpose === "sale" ? (
-                <div className="grid gap-2 text-[11.5px] text-foreground-muted sm:grid-cols-3">
-                  <label className="grid gap-0.5">고객사<input className={cn(INPUT, "h-8")} value={l.customer} placeholder="예: LG CNS" maxLength={200} onChange={(e) => setLine(i, { customer: e.target.value })} /></label>
-                  <label className="grid gap-0.5">우리 측 담당자<input className={cn(INPUT, "h-8")} value={l.owner} placeholder="예: Lucas" maxLength={100} onChange={(e) => setLine(i, { owner: e.target.value })} /></label>
-                  <label className="grid gap-0.5">메모<input className={cn(INPUT, "h-8")} value={l.note} maxLength={500} onChange={(e) => setLine(i, { note: e.target.value })} /></label>
-                  {splitBtn(l, i)}
-                </div>
-              ) : (
+              {(
                 <div className="space-y-1.5">
                   {l.no_sn ? (
                     // 한 줄로 합침 — S/N 없는 소모품·장비(재고 목록 한 줄, 제품 S/N 관리에 안 올림)
@@ -1529,9 +1490,17 @@ export function ReceiptForm({ id, p, purpose, initial, picked, leftOf, remaining
                         <button type="button" className="ml-auto text-[12px] font-semibold text-accent hover:underline"
                                 onClick={() => setLine(i, { no_sn: false })}>대마다 나누기(S/N 적기)</button>
                       </div>
-                      <label className="grid max-w-xs gap-0.5 text-[11.5px] text-foreground-muted">S/W 담당자
-                        <input className={cn(INPUT, "h-8")} value={l.sw_owner} placeholder="정해지지 않았으면 비워 두기" maxLength={100}
-                               onChange={(e) => setLine(i, { sw_owner: e.target.value })} /></label>
+                      {purpose === "sale" ? (
+                        <div className="grid gap-2 text-[11.5px] text-foreground-muted sm:grid-cols-3">
+                          <label className="grid gap-0.5">고객사<input className={cn(INPUT, "h-8")} value={l.customer} placeholder="예: LG CNS" maxLength={200} onChange={(e) => setLine(i, { customer: e.target.value })} /></label>
+                          <label className="grid gap-0.5">우리 측 담당자<input className={cn(INPUT, "h-8")} value={l.owner} placeholder="예: Lucas" maxLength={100} onChange={(e) => setLine(i, { owner: e.target.value })} /></label>
+                          <label className="grid gap-0.5">메모<input className={cn(INPUT, "h-8")} value={l.note} maxLength={500} onChange={(e) => setLine(i, { note: e.target.value })} /></label>
+                        </div>
+                      ) : (
+                        <label className="grid max-w-xs gap-0.5 text-[11.5px] text-foreground-muted">S/W 담당자
+                          <input className={cn(INPUT, "h-8")} value={l.sw_owner} placeholder="정해지지 않았으면 비워 두기" maxLength={100}
+                                 onChange={(e) => setLine(i, { sw_owner: e.target.value })} /></label>
+                      )}
                     </div>
                   ) : (
                     <>
@@ -1540,7 +1509,7 @@ export function ReceiptForm({ id, p, purpose, initial, picked, leftOf, remaining
                           <button type="button" onClick={() => setOpenUnits((o) => ({ ...o, [i]: !unitsOpen(i, us.length) }))}
                                   className="flex items-center gap-2 rounded-md bg-foreground/[0.03] px-2 py-1 text-left hover:bg-foreground/[0.06]">
                             <span>{unitsOpen(i, us.length) ? "▾" : "▸"} 대마다 {us.length}대</span>
-                            <span className="text-foreground-muted">S/N <b>{us.filter((u) => u.maker_sn.trim() && u.und_sn.trim()).length}/{us.length}</b> ·
+                            <span className="text-foreground-muted">S/N <b>{us.filter((u) => !unitMissing(u)).length}/{us.length}</b> ·
                               사진 <b>{us.filter((u) => u.photos.length || u.item_photos.length).length}/{us.length}</b></span>
                           </button>
                         ) : <span className="text-[11.5px] text-foreground-subtle">수량을 적으면 한 대마다 S/N 칸이 생깁니다.</span>}
@@ -1550,18 +1519,36 @@ export function ReceiptForm({ id, p, purpose, initial, picked, leftOf, remaining
                                   if (written && !(await askConfirm({ title: "한 줄로 합칠까요?", confirmLabel: "합치기",
                                     message: `S/N 이 없는 소모품·장비로 기록합니다. 적은 S/N·S/N 사진(${written}대)은 저장되지 않습니다. 낱개 품목 사진은 품목 사진으로 옮깁니다.` }))) return;
                                   const moved = us.flatMap((u) => u.item_photos).filter((x) => !l.photos.includes(x));
-                                  setLine(i, { no_sn: true, photos: [...l.photos, ...moved], sw_owner: l.sw_owner || us.find((u) => u.sw_owner.trim())?.sw_owner || "" });
+                                  setLine(i, { no_sn: true, photos: [...l.photos, ...moved], sw_owner: l.sw_owner || us.find((u) => u.sw_owner.trim())?.sw_owner || "",
+                                               customer: l.customer || us.find((u) => u.customer.trim())?.customer || "",
+                                               owner: l.owner || us.find((u) => u.owner.trim())?.owner || "" });
                                 }}>한 줄로 합치기(S/N 없는 소모품·장비)</button>
+                        {purpose === "sale" && us.length > 1 && (
+                          <button type="button" className="text-[12px] text-foreground-subtle hover:text-accent hover:underline"
+                                  title="1번 대의 고객사·담당자를 나머지 대에 똑같이 넣습니다"
+                                  onClick={() => setLine(i, { units: us.map((u) => ({ ...u, customer: us[0].customer, owner: us[0].owner })) })}>
+                            1번 고객사·담당자를 모두에</button>
+                        )}
                       </div>
                       {unitsOpen(i, us.length) && us.map((u, k) => (
                         <div key={k} className="space-y-1 rounded-md border border-border/70 px-2 py-1.5">
                           {/* 한 대 = 한 줄: 제조사 S/N · UND S/N · S/W 담당자(비워 둬도 칸은 있음, 사용자 2026-11-19) */}
-                          <div className="grid grid-cols-[22px_minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.8fr)] items-center gap-2">
+                          <div className={cn("grid items-center gap-2", purpose === "sale"
+                            ? "grid-cols-[22px_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.8fr)]" : "grid-cols-[22px_minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.8fr)]")}>
                             <span className="font-mono text-[11.5px] font-bold text-foreground-subtle">{k + 1}</span>
-                            <input className={cn(INPUT, "h-8 font-mono")} value={u.maker_sn} placeholder="제조사 S/N" maxLength={120} onChange={(e) => setUnit(i, k, { maker_sn: e.target.value })} />
-                            <input className={cn(INPUT, "h-8 font-mono")} value={u.und_sn} placeholder="UND S/N" maxLength={120} onChange={(e) => setUnit(i, k, { und_sn: e.target.value })} />
-                            <input className={cn(INPUT, "h-8")} value={u.sw_owner} placeholder="S/W 담당자" aria-label={`${k + 1}번 S/W 담당자`} maxLength={100}
-                                   onChange={(e) => setUnit(i, k, { sw_owner: e.target.value })} />
+                            <input className={cn(INPUT, "h-8 font-mono")} value={u.maker_sn} placeholder="제조사 S/N" aria-label={`${k + 1}번 제조사 S/N`} maxLength={120} onChange={(e) => setUnit(i, k, { maker_sn: e.target.value })} />
+                            <input className={cn(INPUT, "h-8 font-mono")} value={u.und_sn} placeholder="UND S/N" aria-label={`${k + 1}번 UND S/N`} maxLength={120} onChange={(e) => setUnit(i, k, { und_sn: e.target.value })} />
+                            {purpose === "sale" ? (
+                              <>
+                                <input className={cn(INPUT, "h-8")} value={u.customer} placeholder="고객사" aria-label={`${k + 1}번 고객사`} maxLength={200}
+                                       onChange={(e) => setUnit(i, k, { customer: e.target.value })} />
+                                <input className={cn(INPUT, "h-8")} value={u.owner} placeholder="우리 측 담당자" aria-label={`${k + 1}번 우리 측 담당자`} maxLength={100}
+                                       onChange={(e) => setUnit(i, k, { owner: e.target.value })} />
+                              </>
+                            ) : (
+                              <input className={cn(INPUT, "h-8")} value={u.sw_owner} placeholder="S/W 담당자" aria-label={`${k + 1}번 S/W 담당자`} maxLength={100}
+                                     onChange={(e) => setUnit(i, k, { sw_owner: e.target.value })} />
+                            )}
                           </div>
                           {/* 사진 두 가지 — 낱개 품목 사진 · S/N 사진(여러 장) */}
                           <div className="ml-[30px] flex flex-wrap gap-x-4 gap-y-1">
@@ -1602,8 +1589,8 @@ export function ReceiptForm({ id, p, purpose, initial, picked, leftOf, remaining
         이번 입고로 입고 완료 {fills ? "(발주 수량을 모두 받아 자동으로 완료)" : "(남은 수량이 있어도 더 받지 않을 때 · 직접 적은 품목만 있을 때)"}
       </label>
       <div className="flex justify-end gap-1.5">
-        {((!b.date && !direct) || !qtyOk || freeBad) && <span className="mr-auto self-center text-[12px] font-semibold text-red-600 dark:text-red-400">빨간 칸(필수)을 채워야 저장됩니다</span>}
-        {(b.date || direct) && qtyOk && !freeBad && partsBad && <span className="mr-auto self-center text-[12px] font-semibold text-red-600 dark:text-red-400">나눈 줄 수량의 합을 품목 수량과 맞춰 주세요</span>}
+        {((!b.date && !direct) || !qtyOk || freeBad) ? <span className="mr-auto self-center text-[12px] font-semibold text-red-600 dark:text-red-400">빨간 칸(필수)을 채워야 저장됩니다</span>
+          : catMissing && <span className="mr-auto self-center text-[12px] font-semibold text-red-600 dark:text-red-400">품목마다 구분을 골라 주세요</span>}
         <button type="button" className={BTN}
                 onClick={() => { if (!dirty) onCancel(); else void askConfirm({ title: "적은 입고 기록을 버리고 닫을까요?", confirmLabel: "버리고 닫기", cancelLabel: "계속 작성", danger: true }).then((ok) => { if (ok) onCancel(); }); }}>취소</button>
         <button type="button" className={PRIMARY} disabled={!canSave} onClick={submit}>
@@ -1640,7 +1627,7 @@ function InfoEditor({ p, busy, onSave }: {
   }
   const locked = !!p.po.no;                     // 발주서를 발행하면 국내·해외는 못 바꾼다(양식·통화)
   return (
-    <div className="grid gap-3 rounded-lg border border-dashed border-border p-4 text-[13px]">
+    <div className="grid gap-3 rounded-lg border border-dashed border-border p-4 text-[13px]" data-editing="true">
       <div className="grid gap-1">
         <span className="font-medium">국내 · 해외</span>
         <div className="flex gap-2">
@@ -1708,8 +1695,9 @@ function TermsEditor({ p, busy, onSave }: {
   const amountOf = (r: TermDraft) => {
     const k = used.indexOf(r);
     if (k < 0) return null;
-    if (k < used.length - 1) return Math.round(total * Number(r.pct) / 100);
-    return Math.round(total - used.slice(0, -1).reduce((s, x) => s + Math.round(total * Number(x.pct) / 100), 0));
+    const cut = p.region === "overseas" ? Math.round : Math.trunc;   // 원화는 원 미만 절삭(사용자 2026-11-20)
+    if (k < used.length - 1) return cut(total * Number(r.pct) / 100);
+    return cut(total - used.slice(0, -1).reduce((s, x) => s + cut(total * Number(x.pct) / 100), 0));
   };
   // 남은 % 를 마지막 빈 회차(잔금)에 채우기 — 30 넣으면 잔금 70 자동(합 100%)
   const fillRest = () => {
@@ -1733,7 +1721,8 @@ function TermsEditor({ p, busy, onSave }: {
     );
   }
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-border bg-surface px-3 py-2.5">
+    <div className="flex flex-col gap-2 rounded-lg border border-border bg-surface px-3 py-2.5"
+         data-editing={saved.length > 0 || JSON.stringify(rows) !== JSON.stringify(termRows(saved)) ? "true" : undefined}>
       <table className="w-full table-fixed border-collapse">
         <colgroup><col className="w-[60px]" /><col className="w-[80px]" /><col /><col className="w-[150px]" /><col className="w-[110px]" /></colgroup>
         <thead>

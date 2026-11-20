@@ -12,6 +12,7 @@ import { SnButton, SnPanel, flatName, loadSnView, usableUnits, type SnLine } fro
 import { ITEM_BTN, primaryBtn, secondaryBtn } from "@/components/domains/sales/proposal-actions";
 import { AMOUNT_BOX, HEAD_FIELD, ROW_BTN, ROW_CARD, ROW_FIELD, ROW_ICON_BTN, ROW_LABEL } from "@/components/domains/sales/quote-styles";
 import type { DealRow, DealShipment, DealStatement, DealStatementItem, IssueUnits } from "@/lib/shared/sales-deals";
+import { vatOf } from "@/lib/shared/money";
 import { cn } from "@/lib/shared/utils";
 
 export type Act = (path: string, body: unknown) => Promise<boolean>;
@@ -195,9 +196,9 @@ export function StatementItems({ deal, st, onChange, withNote = false }: {
       {/* 합계 막대 — 견적서 작성과 같은 모양(사용자 2026-10-23) */}
       <div className="flex flex-wrap items-end gap-x-6 gap-y-1 rounded-xl border border-blue-500/20 bg-gradient-to-b from-blue-500/[0.06] to-blue-500/[0.02] px-4 py-3">
         <span className="flex flex-col"><span className="text-[12px] font-semibold text-foreground-muted">공급가액</span><b className="text-[14px]">{won(supply)}원</b></span>
-        <span className="flex flex-col"><span className="text-[12px] font-semibold text-foreground-muted">부가세</span><b className="text-[14px]">{won(Math.round(supply * 0.1))}원</b></span>
+        <span className="flex flex-col"><span className="text-[12px] font-semibold text-foreground-muted">부가세</span><b className="text-[14px]">{won(vatOf(supply))}원</b></span>
         <span className="ml-auto flex flex-col items-end"><span className="text-[12px] font-semibold text-foreground-muted">합계</span>
-          <b className="text-[22px] font-extrabold tracking-tight">{won(supply + Math.round(supply * 0.1))}원</b></span>
+          <b className="text-[22px] font-extrabold tracking-tight">{won(supply + vatOf(supply))}원</b></span>
       </div>
     </>
   );
@@ -337,6 +338,11 @@ export function ShipForm({ deal, busy, act, initial, onSaved, onCancel, onChange
   const bound = view && editIndex != null
     ? view.lines.filter((ln) => !need.has(ln.line_no)).flatMap((ln) => ln.units.filter((u) => u.shipment_index === editIndex).map((u) => u.id)) : [];
   const unitIds = view ? [...new Set([...[...need.keys()].flatMap(pick), ...bound])] : null;
+  // UND S/N 이 빈 제품(제조사 S/N 만 적음) — UND S/N 만 있는 우리 제품은 다 적은 것(사용자 2026-11-20)
+  const snHalf = view && editIndex == null ? [...new Set([...need.keys()].flatMap((no) => {
+    const ids = new Set(pick(no));
+    return snLine(no)!.units.some((u) => ids.has(u.id) && !u.no_serial && !(u.und_serial ?? "").trim()) ? [flatName(snLine(no)!.name)] : [];
+  }))] : [];
 
   // 화면에서 고친 내용을 위로 알린다(수주 진행: 대화 보내기 전에 저장)
   const report = useRef(onChange);
@@ -369,8 +375,14 @@ export function ShipForm({ deal, busy, act, initial, onSaved, onCancel, onChange
           lines: [{ name: setName.trim(), qty: null, qty_text: setQty.trim(), photos: setPhotos }] }
       : { ...f, purpose: "판매", lines: items };
     if (unitIds) Object.assign(body, { unit_ids: unitIds });
-    // 새 출하 기록은 출하를 완료로 남기는 일이라 한 번 더 묻는다(고치기는 묻지 않음, 사용자 2026-11-18)
-    if (editIndex == null && !(await askConfirm({ title: "출하 기록을 저장할까요?", message: `출하일 ${f.date || todayIso()}`, confirmLabel: "저장" }))) return false;
+    // S/N 을 다 적지 않았어도 막지 않고 묻는다(사용자 2026-11-20) — 확인하면 서버에도 serials_ok
+    const missing = [...new Set([...snShort, ...snHalf])];
+    if (editIndex == null && missing.length) {
+      if (!(await askConfirm({ title: "입력되지 않은 S/N이 있습니다. 그래도 완료하시겠습니까?",
+                                message: `${missing.join(", ")} — ${snShort.length ? "S/N 을 덜 적었거나 " : ""}UND S/N 이 비어 있습니다. 나중에 출하 기록의 [S/N 등록]으로 채울 수 있습니다. (출하일 ${f.date || todayIso()})`,
+                                confirmLabel: "그래도 완료", cancelLabel: "S/N 마저 적기" }))) return false;
+      Object.assign(body, { serials_ok: true });
+    } else if (editIndex == null && !(await askConfirm({ title: "출하 기록을 저장할까요?", message: `출하일 ${f.date || todayIso()}`, confirmLabel: "저장" }))) return false;
     const ok = editIndex != null ? await act("shipment-edit", { ...body, index: editIndex, expect: deal.shipments[editIndex] })
       : await act("shipments", body);
     if (ok) onSaved?.();
@@ -383,7 +395,7 @@ export function ShipForm({ deal, busy, act, initial, onSaved, onCancel, onChange
     ...(deal.flow.terms ?? []).filter((t) => !t.confirmed && (/^(선금|전액)$/.test(t.label) || /발주|계약|출하\s*전|납품\s*전/.test(t.when)))
       .map((t) => `${t.label} ${t.pct}% 입금 확인`),
   ];
-  const canSave = !busy && up === null && (editIndex != null || snShort.length === 0) && (mode === "set" ? !!setName.trim() && !!setQty.trim() : items.length > 0);
+  const canSave = !busy && up === null && (mode === "set" ? !!setName.trim() && !!setQty.trim() : items.length > 0);
   useEffect(() => {
     if (!saveRef) return;
     saveRef.current = canSave ? save : null;
@@ -423,7 +435,8 @@ export function ShipForm({ deal, busy, act, initial, onSaved, onCancel, onChange
 
   // 견적서·거래명세서 작성과 같은 짜임(사용자 2026-10-23) — ① 출하 품목 ② 배송, 흰 40px 칸·테두리 버튼
   return (
-    <div className="flex flex-col gap-3 text-[12.5px]">
+    // data-editing — 작성 중에는 상세 바깥을 눌러도 상세가 닫히지 않게(사용자 2026-11-20)
+    <div className="flex flex-col gap-3 text-[12.5px]" data-editing="true">
       {skipped.length > 0 && (
         <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3.5 py-2.5 text-amber-800 dark:text-amber-200">
           <b>정상 순서: 거래명세서 → 입금 확인 → 출하</b> · 지금은 {skipped.join(", ")} 전입니다. 그래도 출하 기록은 남길 수 있습니다.
@@ -540,9 +553,10 @@ export function ShipForm({ deal, busy, act, initial, onSaved, onCancel, onChange
                                placeholder="예: 경기도 포천시 ○○로 12, 2동 자재 입고장" />)}
         </div>
       </div>
-      {snShort.length > 0 && (
-        <p className="rounded-xl border border-red-500/25 bg-red-500/[0.06] px-3.5 py-2.5 text-red-700 dark:text-red-300">
-          <b>출하 전에 S/N을 등록해 주세요</b> — {snShort.join(", ")}. 품목 오른쪽 [S/N 등록]을 눌러 한 개씩 적습니다(출하일부터 무상 기간 시작).
+      {(snShort.length > 0 || snHalf.length > 0) && (
+        <p className="rounded-xl border border-amber-500/30 bg-amber-500/[0.07] px-3.5 py-2.5 text-amber-800 dark:text-amber-300">
+          <b>입력되지 않은 S/N이 있습니다</b> — {[...new Set([...snShort, ...snHalf])].join(", ")}. 품목 오른쪽 [S/N 등록]에서 제조사 S/N·UND S/N 을 적습니다
+          (우리 제품은 UND S/N 만 적어도 됨). 그대로 저장하면 한 번 더 묻습니다.
         </p>
       )}
       {err && <p className="text-red-600">{err}</p>}
@@ -649,8 +663,9 @@ export function TermsEditor({ deal, busy, onSave, startEditing = false, onCancel
   const amountOf = (r: TermDraft) => {
     const k = used.indexOf(r);
     if (k < 0) return null;
-    if (k < used.length - 1) return Math.round(total * Number(r.pct) / 100);
-    return Math.round(total - used.slice(0, -1).reduce((s, x) => s + Math.round(total * Number(x.pct) / 100), 0));
+    const cut = (deal.quote?.currency ?? "KRW") === "KRW" ? Math.trunc : Math.round;   // 원화는 원 미만 절삭(사용자 2026-11-20)
+    if (k < used.length - 1) return cut(total * Number(r.pct) / 100);
+    return cut(total - used.slice(0, -1).reduce((s, x) => s + cut(total * Number(x.pct) / 100), 0));
   };
 
   if (!editing) {
@@ -666,7 +681,8 @@ export function TermsEditor({ deal, busy, onSave, startEditing = false, onCancel
     );
   }
   return (
-    <div className="flex flex-col gap-2">
+    // 결제 조건이 없을 때 늘 펼쳐 둔 칸은 손댔을 때만 '작성 중'(바깥 클릭으로 상세가 닫히지 않게, 사용자 2026-11-20)
+    <div className="flex flex-col gap-2" data-editing={startEditing || JSON.stringify(rows) !== JSON.stringify(termRows(saved)) ? "true" : undefined}>
       {/* 칸 폭을 고정 — 좁은 칸에서 머리글이 세로로 쪼개지지 않게(사용자 2026-10-23). 금액 = 공급가액 */}
       <table className="w-full table-fixed border-collapse">
         <colgroup><col className="w-[60px]" /><col className="w-[80px]" /><col /><col className="w-[150px]" /><col className="w-[104px]" /></colgroup>

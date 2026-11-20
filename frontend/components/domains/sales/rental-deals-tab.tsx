@@ -374,7 +374,7 @@ function RentalPanel({ id, focusLine = null, highlight, onChanged, onOpenDeal, o
             </button>
           </div>
           <div className="mt-2 font-mono text-[12px]">
-            {focus.units.length ? <span className="break-all">{focus.units.map((u) => u.serial).join(", ")}</span>
+            {focus.units.length ? <span className="break-all">{focus.units.map((u) => u.serial || u.und_serial || "").join(", ")}</span>
               : <span className="font-sans text-foreground-subtle">S/N 빈 칸</span>}
           </div>
           {snFocus && (
@@ -540,7 +540,7 @@ function RentalPanel({ id, focusLine = null, highlight, onChanged, onOpenDeal, o
               </thead>
               <tbody>
                 {lines.map((ln, i) => {
-                  const hit = !!hl && ln.units.some((u) => u.serial.toLowerCase().includes(hl));
+                  const hit = !!hl && ln.units.some((u) => `${u.serial} ${u.und_serial ?? ""}`.toLowerCase().includes(hl));
                   return (
                     <Fragment key={ln.line_no}>
                       <tr className={cn("border-b border-border/50 align-top", hit && "bg-amber-500/10")}>
@@ -552,7 +552,7 @@ function RentalPanel({ id, focusLine = null, highlight, onChanged, onOpenDeal, o
                         <td className="whitespace-nowrap px-2 py-1.5 tabular-nums">{ln.qty}</td>
                         <td className="px-2 py-1.5 font-mono text-[12px]">
                           {ln.units.length
-                            ? <span className="break-all">{ln.units.map((u) => u.serial).join(", ")}</span>
+                            ? <span className="break-all">{ln.units.map((u) => u.serial || u.und_serial || "").join(", ")}</span>
                             : <span className="font-sans text-foreground-subtle">빈 칸</span>}
                           {ln.units.length > 0 && ln.units.length < ln.qty && <span className="ml-1 font-sans text-[11.5px] text-amber-700 dark:text-amber-300">(빈 칸 {ln.qty - ln.units.length})</span>}
                         </td>

@@ -14,6 +14,8 @@ import { Muted, RegionBadge, StageChip, eventDetail, eventLabel, quoteVer, short
 import { DealNewForm } from "@/components/domains/sales/deal-new-form";
 import { Icon } from "@/components/shared/ui/icon";
 import type { DealBiz, DealKpi, DealListData, DealRental, DealRow, DealStage } from "@/lib/shared/sales-deals";
+import { supplyOf as vatlessOf } from "@/lib/shared/money";
+import { RevenueExportButton } from "@/components/domains/sales/revenue-export";
 import { cn } from "@/lib/shared/utils";
 
 const STAGES: DealStage[] = ["견적 전", "제품 추천 확정", "견적", "수주", "출하 후 입금 대기", "완료 (출하·완납)", "드랍", "출하 기록만 (이전)"];
@@ -29,7 +31,7 @@ const DONE_STAGE: DealStage = "완료 (출하·완납)";
 const isOverdue = (r: DealRow) => !!r.flow?.overdue?.length;
 /** 표시 금액 = 공급가액(flow.total), 없으면 견적액(부가세 포함 견적은 ÷1.1) */
 const supplyOf = (r: DealRow) => r.flow?.total ?? (r.quote?.amount == null ? null
-  : r.quote.vat_included ? Math.round(r.quote.amount / 1.1) : r.quote.amount);
+  : r.quote.vat_included ? vatlessOf(r.quote.amount) : r.quote.amount);
 
 type Filter = { q: string; owner: string; stage: string; year: string; unpaid: boolean; review: boolean; overdue: boolean; as: boolean;
   /** 판매·대여 거르기('' = 둘 다) */
@@ -210,8 +212,10 @@ export function DealList({ data, biz, initialOpenId = null, initialFocus, onRefr
               </button>
               <a href="/api/sales-deals/export" download
                  className="flex h-9 items-center rounded-lg border border-border px-4 text-[13px] font-semibold hover:bg-foreground/5">
-                엑셀 다운로드
+                엑셀 내려받기
               </a>
+              {/* 매출 내역 엑셀 — 잔금 세금계산서 발행일 기준, 연도·분기·월(사용자 2026-11-20, 재무 연계) */}
+              {biz !== "rental" && <RevenueExportButton />}
               {admin && (
                 <button type="button" onClick={() => { setNotice(null); setSelecting(true); }}
                         className="h-9 rounded-lg border border-border px-4 text-[13px] font-semibold text-red-600 hover:bg-red-500/8 dark:text-red-400">
@@ -509,23 +513,23 @@ function AlertCell({ row }: { row: DealRow }) {
   );
 }
 
-/** 올해 분기별 수주금액(수주일 기준) · 올해 매출액(출하일 기준) — 공급가액.
+/** 올해 분기별 매출액 · 올해 매출액 — 공급가액, 매출일 = 잔금(마지막 회차) 세금계산서 발행일(사용자 2026-11-20, 예전 수주일·출하일 기준).
  *  분기마다 배지 카드(금액 + 분기 안에서의 비중 막대), 지금 분기는 강조, 합계·매출은 오른쪽 큰 숫자(사용자 2026-10-08). */
 function KpiBar({ kpi }: { kpi: DealKpi }) {
   const eok = (n: number) => (n >= 1e8 ? `${(n / 1e8).toFixed(2)}억` : `${Math.round(n / 1e4).toLocaleString("ko-KR")}만`);
-  const top = Math.max(1, ...kpi.won_by_quarter);
+  const top = Math.max(1, ...kpi.sales_by_quarter);
   return (
     <div className="mb-3 grid gap-2 lg:grid-cols-[1fr_auto]">
       <div className="rounded-xl border border-border bg-surface px-4 py-3">
         <div className="flex flex-wrap items-baseline gap-2">
-          <span className="text-[13px] font-semibold">{kpi.year}년 분기별 수주금액</span>
-          <span className="text-[11.5px] text-foreground-subtle">공급가액 · 수주일 기준</span>
-          <span className="ml-auto rounded-full bg-accent/10 px-2.5 py-0.5 text-[12px] font-semibold text-accent" title={`${won(kpi.won_total)}원`}>
-            올해 합계 <span className="tabular-nums">{eok(kpi.won_total)}</span>
+          <span className="text-[13px] font-semibold">{kpi.year}년 분기별 매출액</span>
+          <span className="text-[11.5px] text-foreground-subtle">공급가액 · 잔금 세금계산서 발행일 기준</span>
+          <span className="ml-auto rounded-full bg-accent/10 px-2.5 py-0.5 text-[12px] font-semibold text-accent" title={`${won(kpi.sales)}원`}>
+            올해 합계 <span className="tabular-nums">{kpi.sales ? eok(kpi.sales) : "0원"}</span>
           </span>
         </div>
         <div className="mt-2.5 grid grid-cols-2 gap-2 sm:grid-cols-4">
-          {kpi.won_by_quarter.map((v, i) => {
+          {kpi.sales_by_quarter.map((v, i) => {
             const now = i + 1 === kpi.quarter;
             const future = i + 1 > kpi.quarter;
             return (
@@ -547,16 +551,14 @@ function KpiBar({ kpi }: { kpi: DealKpi }) {
             );
           })}
         </div>
-        {kpi.won_estimated > 0 && (
-          <div className="mt-1.5 text-[11.5px] text-foreground-subtle">
-            엑셀에서 옮긴 {kpi.won_estimated}건은 수주일이 없어 첫 세금계산서 발행일(없으면 출하일·견적일)로 셈했습니다.
-          </div>
-        )}
+        <div className="mt-1.5 text-[11.5px] text-foreground-subtle">
+          영업 건 상세의 세금계산서 회차를 마지막(잔금)까지 확인한 건만 그 발행일 분기에 들어갑니다 — 수주가 9월이어도 잔금 계산서가 11월이면 4분기.
+        </div>
       </div>
       <div className="flex flex-col justify-between rounded-xl border border-border bg-surface px-4 py-3 lg:min-w-[220px]">
         <div className="flex flex-wrap items-baseline gap-2">
           <span className="text-[13px] font-semibold">{kpi.year}년 매출액</span>
-          <span className="text-[11.5px] text-foreground-subtle">출하일 기준</span>
+          <span className="text-[11.5px] text-foreground-subtle">잔금 세금계산서 발행일 기준</span>
         </div>
         <div className="mt-2 text-[22px] font-bold tabular-nums" title={`${won(kpi.sales)}원`}>{kpi.sales ? eok(kpi.sales) : "-"}</div>
         <div className="text-[11.5px] tabular-nums text-foreground-subtle">{won(kpi.sales)}원</div>

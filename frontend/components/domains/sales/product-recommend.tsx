@@ -938,13 +938,14 @@ const TAB_HEAD: Record<RecommendTab, { title: string; desc: string }> = {
   purchases: { title: "제품 구매 건 관리",
     desc: "우리가 공급사에서 제품을 살 때 견적 → 재가 → 발주 → 송금·배송·입고(해외는 통관 서류·관세사 송금까지)를 한 건씩 기록합니다. 발주서는 회사 양식으로 작성·발행하거나 고친 파일로 올리고, 거래명세서·세금계산서는 받으면 첨부합니다(선택)." },
   // 제품 재고 관리(사용자 2026-11-19) — 구매 건 관리 오른쪽, 입고 기록에서 제품 한 대 = 한 줄
-  stock: { title: "제품 재고 관리",
-    desc: "제품 구매 건의 입고 기록을 저장하면 제품 한 대가 한 줄로 들어옵니다. 판매용과 보유 후 자체 개발용으로 나눠 보고, 구분과 상태를 정하고 상태 메모를 남깁니다. 제품명·고객사·담당자·S/N 은 입고 기록에서 고칩니다." },
+  // 이름 '공장 제품 재고 관리'(사용자 2026-11-20)
+  stock: { title: "공장 제품 재고 관리",
+    desc: "제품 구매 건의 입고 기록을 저장하면 제품 한 대가 한 줄로 들어옵니다. 판매용과 보유 후 자체 개발용으로 나눠 보고, 구분과 상태를 정하고 상태 메모를 남깁니다. 출하·대여 S/N 이 재고 S/N 과 같으면 판매(목록에서 빠짐)·대여 중으로 넘어갑니다. 엑셀로 내려받아 상태·메모를 고친 뒤 다시 올려 한 번에 반영할 수 있습니다." },
   rentals: { title: "대여 제품 목록",
     desc: "유상·무상 대여 제품을 품목마다 한 줄씩 — 대여 시작일이 되면 자동으로 대여 중, 반납일이 지나면 빨갛게 표시됩니다. 줄을 누르면 그 제품의 S/N 과 고객사·대여 건 정보가 열리고, 무상 대여 건은 여기서 등록합니다." },
   // 이름 '제품 S/N 관리'(사용자 2026-11-19 — 자체 개발 제품 SD 도 함께)
   units: { title: "제품 S/N 관리",
-    desc: "S/N·품목 이름으로 고객사·출하일·무상 기간·A/S 이력을 찾고, 접수한 A/S 를 원인·무상/유상·진행 상태와 함께 기록합니다. 자체 개발 제품(SD · 개발)도 구매 건·담당자·재고 상태와 함께 찾고 A/S 를 남깁니다." },
+    desc: "S/N·품목 이름으로 고객사·출하일·무상 기간·A/S 이력을 찾고, 접수한 A/S 를 원인·무상/유상·진행 상태와 함께 기록합니다. 판매용 입고 제품(SP · 판매 예정)과 자체 개발 제품(SD · 개발)도 구매 건·고객사·담당자·재고 상태와 함께 찾고 A/S 를 남깁니다. 출하·대여 S/N 이 같으면 그 건으로 이어서 추적합니다." },
   memory: { title: "검토·승인",
     desc: "AI 가 대화에서 배운 내용(경험·정정·기준)과 나에게 온 승인 요청을 확인합니다. 영업 관리자가 승인한 내용만 AI 답에 반영됩니다." },
 };
@@ -1851,7 +1852,7 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
 
       {/* 탭: 제품 추천 / AI 학습 내용 관리 */}
       <div role="tablist" aria-label="회사 제품 추천 화면" className="und-tabs">
-        {([["recommend", "제품 추천"], ["quote", "견적서"], ["order", "수주 진행"], ["deals", "제품 영업 건 관리"], ["purchases", "제품 구매 건 관리"], ["stock", "제품 재고 관리"], ["rentals", "대여 제품 목록"], ["units", "제품 S/N 관리"], ["memory", "검토·승인"]] as const).map(([key, label]) => {
+        {([["recommend", "제품 추천"], ["quote", "견적서"], ["order", "수주 진행"], ["deals", "제품 영업 건 관리"], ["purchases", "제품 구매 건 관리"], ["stock", "공장 제품 재고 관리"], ["rentals", "대여 제품 목록"], ["units", "제품 S/N 관리"], ["memory", "검토·승인"]] as const).map(([key, label]) => {
           const pending = list.items.filter((c) => c.review_status === "pending").length;
           return (
             <button key={key} type="button" role="tab" aria-selected={tab === key} onClick={() => { setDealOpen(null); setRentalOpen(null); setPurchaseOpen(null); setTab(key); }}

@@ -48,6 +48,11 @@ _QWORD = re.compile(r"금액|얼마|가격|총액|합계|공급가|입금|결제
 _DONE_STAGES = {"완료 (출하·완납)", "드랍", "출하 기록만 (이전)"}
 
 
+
+def _with_vat(v: float) -> int:
+    from .. import money                     # 원 미만 절삭(사용자 2026-11-20)
+    return money.with_vat(v)
+
 def _deal_names(t: str) -> tuple[list[str], bool]:
     ns, lead = dg.names(t)
     return [n for n in ns if not _QWORD.search(n)], lead
@@ -146,9 +151,12 @@ def _kpi(data: dict, t: str, today: dt.date) -> str:
     basis = "(공급가액 · 수주일 기준 · 드랍 제외 · 부가세 별도)"
     out = []
     if "매출" in t and not re.search(r"수주", t):
-        return (f"{k['year']}년 매출(출하일 기준)은 {_money(k['sales'])}입니다. (공급가액 · 드랍 제외 · 부가세 별도)\n"
-                f"참고로 올해 수주 금액은 {_money(k['won_total'])}입니다 — 분기별: "
-                + " · ".join(f"{i}분기 {_money(v)}" for i, v in enumerate(k["won_by_quarter"], 1)))
+        # 매출일 = 잔금(마지막 회차) 세금계산서 발행일(사용자 2026-11-20)
+        if q:
+            return (f"{k['year']}년 {q}분기 매출은 {_money(k['sales_by_quarter'][q - 1])}입니다. "
+                    "(공급가액 · 잔금 세금계산서 발행일 기준 · 드랍 제외 · 부가세 별도)")
+        return (f"{k['year']}년 매출(잔금 세금계산서 발행일 기준)은 {_money(k['sales'])}입니다. (공급가액 · 드랍 제외 · 부가세 별도)\n"
+                "분기별: " + " · ".join(f"{i}분기 {_money(v)}" for i, v in enumerate(k["sales_by_quarter"], 1)))
     if mon:
         won = [r for r in data["rows"] if r.get("won") and not r.get("dropped") and _in_month(r, k["year"], mon)]
         out.append(f"{k['year']}년 {mon}월 수주 금액은 {_money(sum(flow.supply_total(r) or 0 for r in won))}입니다. {basis}")
@@ -313,7 +321,7 @@ def _facet(r: dict, facet: str) -> list[str]:
         if not amt:
             return ["견적 금액이 아직 없습니다(견적서 발행 전)."]
         return [f"견적 금액(공급가액, 부가세 별도): {_money(amt, cur)}" + (f" ({q['no']})" if q.get("no") else ""),
-                *( [f"부가세 포함 시: {_money(round(amt * 1.1), cur)}"] if cur == "KRW" else [])]
+                *( [f"부가세 포함 시: {_money(_with_vat(amt), cur)}"] if cur == "KRW" else [])]
     if facet == "items":
         items = q.get("items") or []
         if not items:

@@ -109,6 +109,12 @@ def _header(ws, head_row: int) -> dict[str, Any]:
                 t = re.sub(r"^swift\s*code\s*:\s*", "", _text(v), flags=re.I).strip()
                 if t and t != "-":
                     out[HEAD_LABELS[low]] = t
+    # 'VAT 포함' / 'VAT 별도'(품목 표 바로 위, 사용자 2026-11-20) — 처음 나온 것
+    for r in range(1, head_row + 1):
+        for c in range(1, min(ws.max_column, 12) + 1):
+            t = re.sub(r"\s+", "", _text(ws.cell(r, c).value)).upper()
+            if t in ("VAT포함", "VAT별도", "부가세포함", "부가세별도") and "vat_included" not in out:
+                out["vat_included"] = t.endswith("포함")
     return out
 
 

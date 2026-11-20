@@ -15,7 +15,7 @@ from __future__ import annotations
 import io
 import re
 from datetime import date
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -123,8 +123,9 @@ def split_name(name: str) -> tuple[str, str]:
 
 
 def _round_won(v: Any) -> int:
-    """엑셀 ROUND 와 같은 반올림(0.5 는 올림) — 파이썬 round 는 12.5 → 12 라 인쇄물(13)과 1원 달랐다(검증 DL-019, 2026-10-15)."""
-    return int(Decimal(str(v)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    """원 미만 절삭(회사 규칙, 사용자 2026-11-20 — 예전엔 엑셀 ROUND 와 같은 반올림). 계산은 money.py"""
+    from .. import money
+    return money.won(v)
 
 
 def totals(items: list[dict[str, Any]]) -> dict[str, int]:

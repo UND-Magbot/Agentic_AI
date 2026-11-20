@@ -54,7 +54,7 @@ async def run() -> None:
         await db.rollback()
         await ps.save_direct(db, a, uid, "QA", {"purpose": "sale", "date": today, "supplier": SUP, "region": "overseas", "location": "본사 2층",
                                                 "lines": [{"name": "M20", "qty": 3, "parts": [{"qty": 2, "customer": "A사"}, {"qty": 1, "customer": "B사"}]},
-                                                          {"name": "케이블", "qty": 30}]})
+                                                          {"name": "케이블", "qty": 30, "no_sn": True}]})
         rows = [r for r in (await stock.list_items(db, "sale"))["rows"] if r["purchase_id"] == a]
         check(len(rows) == 33 and all(r["direct"] and r["region"] == "overseas" and r["maker"] == SUP for r in rows)
               and sorted({(r["name"], r["part"], r["customer"]) for r in rows}) == [("M20", 0, "A사"), ("M20", 1, "B사"), ("케이블", 0, "")],

@@ -137,7 +137,7 @@ async def rented_units(db: AsyncSession, since: dt.date | None, until: dt.date |
     대여 단계는 S/N 진행으로 읽는다(사용자 2026-10-27): 등록 = 대여 전, 출하 = 대여 중, 회수 = 대여 완료.
     '대여 나간 제품' = 대여 중만 — R 이거나, 대여 건에서 나가 A/S 중(A)인 제품. 대여 전은 waiting 으로 따로."""
     rs = (await db.execute(text(
-        "SELECT u.serial, u.part_name, u.line_name, u.status, u.purpose, u.warranty_start, u.deal_id, "
+        "SELECT COALESCE(NULLIF(u.serial, ''), u.und_serial) AS serial, u.part_name, u.line_name, u.status, u.purpose, u.warranty_start, u.deal_id, "
         "       d.customer, d.title, d.deal_no, d.quote, d.shipments "
         "FROM product_units u JOIN sales_deals d ON d.id = u.deal_id "
         "WHERE COALESCE(d.dropped, false) = false AND ("
@@ -233,7 +233,7 @@ async def rental_units(db: AsyncSession, today: dt.date) -> dict[str, Any]:
     줄 = {unit_id, deal_id, product, part, serial, state(제품 상태 코드), phase, customer, contact, owner, deal_no, title,
           start, end, returned(회수 완료일), return_started, days_left(반납 예정일까지, 지났으면 음수), free}."""
     rs = (await db.execute(text(
-        "SELECT u.id, u.serial, u.no_serial, u.part_name, u.line_name, u.status, u.purpose, u.warranty_start, u.deal_id, "
+        "SELECT u.id, COALESCE(NULLIF(u.serial, ''), u.und_serial) AS serial, u.no_serial, u.part_name, u.line_name, u.status, u.purpose, u.warranty_start, u.deal_id, "
         "       d.customer, d.contact, d.owner, d.title, d.deal_no, d.quote, d.shipments "
         "FROM product_units u JOIN sales_deals d ON d.id = u.deal_id "
         "WHERE COALESCE(d.dropped, false) = false AND d.quote->>'biz' = 'rental' AND u.status <> '건 삭제' "

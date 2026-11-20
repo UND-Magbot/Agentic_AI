@@ -91,7 +91,7 @@ const PROPOSAL_TASK: RequestTask = {
 };
 
 /** 대표 기능 카드 — 기능마다 색·흐름을 달리해 한눈에 구분되게(사용자 2026-10-01: 부가 기능처럼 보이고 서로 구별이 안 됨). */
-// group: top = 윗줄 3개, bottom = 아랫줄 4개 — 7개가 한 화면에 3 + 4 로(사용자 2026-11-11 구매 건 관리 추가).
+// group: top = 윗줄 3개, bottom = 아랫줄 5개 — 8개(사용자 2026-11-20 공장 제품 재고 관리를 윗줄 셋째, 견적서 수기 작성은 아랫줄 첫째로).
 // 더 자주 쓰는 영업 건·구매 건 관리를 윗줄로(사용자 2026-11-11 — 제안서 만들기·회사 제품 추천과 자리 바꿈)
 const FEATURES: {
   href: string; title: string; desc: string; icon: IconName; steps: string[]; group: "top" | "bottom";
@@ -128,12 +128,11 @@ const FEATURES: {
     },
   },
   {
-    // 견적서 수기 작성(사용자 2026-10-08) — AI 추천이 아직 없는 제품(그리퍼·AMR 등)도 견적서부터 시작해 같은 흐름으로 관리
-    href: "/proposals/recommend?tab=quote&new=manual",
-    title: "견적서 수기 작성",
-    desc: "AI 추천이 아직 없는 제품(그리퍼·AMR 등)도 견적서부터 바로 — 제품 판매·제품 대여를 고르고 품목을 직접 넣거나 단가표에서 고르면, 발행할 때 건 번호가 붙어 판매·대여 관리로 이어집니다.",
-    icon: "edit",
-    steps: ["품목 입력", "견적 발행", "영업 건 관리"],
+    href: "/proposals/recommend?tab=stock",     // [공장 제품 재고 관리] 탭(사용자 2026-11-20 — 견적서 수기 작성 자리에)
+    title: "공장 제품 재고 관리",
+    desc: "구매 건 입고 기록으로 들어온 제품을 판매용·보유 후 자체 개발용으로 나눠 한 대씩 봅니다. 상태·메모를 관리하고, 출하·대여 S/N 과 같으면 판매·대여 중으로 넘어갑니다. 엑셀로 상태를 한 번에 고칩니다.",
+    icon: "folder",
+    steps: ["입고", "판매 예정·개발", "판매·대여", "엑셀 반영"],
     group: "top",
     tone: {
       band: "from-violet-600 to-fuchsia-500",
@@ -141,6 +140,22 @@ const FEATURES: {
       chip: "bg-violet-500/10 text-violet-700 dark:text-violet-300",
       cta: "text-violet-700 dark:text-violet-300",
       ring: "hover:ring-violet-500/40",
+    },
+  },
+  {
+    // 견적서 수기 작성(사용자 2026-10-08) — AI 추천이 아직 없는 제품(그리퍼·AMR 등)도 견적서부터 시작해 같은 흐름으로 관리
+    href: "/proposals/recommend?tab=quote&new=manual",
+    title: "견적서 수기 작성",
+    desc: "AI 추천이 아직 없는 제품(그리퍼·AMR 등)도 견적서부터 바로 — 제품 판매·제품 대여를 고르고 품목을 직접 넣거나 단가표에서 고르면, 발행할 때 건 번호가 붙어 판매·대여 관리로 이어집니다.",
+    icon: "edit",
+    steps: ["품목 입력", "견적 발행", "영업 건 관리"],
+    group: "bottom",   // 아랫줄 첫째로(사용자 2026-11-20 — 윗줄 자리는 공장 제품 재고 관리)
+    tone: {
+      band: "from-slate-600 to-slate-500",
+      icon: "bg-white/20 text-white",
+      chip: "bg-slate-500/10 text-slate-700 dark:text-slate-300",
+      cta: "text-slate-700 dark:text-slate-300",
+      ring: "hover:ring-slate-500/40",
     },
   },
   {
@@ -191,7 +206,7 @@ const FEATURES: {
   {
     href: "/proposals/recommend?tab=units",     // [제품·A/S] 탭(사용자 2026-10-22: A/S 건 관리 카드)
     title: "제품 S/N 관리",
-    desc: "S/N·품목 이름으로 고객사·출하일·무상 기간·A/S 이력을 찾고, 접수한 A/S 를 원인·무상/유상·진행 상태와 함께 기록합니다. 자체 개발 제품(SD)도 함께.",
+    desc: "S/N·품목 이름으로 고객사·출하일·무상 기간·A/S 이력을 찾고, 접수한 A/S 를 원인·무상/유상·진행 상태와 함께 기록합니다. 판매 예정(SP)·자체 개발(SD) 제품도 함께.",
     icon: "bug",
     steps: ["S/N 조회", "A/S 접수", "진행", "완료"],
     group: "bottom",
@@ -238,7 +253,7 @@ export function SalesHome({ disabled, examples, onPickExample, onRunBody, onRunC
           </button>
         </div>
         {(["top", "bottom"] as const).map((g) => (
-        <div key={g} className={cn("grid gap-4 md:grid-cols-2", g === "top" ? "lg:grid-cols-3" : "mt-4 lg:grid-cols-4")}>
+        <div key={g} className={cn("grid gap-4 md:grid-cols-2", g === "top" ? "lg:grid-cols-3" : "mt-4 lg:grid-cols-3 xl:grid-cols-5")}>
           {FEATURES.filter((f) => f.group === g).map((f) => (
             <Link
               key={f.href}

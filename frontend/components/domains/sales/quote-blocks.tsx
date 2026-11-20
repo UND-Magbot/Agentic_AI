@@ -7,6 +7,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import type { QuoteBlock, QuoteLine, QuoteNego } from "@/lib/shared/product-recommend";
 import { Icon } from "@/components/shared/ui/icon";
+import { wonCut } from "@/lib/shared/money";
 import { cn } from "@/lib/shared/utils";
 import { ITEM_BTN, inputCls, primaryBtn } from "./proposal-actions";
 import { AMOUNT_BOX, HEAD_AREA, ROW_CARD, ROW_CARD_AUTO, ROW_FIELD, ROW_ICON_BTN, ROW_LABEL } from "./quote-styles";
@@ -78,7 +79,7 @@ export function blockOf(l: QuoteLine, blocks: QuoteBlock[], auto: string = MAIN_
 export function negoCut(nego: QuoteNego | null | undefined, base: number, en: boolean): number {
   if (!nego?.value || nego.value <= 0) return 0;
   const v = nego.mode === "percent" ? (base * nego.value) / 100 : nego.value;
-  return en ? Math.round(v * 100) / 100 : Math.round(v);
+  return en ? Math.round(v * 100) / 100 : wonCut(v);           // 원화는 원 미만 절삭(사용자 2026-11-20)
 }
 
 // 묶음은 이름을 직접 정하는 '사용자 지정 묶음'과 '< OPTION > 묶음' 두 가지(사용자 2026-10-13). 사양·서술형은 묶음 안 [+ 서술형 줄].

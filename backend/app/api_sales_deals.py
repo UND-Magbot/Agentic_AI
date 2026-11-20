@@ -177,6 +177,8 @@ class ShipmentIn(BaseModel):
     lines: list[ShipLineIn] = Field(default_factory=list, max_length=500)    # 제품별 출하 줄(사진 포함)
     # 이 출하로 나가는 제품 시리얼(product_units.id, 사용자 2026-10-19) — 없으면 수주 판에서 아직 안 나간 것 전부
     unit_ids: list[int] | None = Field(default=None, max_length=500)
+    # S/N 을 다 적지 않았어도 출하(사용자 2026-11-20 — 막지 않고 '그래도 완료할까요?'를 확인한 뒤 True 로 다시 보냄)
+    serials_ok: bool = False
 
 
 class OrderItemIn(BaseModel):
@@ -351,6 +353,25 @@ async def export_deals(_: User = Depends(require_sales), db: AsyncSession = Depe
         "Cache-Control": "private, no-store"})
 
 
+@router.get("/revenue-export")
+async def revenue_export(year: int, unit: Literal["year", "quarter", "month"] = "month", value: int | None = None,
+                         _: User = Depends(require_sales), db: AsyncSession = Depends(get_db)):
+    """매출 내역 엑셀(사용자 2026-11-20, 재무 연계) — 잔금 세금계산서 발행일 기준, 연도별·분기별·월별."""
+    from fastapi.responses import Response
+
+    from .sales_deals import revenue_xlsx as rx
+
+    rows = (await svc.list_deals(db, svc.kst_today()))["rows"]     # 영업 건 관리 위 분기별 매출액과 같은 건들(판매·유상 대여, 무상 대여 제외)
+    try:
+        title, data = rx.build_xlsx(rows, year, unit, value)
+    except rx.RevenueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    name = f"매출내역_{title.replace(' ', '')}.xlsx"
+    return Response(content=data, media_type=PO_TYPES[".xlsx"], headers={
+        "Content-Disposition": f"attachment; filename=\"revenue.xlsx\"; filename*=UTF-8''{urllib.parse.quote(name, safe='')}",
+        "Cache-Control": "private, no-store"})
+
+
 class InitialsIn(BaseModel):
     name: str | None = Field(default=None, max_length=50)          # 없으면 로그인한 사람(제품 추천 확정의 담당자와 같게)
     initials: str = Field(min_length=2, max_length=4)
@@ -422,6 +443,9 @@ class UnitsIn(BaseModel):
     # 이미 남긴 출하 기록에 S/N 등록(사용자 2026-10-23) — 그 출하 번호(0부터). 보낸 줄의 안 묶인 S/N 을 그 출하로 묶는다
     shipment_index: int | None = Field(default=None, ge=0, le=500)
     shipment_expect: Expect = None
+    # 재고(판매용·자체 개발용 입고) 제품과 같은 S/N 을 이 건으로 가져오기(사용자 2026-11-20) — 처음엔 False 로 보내 STOCK_MATCH 를 받고,
+    # 화면이 '판매하시겠습니까?/대여하시겠습니까?'를 확인하면 True 로 다시 보낸다
+    take_stock: bool = False
 
 
 class CaseIn(BaseModel):
@@ -606,7 +630,7 @@ async def save_units(deal_id: int, body: UnitsIn, user: User = Depends(require_s
     return await _units_call(db, _checked(db, deal_id, "shipments", body.shipment_index, body.shipment_expect,
                                           units.save_units(db, deal_id, user.id, body.quote_id, body.revision,
                                                            [ln.model_dump() for ln in body.lines], partial=body.partial,
-                                                           shipment_index=body.shipment_index)))
+                                                           shipment_index=body.shipment_index, take_stock=body.take_stock)))
 
 
 @router.get("/{deal_id}/rental")
@@ -792,6 +816,40 @@ async def unconfirm_term(deal_id: int, body: TermConfirmIn, user: User = Depends
     """회차 입금 확인 취소 — 누구나(사용자 2026-11-11 — 견적서·발주서가 바뀌며 금액이 바뀔 수 있어 담당자가 직접 취소). 완납이었으면 함께 풀린다."""
     return await _act(db, deal_id, _checked(db, deal_id, "pay_terms", body.index, body.expect,
                                             svc.unconfirm_term(db, deal_id, user.id, body.index)))
+
+
+class TaxTermIn(BaseModel):
+    label: str = Field(default="", max_length=20)
+    pct: float | None = None
+
+
+class TaxTermsIn(BaseModel):
+    terms: list[TaxTermIn] = Field(default_factory=list, max_length=12)
+
+
+class TaxConfirmIn(BaseModel):
+    index: int = Field(ge=0, le=11)
+    date: dt.date | None = None
+
+
+@router.post("/{deal_id}/tax-terms")
+async def tax_terms(deal_id: int, body: TaxTermsIn, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    """세금계산서 회차(선금·중도금 1·2…·잔금 %, 합 100) 저장 — 사용자 2026-11-20."""
+    return await _act(db, deal_id, svc.set_tax_terms(db, deal_id, user.id, [t.model_dump() for t in body.terms]))
+
+
+@router.post("/{deal_id}/tax-confirm")
+async def tax_confirm(deal_id: int, body: TaxConfirmIn, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    """세금계산서 회차 [확인] — 발행일 필수. 마지막 회차까지 확인하면 그 발행일이 매출일."""
+    if body.date is None:
+        raise HTTPException(status_code=400, detail="세금계산서 발행일을 달력에서 골라 주세요.")
+    return await _act(db, deal_id, svc.confirm_tax(db, deal_id, user.id, user.alias or user.username, body.index, body.date))
+
+
+@router.post("/{deal_id}/tax-unconfirm")
+async def tax_unconfirm(deal_id: int, body: TaxConfirmIn, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+    """세금계산서 회차 확인 취소 — 영업팀 누구나, 이력에 남음."""
+    return await _act(db, deal_id, svc.unconfirm_tax(db, deal_id, user.id, body.index))
 
 
 @router.post("/{deal_id}/meeting")

@@ -61,8 +61,9 @@ async def purchase_part(uid: int) -> None:
             {"line_no": 0, "qty": 2, "customer": "LG CNS", "owner": "Lucas", "note": "11월 납품", "units": [{"maker_sn": "X"}]}]})
         p = await ps.get(db, pid, today)
         r = p["receipt"]["records"]
-        check(len(r) == 1 and r[0]["purpose"] == "sale" and r[0]["lines"][0]["customer"] == "LG CNS" and "units" not in r[0]["lines"][0],
-              "판매용 입고 — 고객사·담당·메모, S/N 없음", r[0]["lines"][0])
+        check(len(r) == 1 and r[0]["purpose"] == "sale" and r[0]["lines"][0]["customer"] == "LG CNS"
+              and r[0]["lines"][0]["units"][0]["maker_sn"] == "X",
+              "판매용 입고 — 고객사·담당·메모 + 대마다 S/N(사용자 2026-11-20)", r[0]["lines"][0])
         await expect_err(ps.add_receipt(db, pid, uid, "QA", {"date": today, "purpose": "dev", "lines": [
             {"line_no": 1, "qty": 2, "units": [{"maker_sn": "M1", "und_sn": "D"}, {"maker_sn": "M2", "und_sn": "d"}]}]}), "같은 UND S/N 두 번 거절", "두 번")
         await db.rollback()
@@ -149,10 +150,26 @@ async def units_part(uid: int) -> None:
         await units.save_units(db, did, uid, q["id"], 0, [{"line_no": line, "units": [{"serial": "QR-UND-1", "maker": "UND"}]}], partial=True)
         u = (await db.execute(text("SELECT serial, und_serial FROM product_units WHERE deal_id = :d"), {"d": did})).one()
         check(tuple(u) == ("QR-UND-1", "QR-UND-1"), "우리 제품(UND) — 제조사 S/N 만 적으면 UND S/N 도 같은 번호", tuple(u))
-        await expect_err(units.save_units(db, did, uid, q["id"], 0, [{"line_no": line, "units": [
-            {"serial": "QR-UND-1", "maker": "UND"}, {"serial": "SCH-1", "maker": "Schunk"}]}], partial=True),
-            "다른 제조사는 UND S/N 도 적어야 함", "UND S/N")
-        await db.rollback()
+        # 한쪽만 적어도 저장(사용자 2026-11-20 — 막지 않고 화면이 출하 때 묻는다). UND S/N 만 적으면 제조사 칸도 같은 번호
+        await units.save_units(db, did, uid, q["id"], 0, [{"line_no": line, "units": [
+            {"serial": "QR-UND-1", "maker": "UND"}, {"serial": "SCH-1", "maker": "Schunk"}, {"und_serial": "QR-UND-9", "maker": "UND"},
+            {"und_serial": "QR-UND-8", "maker": "UND"}]}],
+            partial=True)
+        rs = [tuple(r) for r in (await db.execute(text("SELECT serial, und_serial FROM product_units WHERE deal_id = :d ORDER BY id"),
+                                                  {"d": did})).all()]
+        check(("SCH-1", "") in rs and ("", "QR-UND-9") in rs, "제조사 S/N 만·UND S/N 만 적어도 저장(UND S/N 만이면 제조사 칸은 빈칸)", rs)
+        # UND S/N 만 적은 제품 둘 — 제조사 S/N 빈칸끼리 겹침으로 보지 않음(색인 serial2), A/S·이력은 제 제품 것만
+        check(("", "QR-UND-8") in rs, "UND S/N 만 적은 제품 두 대도 저장(빈 제조사 S/N 끼리 안 겹침)", rs)
+        u9 = (await db.execute(text("SELECT id FROM product_units WHERE und_serial = 'QR-UND-9'"))).scalar()
+        u8 = (await db.execute(text("SELECT id FROM product_units WHERE und_serial = 'QR-UND-8'"))).scalar()
+        c9 = await units.create_case(db, uid, u9, {"received_on": today, "symptom": "소음", "cause": "제품 결함"})
+        d8 = await units.unit_detail(db, u8, today)
+        d9 = await units.unit_detail(db, u9, today)
+        check(c9["serial"] == "QR-UND-9" and not d8["cases"] and len(d9["cases"]) == 1
+              and not any("QR-UND-9" in (x.get("detail") or "") for x in d8["timeline"]),
+              "A/S 기록 S/N = UND S/N, 다른 빈칸 제품의 A/S·이력이 섞이지 않음", (c9["serial"], len(d8["cases"]), len(d9["cases"])))
+        await db.execute(text("DELETE FROM as_cases WHERE id = :i"), {"i": c9["id"]})
+        await db.commit()
         await units.save_units(db, did, uid, q["id"], 0, [{"line_no": line, "units": [
             {"serial": "QR-UND-1", "maker": "UND"}, {"serial": "SCH-1", "und_serial": "QR-UND-2", "maker": "Schunk", "photos": [PH, "x"]}]}], partial=True)
         rs = (await db.execute(text("SELECT serial, und_serial, photos FROM product_units WHERE deal_id = :d ORDER BY id"), {"d": did})).all()

@@ -67,7 +67,8 @@ async def rental_list(db: AsyncSession, today: dt.date) -> dict[str, Any]:
     sn: dict[int, list[str]] = {}
     if ids:
         for u in (await db.execute(text(
-                "SELECT deal_id, serial FROM product_units WHERE deal_id = ANY(:i) AND status <> :gone ORDER BY line_no, id"),
+                "SELECT deal_id, COALESCE(NULLIF(serial, ''), und_serial) AS serial FROM product_units WHERE deal_id = ANY(:i) "
+                "AND status <> :gone ORDER BY line_no, id"),
                 {"i": ids, "gone": units.DELETED})).mappings().all():
             sn.setdefault(u["deal_id"], []).append(u["serial"])
     rows = []
@@ -120,7 +121,7 @@ async def rental_products(db: AsyncSession, today: dt.date) -> dict[str, Any]:
         src = await _source(db, d)
         if src:
             lines = [{"line_no": ln["line_no"], "name": ln["name"], "part": ln["part"], "qty": ln["qty"],
-                      "serials": [u["serial"] for u in ln["units"]]} for ln in (await units.issue_units(db, d["id"], *src))["lines"]]
+                      "serials": [u["serial"] or u.get("und_serial") or "" for u in ln["units"]]} for ln in (await units.issue_units(db, d["id"], *src))["lines"]]
         else:                                    # 발행한 견적서 판이 없는 예전 건 — 건 견적 품목으로(S/N 은 판에 묶이므로 없음)
             lines = [{"line_no": None, "name": ln["name"], "part": units.default_part(ln["name"]), "qty": ln["qty"], "serials": []}
                      for ln in units.target_lines((d.get("quote") or {}).get("items") or [])]
@@ -220,7 +221,7 @@ async def load_serials(db: AsyncSession, deal_id: int, user_id: int | None, toda
         hints = ln["hints"]
         if not hints:
             continue
-        have = {u["serial"].lower() for u in ln["units"]}
+        have = {x.lower() for u in ln["units"] for x in (u["serial"], u.get("und_serial") or "") if x}
         if len(hints) > ln["qty"]:
             skipped += [{"serial": s, "line": name, "why": f"수량({ln['qty']})보다 S/N이 많이 적혀 있음"} for s in hints if s.lower() not in have]
             continue
@@ -246,7 +247,8 @@ async def load_serials(db: AsyncSession, deal_id: int, user_id: int | None, toda
         dup = (await db.execute(text(
             "SELECT lower(u.serial) AS s, u.status, s.customer FROM product_units u LEFT JOIN sales_deals s ON s.id = u.deal_id "
             # 회수가 끝난 줄은 빼고 — 회수한 대여 제품은 다시 불러올 수 있다(사용자 2026-11-16)
-            f"WHERE NOT u.no_serial AND lower(u.maker) = 'und' AND lower(u.serial) = ANY(:w) AND u.status <> '{units.RETURNED}'"),
+            f"WHERE NOT u.no_serial AND ((lower(u.maker) = 'und' AND lower(u.serial) = ANY(:w)) OR lower(u.und_serial) = ANY(:w)) "
+            f"AND u.status <> '{units.RETURNED}'"),
             {"w": [s.lower() for s in want]})).mappings().all()
         busy = {r["s"]: (r["customer"] or "고객사 없음") + (" · 지운 건" if r["status"] == units.DELETED else "") for r in dup}
         for no, xs in list(picked.items()):

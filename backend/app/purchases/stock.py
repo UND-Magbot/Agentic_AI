@@ -28,10 +28,12 @@ from . import flow
 CATEGORIES = ("QURI", "AMR", "ACR", "휴머노이드", "4축", "6축", "AGV", "기타 로봇",
               "ATC", "EOAT", "그리퍼", "모터",
               "PC", "컨트롤러", "카메라", "태블릿", "부품", "EP", "기타")
-STATES = ("대기 중", "수리 필요", "수리 중", "사용 중", "기타")
+STATES = ("대기 중", "수리 필요", "수리 중", "사용 중", "대여 중", "기타")
 FIRST_STATE = "대기 중"
+RENTED = "대여 중"       # 영업 건 대여로 나감(사용자 2026-11-20) — 회수하면 자동으로 '대기 중'
+SOLD = "판매 완료"       # 영업 건 판매로 나감 — 재고 목록에서 빠지고 제품 S/N 관리에서 그 건으로 추적
 PURPOSES = ("sale", "dev")
-ACTION_LABEL = {"in": "입고", "receipt": "입고 기록 반영", "status": "상태", "category": "구분", "owner": "담당자",
+ACTION_LABEL = {"in": "입고", "receipt": "입고 기록 반영", "status": "상태", "handover": "영업 건으로", "back": "재고로 돌아옴", "category": "구분", "owner": "담당자",
                 "name": "표시 이름", "maker": "제조사", "customer": "판매 고객사", "sw_owner": "S/W 담당자", "received_on": "입고일"}
 # 입고 기록에서 오는 칸 — sync 가 맞춘다
 _FROM_RECEIPT = ("name", "received_on", "customer", "sw_owner", "maker_sn", "und_sn", "no_sn")
@@ -75,24 +77,27 @@ def wanted(receipt: dict) -> dict[tuple[str, str, int], dict]:
             base = start.get(lk, 0)
             start[lk] = base + max(n, 0)
             pbase = part_start.get(lk, 0)
-            # 자체 개발용은 대마다 나뉜 것이 기본(사용자 2026-11-19) — [한 줄로 합치기](no_sn)를 했거나 예전 꼴 나눈 줄(parts)만 묶는다
-            dev_each = purpose == "dev" and not ln.get("no_sn") and not ln.get("parts")
+            # 대마다 나뉜 것이 기본(자체 개발용 2026-11-19, 판매용 2026-11-20) — [한 줄로 합치기](no_sn)를 했거나 예전 꼴 나눈 줄(parts)만 묶는다
+            # 판매용인데 units 칸이 아예 없는 줄 = 대마다 S/N 을 받기 전(2026-11-20 전)에 남긴 기록 — 예전처럼 한 줄로 묶고 S/N 표에도 안 올린다.
+            # 그 기록을 [수정]으로 다시 저장하면 대마다 칸이 생긴다
+            legacy_sale = purpose == "sale" and "units" not in ln
+            dev_each = not ln.get("no_sn") and not ln.get("parts") and not legacy_sale
             part_start[lk] = pbase + (max(n, 0) if dev_each else len(flow.parts_of(ln)))
             for k in range(max(n, 0)):
                 u = units[k] if k < len(units) else {}
                 out[(purpose, lk, base + k)] = {
                     "name": str(ln.get("name") or "")[:200], "received_on": day,
                     "category": str(ln.get("category") or "") if ln.get("category") in CATEGORIES else "",
-                    "customer": str(parts[k][1]["customer"])[:200] if purpose == "sale" and k < len(parts) else "",
-                    "line_owner": str(parts[k][1]["owner"])[:100] if purpose == "sale" and k < len(parts) else "",
+                    "customer": str(u.get("customer") or (parts[k][1]["customer"] if k < len(parts) else ""))[:200] if purpose == "sale" else "",
+                    "line_owner": str(u.get("owner") or (parts[k][1]["owner"] if k < len(parts) else ""))[:100] if purpose == "sale" else "",
                     "part": pbase + (k if dev_each else parts[k][0] if k < len(parts) else 0),   # 목록 묶음 = 나눈 줄(자체 개발용은 대마다)
                     "sw_owner": str(u.get("sw_owner") or (parts[k][1]["sw_owner"] if k < len(parts) else "") or ln.get("sw_owner") or "")[:100]
                     if purpose == "dev" else "",
                     "maker_sn": str(u.get("maker_sn") or (legacy[k] if k < len(legacy) else ""))[:100],
                     "und_sn": str(u.get("und_sn") or "")[:100],
-                    "no_sn": bool(ln.get("no_sn")),
-                    # 그 대의 S/N 사진(자체 개발용)
-                    "photos": [x for x in (u.get("photos") if purpose == "dev" else []) or [] if isinstance(x, str)],
+                    "no_sn": bool(ln.get("no_sn")) or legacy_sale,
+                    # 그 대의 S/N 사진
+                    "photos": [x for x in u.get("photos") or [] if isinstance(x, str)],
                     # 품목 사진 = 품목 줄 사진 + 그 대가 속한 나눈 줄의 사진 + 그 대의 낱개 품목 사진(자체 개발용)
                     "line_photos": [x for x in [*(ln.get("photos") or []), *((parts[k][1].get("photos") or []) if k < len(parts) else []),
                                                 *(u.get("item_photos") or [])] if isinstance(x, str)],
@@ -119,7 +124,8 @@ async def sync(db: AsyncSession, pid: int, user_id: int | None = None) -> None:
     if gone:
         await _drop_units(db, gone)
         await db.execute(text("DELETE FROM stock_items WHERE id = ANY(:ids)"), {"ids": gone})
-    dev_ids: dict[tuple[str, str, int], int] = {k: r["id"] for k, r in have.items() if k in want and k[0] == "dev"}
+    # S/N 표에 올릴 재고 줄 — 자체 개발용('SD · 개발')과 판매용('SP · 판매 예정', 사용자 2026-11-20)
+    dev_ids: dict[tuple[str, str, int], int] = {k: r["id"] for k, r in have.items() if k in want}
     for key, w in want.items():
         purpose = key[0]
         owner = w["line_owner"] if purpose == "sale" else str(p["owner"] or "")
@@ -132,8 +138,7 @@ async def sync(db: AsyncSession, pid: int, user_id: int | None = None) -> None:
                  "o": owner, "sw": w["sw_owner"], "m": w["maker_sn"], "u": w["und_sn"], "ns": w["no_sn"], "st": FIRST_STATE,
                  "cat": w["category"]})).scalar_one()
             await _log(db, iid, user_id, "in", {"입고일": w["received_on"]})
-            if purpose == "dev":
-                dev_ids[key] = iid
+            dev_ids[key] = iid
             continue
         new = {k: w[k] for k in _FROM_RECEIPT}
         if purpose == "sale" or not cur["owner_set"]:     # 자체 개발용 영업팀 담당자는 재고에서 고치면 그 값을 지킨다
@@ -147,12 +152,13 @@ async def sync(db: AsyncSession, pid: int, user_id: int | None = None) -> None:
         await db.execute(text(f"UPDATE stock_items SET {sets}, updated_at = NOW() WHERE id = :i"), {**changed, "i": cur["id"]})
         await _log(db, cur["id"], user_id, "receipt",
                    {_FIELD_LABEL[k]: (v if not isinstance(v, bool) else ("예" if v else "아니요")) for k, v in changed.items()})
-    await _sync_units(db, pid, {iid: want[k] for k, iid in dev_ids.items()})
+    await _sync_units(db, pid, {iid: {**want[k], "purpose": k[0]} for k, iid in dev_ids.items()})
 
 
 # ── 자체 개발 제품 → S/N 표(product_units) ─────────────────────────────────────
 
 DEV_STATE = "SD"                 # 상태 코드 'SD · 개발'(영업 건 S/N 의 상태 고르기에는 없음)
+SALE_STATE = "SP"                # 판매용 입고 'SP · 판매 예정'(사용자 2026-11-20) — 출하 S/N 과 같으면 그 판매 건으로 넘어간다
 DEV_GONE = "입고 삭제"           # 재고 줄이 없어졌지만 A/S 기록이 있어 남긴 S/N 줄
 
 
@@ -170,9 +176,11 @@ async def _sync_units(db: AsyncSession, pid: int, rows: dict[int, dict]) -> None
     supplier = (await db.execute(text("SELECT supplier FROM purchases WHERE id = :p"), {"p": pid})).scalar() or ""
     # 제조사 = 재고에서 정한 제조사(비면 구매 공급사, 사용자 2026-11-19)
     makers = {r[0]: r[1] for r in (await db.execute(text("SELECT id, maker FROM stock_items WHERE id = ANY(:i)"), {"i": list(rows)})).all()}
-    cur = {r["stock_item_id"]: r["id"] for r in (await db.execute(text(
-        "SELECT id, stock_item_id FROM product_units WHERE stock_item_id = ANY(:i)"), {"i": list(rows)})).mappings().all()}
+    cur = {r["stock_item_id"]: r["deal_id"] for r in (await db.execute(text(
+        "SELECT deal_id, stock_item_id FROM product_units WHERE stock_item_id = ANY(:i)"), {"i": list(rows)})).mappings().all()}
     for iid, w in rows.items():
+        if iid in cur and cur[iid] is not None:       # 판매·대여로 영업 건에 넘어간 S/N — 그 건의 기록이 기준
+            continue
         maker = (makers.get(iid) or supplier)[:40]
         serial = (w["maker_sn"] or w["und_sn"])[:80]
         no_serial = not serial
@@ -197,13 +205,17 @@ async def _sync_units(db: AsyncSession, pid: int, rows: dict[int, dict]) -> None
         else:
             await db.execute(text(
                 "INSERT INTO product_units (stock_item_id, part_name, line_name, serial, und_serial, no_serial, maker, photos, purpose, status) "
-                "VALUES (:i, :pn, :pn, :s, :u, :ns, :m, CAST(:ph AS jsonb), :st, '등록')"), {**vals, "st": DEV_STATE})
+                "VALUES (:i, :pn, :pn, :s, :u, :ns, :m, CAST(:ph AS jsonb), :st, '등록')"),
+                {**vals, "st": SALE_STATE if w.get("purpose") == "sale" else DEV_STATE})
 
 
 async def _drop_units(db: AsyncSession, stock_ids: list[int]) -> None:
     """없어지는 재고 줄의 S/N 줄 — A/S 기록이 없으면 지우고, 있으면 '입고 삭제'로 남겨 이력을 지킨다."""
     if not stock_ids:
         return
+    # 영업 건으로 넘어간 S/N 줄은 그 건의 기록 — 재고 줄과의 연결만 끊는다(재고 줄을 지울 때 함께 지워지지 않게)
+    await db.execute(text("UPDATE product_units SET stock_item_id = NULL WHERE stock_item_id = ANY(:i) AND deal_id IS NOT NULL"),
+                     {"i": stock_ids})
     await db.execute(text(
         "UPDATE product_units u SET status = :g, stock_item_id = NULL, updated_at = NOW(), "
         "note = left(trim(u.note || ' 입고 기록 삭제 — ' || COALESCE(p.supplier, '') || ' ' || COALESCE(p.po->>'no', '')), 300) "
@@ -211,6 +223,36 @@ async def _drop_units(db: AsyncSession, stock_ids: list[int]) -> None:
         "WHERE u.stock_item_id = s.id AND s.id = ANY(:i) AND EXISTS (SELECT 1 FROM as_cases a WHERE a.unit_id = u.id)"),
         {"g": DEV_GONE, "i": stock_ids})
     await db.execute(text("DELETE FROM product_units WHERE stock_item_id = ANY(:i)"), {"i": stock_ids})
+
+
+async def handed_over(db: AsyncSession, stock_id: int, user_id: int | None, *, rented: bool, where: str) -> None:
+    """재고 제품이 영업 건 출하·대여 S/N 으로 넘어감(사용자 2026-11-20) — 대여면 '대여 중'(목록에 남음), 판매면 '판매 완료'(목록에서 빠짐)."""
+    st = RENTED if rented else SOLD
+    await db.execute(text("UPDATE stock_items SET status = :s, updated_at = NOW() WHERE id = :i"), {"s": st, "i": stock_id})
+    await _log(db, stock_id, user_id, "handover", {"상태": st, "건": where})
+
+
+async def release(db: AsyncSession) -> int:
+    """영업 건에서 돌아온 재고 제품 정리(사용자 2026-11-20) — 대여를 회수했거나, 그 건의 S/N·출하·건을 지워 넘어간 S/N 줄이 없어진 것.
+    재고 상태를 '대기 중'으로 되돌리고 S/N 표에 다시 'SP · 판매 예정'/'SD · 개발' 줄을 만든다(회수한 대여 줄은 그 건의 이력으로 남김).
+    재고 목록·S/N 찾기를 열 때 부른다. 반환 = 돌아온 개수."""
+    rs = (await db.execute(text(
+        "SELECT s.id, s.purchase_id, s.status, u.id AS unit_id, u.status AS unit_status FROM stock_items s "
+        "LEFT JOIN product_units u ON u.stock_item_id = s.id "
+        "WHERE s.status IN (:r, :sold) AND (u.id IS NULL OR u.deal_id IS NULL OR u.status IN ('회수', '건 삭제'))"),
+        {"r": RENTED, "sold": SOLD})).mappings().all()
+    if not rs:
+        return 0
+    for r in rs:
+        if r["unit_id"] is not None:               # 회수한 대여 줄 — 그 건의 이력으로 두고 재고와의 연결만 끊는다
+            await db.execute(text("UPDATE product_units SET stock_item_id = NULL WHERE id = :u AND deal_id IS NOT NULL"), {"u": r["unit_id"]})
+        await db.execute(text("UPDATE stock_items SET status = :s, updated_at = NOW() WHERE id = :i"), {"s": FIRST_STATE, "i": r["id"]})
+        await _log(db, r["id"], None, "back", {"상태": FIRST_STATE,
+                                               "까닭": "대여 회수" if r["unit_status"] == "회수" else "영업 건에서 빠짐"})
+    for pid in {r["purchase_id"] for r in rs}:
+        await sync(db, pid)
+    await db.commit()
+    return len(rs)
 
 
 async def purchases_removed(db: AsyncSession, pids: list[int]) -> None:
@@ -222,7 +264,8 @@ async def purchases_removed(db: AsyncSession, pids: list[int]) -> None:
 async def unit_extra(db: AsyncSession, stock_item_id: int) -> dict | None:
     """S/N 상세에 붙일 구매·재고 정보 — 구매 건(공급사·발주번호·입고일), 담당자, 재고 구분·상태·메모, 그 품목의 전체 사진."""
     r = (await db.execute(text(
-        "SELECT s.id, s.purchase_id, s.line_key, s.unit_index, s.name, s.display_name, s.maker, s.category, s.status, s.status_note, s.owner, s.sw_owner, s.received_on, "
+        "SELECT s.id, s.purchase_id, s.purpose, s.line_key, s.unit_index, s.name, s.display_name, s.maker, s.category, s.status, s.status_note, s.owner, "
+        "s.sw_owner, s.customer, s.received_on, "
         "p.supplier, p.po->>'no' AS po_no, p.receipt FROM stock_items s JOIN purchases p ON p.id = s.purchase_id WHERE s.id = :i"),
         {"i": stock_item_id})).mappings().first()
     if not r:
@@ -230,7 +273,7 @@ async def unit_extra(db: AsyncSession, stock_item_id: int) -> dict | None:
     receipt = r["receipt"] if isinstance(r["receipt"], dict) else json.loads(r["receipt"] or "{}")
     photos: list[str] = []
     for rec in flow.merge_receipts(list(receipt.get("records") or [])):
-        if flow.purpose_of(rec) == "dev":
+        if flow.purpose_of(rec) == r["purpose"]:
             for ln in rec.get("lines") or []:
                 if _line_key(ln) == r["line_key"]:
                     us = ln.get("units") or []
@@ -239,7 +282,8 @@ async def unit_extra(db: AsyncSession, stock_item_id: int) -> dict | None:
     return {"stock_id": r["id"], "purchase_id": r["purchase_id"], "supplier": r["supplier"], "po_no": r["po_no"],
             "display_name": r["display_name"], "po_name": r["name"], "maker": r["maker"] or r["supplier"],
             "received_on": _iso(r["received_on"]), "category": r["category"], "status": r["status"], "status_note": r["status_note"],
-            "owner": r["owner"], "sw_owner": r["sw_owner"], "line_photos": photos}
+            "owner": r["owner"], "sw_owner": r["sw_owner"], "line_photos": photos,
+            "purpose": r["purpose"], "customer": r["customer"]}   # 판매용 — 판매 고객사·우리 담당자(사용자 2026-11-20)
 
 
 async def _backfill(db: AsyncSession) -> None:
@@ -261,6 +305,7 @@ async def list_items(db: AsyncSession, purpose: str) -> dict:
     if purpose not in PURPOSES:
         raise StockError("판매용·보유 후 자체 개발용 중에서 골라 주세요.")
     await _backfill(db)
+    await release(db)
     rs = (await db.execute(text(
         "SELECT s.id, s.purchase_id, s.purpose, s.line_key, s.unit_index, s.name, s.display_name, s.maker, s.category, s.customer, s.owner, s.sw_owner, s.maker_sn, s.und_sn, s.no_sn, "
         "s.received_on, s.status, s.status_note, s.updated_at, p.supplier, p.region, p.direct, p.po->>'no' AS po_no, "
@@ -268,8 +313,8 @@ async def list_items(db: AsyncSession, purpose: str) -> dict:
         "FROM stock_items s JOIN purchases p ON p.id = s.purchase_id "
         "LEFT JOIN LATERAL (SELECT * FROM stock_events x WHERE x.item_id = s.id ORDER BY x.id DESC LIMIT 1) e ON TRUE "
         "LEFT JOIN users u ON u.id = e.user_id "
-        "WHERE s.purpose = :pu AND NOT p.dropped ORDER BY s.received_on DESC NULLS LAST, s.purchase_id DESC, s.line_key, s.unit_index"),
-        {"pu": purpose})).mappings().all()
+        "WHERE s.purpose = :pu AND NOT p.dropped AND s.status <> :sold ORDER BY s.received_on DESC NULLS LAST, s.purchase_id DESC, s.line_key, s.unit_index"),
+        {"pu": purpose, "sold": SOLD})).mappings().all()
     rows = []
     for r in rs:
         detail = r["last_detail"] if isinstance(r["last_detail"], dict) else json.loads(r["last_detail"] or "{}")
@@ -292,9 +337,11 @@ async def list_items(db: AsyncSession, purpose: str) -> dict:
         w = want.get(x["purchase_id"], {}).get((x["purpose"], x["line_key"], x["unit_index"])) or {}
         x["line_photos"], x["photos"] = w.get("line_photos", []), w.get("photos", [])
         x["part"] = w.get("part", 0)                     # 판매용 나눈 줄 번호 — 목록은 같은 줄끼리 묶는다
+        if w:                                            # 예전 판매용 기록(대마다 S/N 전)은 묶음 줄로 보이게 — 다음 저장 때 표에도 맞춰짐
+            x["no_sn"] = w["no_sn"]
     counts = dict((await db.execute(text(
-        "SELECT s.purpose, COUNT(*) FROM stock_items s JOIN purchases p ON p.id = s.purchase_id WHERE NOT p.dropped GROUP BY s.purpose"
-    ))).all())
+        "SELECT s.purpose, COUNT(*) FROM stock_items s JOIN purchases p ON p.id = s.purchase_id WHERE NOT p.dropped AND s.status <> :sold "
+        "GROUP BY s.purpose"), {"sold": SOLD})).all())
     return {"rows": rows, "counts": {k: counts.get(k, 0) for k in PURPOSES}, "categories": CATEGORIES, "states": STATES}
 
 
@@ -344,10 +391,14 @@ async def _apply(db: AsyncSession, item_id: int, user_id: int | None, p: dict) -
         st = str(p.get("status") if p.get("status") is not None else cur["status"])
         if st not in STATES:
             raise StockError("상태는 목록에서 골라 주세요.")
+        # '대여 중'은 영업 건 대여 S/N 등록으로만 들어가고 회수하면 자동으로 빠진다(사용자 2026-11-20) — 손으로 넣고 빼지 않는다
+        if st != cur["status"] and RENTED in (st, cur["status"]):
+            raise StockError("'대여 중'은 영업 건에서 대여 S/N 을 등록하면 자동으로 바뀌고, 회수하면 '대기 중'으로 돌아갑니다.")
         note = _clean(p.get("status_note"), 500) if p.get("status_note") is not None else cur["status_note"]
         if st != cur["status"] or note != cur["status_note"]:
             sets.update(status=st, status_note=note)
-            await _log(db, item_id, user_id, "status", {"from": cur["status"], "to": st, **({"메모": note} if note else {})})
+            await _log(db, item_id, user_id, "status", {"from": cur["status"], "to": st, **({"메모": note} if note else {}),
+                                                         **({"방법": p["via"]} if p.get("via") else {})})   # 엑셀 적용(2026-11-20)
     if p.get("display_name") is not None:
         # 표시 이름 — 발주서 품목명과 같거나 비우면 '' (발주서 이름으로 보임). 발주서·입고 기록 이름(name)은 건드리지 않는다
         dn = _clean(p["display_name"], 200)

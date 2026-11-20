@@ -18,7 +18,8 @@
     품목을 다 받거나 '입고 완료'로 남기면 끝. S/N 은 입고 기록을 쓸 때, 또 기록을 남긴 뒤에도 따로 등록할 수 있다.
 - 완료(권장안 2026-11-11): 꼭 할 단계(국내 송금·배송·입고, 해외 제조사 송금·배송·통관 서류·관세사 송금·입고)가 모두 끝나면.
   입고만으로 완료하지 않는다 — 잔금처럼 입고 뒤에 송금하는 건이 '완료'로 묻히지 않게.
-금액은 발주서 공급가액(VAT 별도) 기준.
+금액은 발주서 공급가액(VAT 별도) 기준. 국내 발주서를 'VAT 포함'으로 냈으면(사용자 2026-11-20) 공급가액 = 합계 ÷ 1.1,
+송금 회차의 부가세 포함 금액은 발주서 합계를 그대로 나눈다(인쇄된 금액과 원 단위까지 맞게).
 """
 from __future__ import annotations
 
@@ -26,6 +27,7 @@ import datetime as dt
 import math
 from typing import Any
 
+from .. import money
 from ..sales_deals.flow import clean_terms  # noqa: F401 — 결제 조건 검사는 판매와 같다(구분·% 합 100·예정일)
 from .po_xlsx import item_name
 
@@ -51,14 +53,23 @@ def expected_date(d: dict) -> str | None:
     return (d.get("po") or {}).get("expected_date") or None
 
 
+def vat_included(d: dict) -> bool:
+    """발행한 국내 발주서를 'VAT 포함' 금액으로 냈는지(사용자 2026-11-20). 해외는 늘 아니다."""
+    return bool(((d.get("po") or {}).get("header") or {}).get("vat_included")) and not overseas(d)
+
+
 def po_total(d: dict) -> float | None:
-    """발행한 발주서의 공급가액 합계(VAT 별도). 발주 전이면 None."""
+    """발행한 발주서의 공급가액 합계(VAT 별도). 발주 전이면 None. VAT 포함 발주서는 합계 ÷ 1.1."""
     po = d.get("po") or {}
-    return float(po["total"]) if po.get("no") and po.get("total") is not None else None
+    if not (po.get("no") and po.get("total") is not None):
+        return None
+    total = float(po["total"])
+    return float(money.supply_of(total)) if vat_included(d) else total
 
 
 def with_vat(v: float) -> float:
-    return float(round(v * (1 + VAT_RATE)))
+    """공급가액 → 부가세 포함(원 미만 절삭, money.py — 사용자 2026-11-20)"""
+    return float(money.with_vat(v))
 
 
 def _check_view(c: dict | None) -> dict | None:
@@ -72,15 +83,23 @@ def terms(d: dict) -> list[dict[str, Any]]:
     """결제 회차 + 금액(공급가액 × %, 마지막 회차가 끝전)·부가세 포함 금액·확인 여부."""
     raw = d.get("pay_terms") or []
     total = po_total(d) or 0
+    gross = float((d.get("po") or {}).get("total") or 0) if vat_included(d) else None   # VAT 포함 발주서 — 인쇄된 합계
     pays = d.get("payments") or []
-    out, used = [], 0
+    out, used, used_vat = [], 0, 0
     for i, t in enumerate(raw):
-        amt = round(total * (t.get("pct") or 0) / 100) if i < len(raw) - 1 else round(total - used)
+        last = i == len(raw) - 1
+        # 원화는 원 미만 절삭(사용자 2026-11-20), 마지막 회차가 끝전. 달러는 예전 그대로
+        cut = round if overseas(d) else money.won
+        amt = cut(total * (t.get("pct") or 0) / 100) if not last else cut(total - used)
         used += amt
+        amt_vat = with_vat(amt)
+        if gross is not None:                          # 부가세 포함 금액은 발주서 합계를 나눠 인쇄된 금액과 맞춘다
+            amt_vat = float(money.won(gross * (t.get("pct") or 0) / 100) if not last else money.won(gross - used_vat))
+            used_vat += amt_vat
         got = [p for p in pays if p.get("term") == i]
         last = got[-1] if got else None
         out.append({"index": i, "label": t.get("label"), "pct": t.get("pct"), "when": t.get("when") or "",
-                    "expected_date": t.get("expected_date"), "amount": amt, "amount_vat": with_vat(amt),
+                    "expected_date": t.get("expected_date"), "amount": amt, "amount_vat": amt_vat,
                     "confirmed": bool(got), "paid_date": last.get("date") if last else None,
                     "mismatch": bool(last and last.get("mismatch")), "mismatch_note": (last or {}).get("mismatch_note"),
                     # 지출내역 대조 결과는 회차(pay_terms[i].check)에 둔다 — 저장소 키는 화면에 내보내지 않는다

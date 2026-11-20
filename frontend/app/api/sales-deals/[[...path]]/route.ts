@@ -30,7 +30,7 @@ export const runtime = "nodejs";
 const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:8002";
 const TOKEN_COOKIE = "und_cortex_token";
 const BASE = "/v1/sales-deals";
-const ACTIONS = new Set(["won", "rental-return", "rental-start", "invoices", "payments", "paid-full", "shipments", "shipment-edit", "remove", "review", "statement", "terms", "confirm-term", "unconfirm-term", "drop", "meeting", "reset-to-quote", "info",
+const ACTIONS = new Set(["won", "rental-return", "rental-start", "invoices", "payments", "paid-full", "shipments", "shipment-edit", "remove", "review", "statement", "terms", "confirm-term", "unconfirm-term", "tax-terms", "tax-confirm", "tax-unconfirm", "drop", "meeting", "reset-to-quote", "info",
   // 입금 예정일 연장 — 관리자 바로 · 일반 직원 요청(사용자 2026-10-13)
   "due-extend", "due-request"]);
 // 파일을 올리는 동작 — 본문·경계를 그대로 넘긴다
@@ -68,6 +68,14 @@ export async function GET(req: NextRequest, { params }: Params) {
     return NextResponse.json(await r.json().catch(() => ({})), { status: r.status });
   }
   if (path.length === 1 && path[0] === "export") return passFile(`${BACKEND_URL}${BASE}/export`, tok);
+  // 매출 내역 엑셀(사용자 2026-11-20) — ?year&unit=year|quarter|month&value
+  if (path.length === 1 && path[0] === "revenue-export") {
+    const sp = req.nextUrl.searchParams;
+    const unit = ["year", "quarter", "month"].includes(sp.get("unit") ?? "") ? sp.get("unit")! : "month";
+    const year = /^\d{4}$/.test(sp.get("year") ?? "") ? sp.get("year")! : String(new Date().getFullYear());
+    const value = /^\d{1,2}$/.test(sp.get("value") ?? "") ? `&value=${sp.get("value")}` : "";
+    return passFile(`${BACKEND_URL}${BASE}/revenue-export?year=${year}&unit=${unit}${value}`, tok);
+  }
   // 관리자 승인 요청(사용자 2026-10-13) — 목록 · 받을 관리자 · 나에게 온 대기 수
   if ((path.length === 1 && path[0] === "approvals") || (path.length === 2 && path[0] === "approvals" && ["admins", "count"].includes(path[1]))) {
     const r = await fetch(`${BACKEND_URL}${BASE}/${path.join("/")}`, { headers: { Authorization: `Bearer ${tok}` }, cache: "no-store" });

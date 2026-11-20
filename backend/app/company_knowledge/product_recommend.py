@@ -1924,7 +1924,8 @@ async def quote_issue_upload(*, qid: int | None, deal_id: int | None, user_id: i
         # 발행 기록 줄에도 supply_unit 을 남겨 나중에 이 판으로 수주 확정해도(snapshot_items) 공급가액으로.
         # 같은 번호 교체도 같게(QA 2026-11-16 — 교체 경로엔 이 계산이 없어 영업 건 금액이 10% 부풀었음)
         if qs.vat_included({"form": f}):
-            lines = [{**ln, "supply_unit": round(float(ln["unit_price"]) / 1.1)} if isinstance(ln.get("unit_price"), (int, float))
+            from .. import money                 # 원 미만 절삭(사용자 2026-11-20)
+            lines = [{**ln, "supply_unit": money.supply_of(ln["unit_price"])} if isinstance(ln.get("unit_price"), (int, float))
                      else ln for ln in lines]
         deal_lines = [{**ln, "unit_price": ln["supply_unit"]} if "supply_unit" in ln else ln for ln in lines]
         try:

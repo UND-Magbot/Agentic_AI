@@ -4,7 +4,7 @@
     MSYS_NO_PATHCONV=1 docker compose run --rm -T --no-deps -e PYTHONPATH=/app -e PYTHONIOENCODING=utf-8 \\
         -v ./backend/app:/app/app -v ./scripts:/scripts -v ./docs:/docs backend python /scripts/test_quote_vat.py
 
-포함이면 견적서 단가부터 × 1.1(원 단위 반올림), 표 위 'VAT 포함', Total 옆 '(부가세 포함)'. 작성 상태와 영업 건은 늘 공급가액.
+포함이면 견적서 단가부터 × 1.1(원 미만 절삭, 2026-11-20), 표 위 'VAT 포함', Total 옆 '(부가세 포함)'. 작성 상태와 영업 건은 늘 공급가액.
 화면 수정 → 견적서 줄·엑셀 → 되읽기(별도↔포함) → 올린 파일 위에서 이어 고치기 → 영업 건 품목까지 본다.
 """
 from __future__ import annotations
@@ -87,14 +87,14 @@ check(SI["form"]["vat"] == "included" and qs.vat_included(SI), "[VAT 포함] 저
 check([ln["unit_price"] for ln in SI["lines"]] == [2_300_000, 400_000, 12_345], "작성 상태 단가는 그대로 공급가액")
 lines1, head1 = parts(SI)
 items = [r for r in lines1 if not r.get("row")]
-check([r["unit_price"] for r in items] == [2_530_000, 440_000, 13_580], "견적서 단가 = 공급가액 × 1.1(원 단위 반올림)",
+check([r["unit_price"] for r in items] == [2_530_000, 440_000, 13_579], "견적서 단가 = 공급가액 × 1.1(원 미만 절삭, 2026-11-20)",
       str([r["unit_price"] for r in items]))
 check([r["supply_unit"] for r in items] == [2_300_000, 400_000, 12_345], "줄마다 공급가액(supply_unit) 보관")
 nego = next(r for r in lines1 if r.get("row") == "nego")
-check(nego["amount"] == -100_000 and nego["supply_unit"] == -90_909,
-      "NEGO 는 견적서엔 적은 금액 그대로, 영업 건용 공급가액은 ÷ 1.1(사용자 2026-10-29)", str(nego))
-check(qx.total(lines1) == 2_530_000 + 880_000 + 3 * 13_580 - 100_000, "견적서 Total = × 1.1 단가의 합 − NEGO", str(qx.total(lines1)))
-SUPPLY_I = SUPPLY + 100_000 - 90_909                  # 부가세 포함 견적서의 공급가액 — NEGO 는 ÷ 1.1
+check(nego["amount"] == -100_000 and nego["supply_unit"] == -90_910,
+      "NEGO 는 견적서엔 적은 금액 그대로, 영업 건용 공급가액 = 금액 − 부가세(÷11 절삭)", str(nego))
+check(qx.total(lines1) == 2_530_000 + 880_000 + 3 * 13_579 - 100_000, "견적서 Total = × 1.1 단가의 합 − NEGO", str(qx.total(lines1)))
+SUPPLY_I = SUPPLY + 100_000 - 90_910                  # 부가세 포함 견적서의 공급가액 — NEGO 는 ÷ 1.1
 check("VAT 포함 · 공급가액" in qs.total_text(SI) and f"{SUPPLY_I:,}원" in qs.total_text(SI), "대화 합계 글 — 포함 금액·공급가액",
       qs.total_text(SI))
 
