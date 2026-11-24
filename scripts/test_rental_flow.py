@@ -125,7 +125,7 @@ async def run() -> None:
             out = "".join([c async for c in main._stream_rentals("10월 이후 대여 나간 제품 알려줘", uid)])
             check("ZZTEST-RENT-0001" in out, "AI 대화 경로(영업부 사용자)로 같은 답", out[:200])
             out = "".join([c async for c in main._stream_rentals("10월 이후 대여 나간 제품 알려줘", None)])
-            check("영업부만" in out, "로그인 사용자를 모르면 막음")
+            check("영업부·재무팀만" in out and "ZZTEST-RENT" not in out, "로그인 사용자를 모르면 막음", out[:200])
 
             # ── 대여 단계: 수주 → 대여 중(출하) → 회수 중 → 회수 완료(사용자 2026-10-22) ──
             stage = lambda i: svc.get_deal(db, i, TODAY)  # noqa: E731
