@@ -61,17 +61,22 @@ export function getAllowedDomains(user: AuthUser | null | undefined): readonly D
   if (!user || user.role === "superadmin" || user.domain === "all") {
     return ["finance", "sales", "dev", "design", "normal"];
   }
+  // 재무팀 — 기술영업은 조회 전용으로 함께(사용자 2026-11-24, 서버가 쓰기를 막음)
+  if (user.domain === "finance") return ["finance", "sales", "normal"];
   const own: DomainKey =
     user.domain === "develop"
       ? "dev"
-      : user.domain === "finance"
-        ? "finance"
-        : user.domain === "sales"
-          ? "sales"
-          : user.domain === "design"
-            ? "design"
-            : "normal";
+      : user.domain === "sales"
+        ? "sales"
+        : user.domain === "design"
+          ? "design"
+          : "normal";
   return [own, "normal"];
+}
+
+/** 기술영업 조회 전용 계정(재무팀, 최고 관리자 제외) — 사용자 2026-11-24 */
+export function isSalesReadOnly(user: AuthUser | null | undefined): boolean {
+  return !!user && user.role !== "superadmin" && user.domain === "finance";
 }
 
 /** 단일 도메인 접근 가능 여부 검사. */

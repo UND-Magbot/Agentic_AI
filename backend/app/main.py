@@ -1259,8 +1259,8 @@ async def _stream_rentals(text_: str, user_id: int | None):
 
     async with SessionLocal() as db:
         user = await db.get(User, user_id) if user_id else None
-        if user is None or not (user.role == UserRole.superadmin or user.domain in (UserDomain.sales, UserDomain.all)):
-            yield "대여 제품 목록은 영업부만 볼 수 있습니다."
+        if user is None or not (user.role == UserRole.superadmin or user.domain in (UserDomain.sales, UserDomain.all, UserDomain.finance)):
+            yield "대여 제품 목록은 영업부·재무팀만 볼 수 있습니다."
             return
         when = _rq.period(text_, kst_today())
         data = await _rq.rented_units(db, when["since"], when["until"])
@@ -1276,7 +1276,8 @@ async def _sales_user(user_id: int | None) -> bool:
         return False
     async with SessionLocal() as db:
         user = await db.get(User, user_id)
-    return user is not None and (user.role == UserRole.superadmin or user.domain in (UserDomain.sales, UserDomain.all))
+    # 재무팀도 조회(사용자 2026-11-24 — 기술영업 조회 전용)
+    return user is not None and (user.role == UserRole.superadmin or user.domain in (UserDomain.sales, UserDomain.all, UserDomain.finance))
 
 
 async def _deal_goto_reply(intent: dict, user_id: int | None) -> str | None:

@@ -1,5 +1,5 @@
 import { ProductRecommend, type RecommendTab } from "@/components/domains/sales/product-recommend";
-import { displayName, getCurrentUser } from "@/lib/shared/auth";
+import { displayName, getCurrentUser, isSalesReadOnly } from "@/lib/shared/auth";
 import { getProductCorrections } from "@/lib/shared/proposal-projects";
 
 const TABS: RecommendTab[] = ["recommend", "quote", "order", "deals", "purchases", "stock", "rentals", "units", "memory"];
@@ -20,6 +20,6 @@ export default async function ProductRecommendPage({ searchParams }: { searchPar
                       startManual={start === "manual"}
                       initialSub={sub === "approvals" ? "approvals" : undefined}
                       initialDeal={num(deal)} initialQuote={num(quote)} initialFocus={focus === "ship" || focus === "pay" ? focus : undefined}
-                      writer={user ? displayName(user) : ""} />
+                      writer={user ? displayName(user) : ""} readOnly={isSalesReadOnly(user)} />
   );
 }

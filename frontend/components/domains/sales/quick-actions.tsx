@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import type { ComposerAttachment } from "@/components/shared/chat/composer";
 import { Icon } from "@/components/shared/ui/icon";
 import type { IconName } from "@/lib/shared/types";
+import { SalesReadOnlyBanner } from "@/components/domains/sales/sales-readonly";
 import { cn } from "@/lib/shared/utils";
 
 export function SalesQuickActions({ onPick }: { onPick: (text: string) => void }) {
@@ -224,8 +225,13 @@ const FEATURES: {
  * 기술영업 첫 화면 — 대표 기능(제안서 만들기·회사 제품 추천)을 크게, 보조 도구는 작게 따로, 추천 질문은 맨 아래 칩으로.
  * 제안서 만들기는 자료 입력 화면(/proposals/new)에서 자료 읽기 → 핵심 질문 → 컨셉 이미지 승인 → 구성 확인 → 제작으로 이어진다.
  */
-export function SalesHome({ disabled, examples, onPickExample, onRunBody, onRunConcept, onOpenChat }: {
+// 조회 전용(재무팀)에서 숨기는 카드 — 새로 쓰는 일(견적서 수기 작성·제안서 만들기·제품 추천 Q&A)
+const READONLY_HIDDEN_HREFS = ["/proposals/recommend?tab=quote&new=manual", "/proposals/new", "/proposals/recommend"];
+
+export function SalesHome({ disabled, examples, onPickExample, onRunBody, onRunConcept, onOpenChat, readOnly = false }: {
   disabled?: boolean;
+  /** 기술영업 조회 전용(재무팀, 사용자 2026-11-24) */
+  readOnly?: boolean;
   examples?: string[];
   onPickExample: (text: string) => void;
   onRunBody: (attachments: ComposerAttachment[]) => void;
@@ -254,7 +260,7 @@ export function SalesHome({ disabled, examples, onPickExample, onRunBody, onRunC
         </div>
         {(["top", "bottom"] as const).map((g) => (
         <div key={g} className={cn("grid gap-4 md:grid-cols-2", g === "top" ? "lg:grid-cols-3" : "mt-4 lg:grid-cols-3 xl:grid-cols-5")}>
-          {FEATURES.filter((f) => f.group === g).map((f) => (
+          {FEATURES.filter((f) => f.group === g && !(readOnly && READONLY_HIDDEN_HREFS.includes(f.href))).map((f) => (
             <Link
               key={f.href}
               href={f.href}
@@ -291,6 +297,7 @@ export function SalesHome({ disabled, examples, onPickExample, onRunBody, onRunC
         ))}
       </section>
 
+      {readOnly ? <SalesReadOnlyBanner /> : (
       <section aria-labelledby="sales-tools">
         <h2 id="sales-tools" className="mb-3 text-[12px] font-semibold uppercase tracking-[0.14em] text-foreground-subtle">
           보조 도구
@@ -300,6 +307,7 @@ export function SalesHome({ disabled, examples, onPickExample, onRunBody, onRunC
           <RequestTaskCard task={CONCEPT_TASK} onRun={onRunConcept} disabled={disabled} />
         </div>
       </section>
+      )}
 
       {examples && examples.length > 0 && (
         <section aria-labelledby="sales-ask">

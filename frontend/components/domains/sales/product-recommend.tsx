@@ -16,6 +16,7 @@ import type {
 import { AgentBubble, AiBubble, RichText, streamNdjson } from "@/components/domains/sales/agent-chat";
 import { OrderTab } from "@/components/domains/sales/order-workspace";
 import { Icon } from "@/components/shared/ui/icon";
+import { SalesReadOnlyBanner, SalesReadOnlyContext } from "@/components/domains/sales/sales-readonly";
 import { cn, scrollChatToEnd } from "@/lib/shared/utils";
 import {
   AtcCandidatePreview, AtcIntakeSummary, AtcLivePreview, AtcMeetingUpload, GroupedFields, AtcResultView, AtcWizard, describeAnswer, emptyIntake,
@@ -950,14 +951,20 @@ const TAB_HEAD: Record<RecommendTab, { title: string; desc: string }> = {
     desc: "AI 가 대화에서 배운 내용(경험·정정·기준)과 나에게 온 승인 요청을 확인합니다. 영업 관리자가 승인한 내용만 AI 답에 반영됩니다." },
 };
 
-export function ProductRecommend({ initial, initialTab, startManual, writer = "", initialSub, initialDeal, initialQuote, initialFocus }: {
+/** 조회 전용(재무팀)에서 숨기는 탭 — 쓰기만 하는 화면(제품 추천 Q&A·수주 진행·AI 학습 검토) */
+const READONLY_HIDDEN: readonly RecommendTab[] = ["recommend", "order", "memory"];
+
+export function ProductRecommend({ initial, initialTab, startManual, writer = "", initialSub, initialDeal, initialQuote, initialFocus, readOnly = false }: {
   initial: CorrectionList; initialTab?: RecommendTab; startManual?: boolean; initialSub?: "approvals";
   /** 채팅 답의 이동 버튼(사용자 2026-10-28) — 열 건(판매·대여 관리 탭이면 건 상세, 수주 진행 탭이면 작업 화면) · 열 견적서 · 출하 칸 */
   initialDeal?: number; initialQuote?: number; initialFocus?: "ship" | "pay";
   /** 로그인 계정의 영문 이름 — 질문지 고객 정보의 작성자(영업 담당) 기본값 */
   writer?: string;
+  /** 기술영업 조회 전용(재무팀, 사용자 2026-11-24) — 제품 추천·수주 진행·검토 탭은 숨기고 작성 버튼을 감춘다 */
+  readOnly?: boolean;
 }) {
-  const [tab, setTab] = useState<RecommendTab>(initialTab ?? "recommend");
+  const [tab, setTab] = useState<RecommendTab>(
+    readOnly && (!initialTab || READONLY_HIDDEN.includes(initialTab)) ? "deals" : initialTab ?? "recommend");
   // 탭을 바꾸면 주소의 ?tab= 도 맞춘다 — 새로고침하면 보던 탭으로(처음 들어온 주소의 deal·quote 등은 첫 화면에서만 쓴다)
   const tabSynced = useRef(false);
   useEffect(() => {
@@ -1839,6 +1846,7 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
       : "조건에 더할 내용을 적어 주세요 (Enter 보내기)";
 
   return (
+    <SalesReadOnlyContext.Provider value={readOnly}>
     <SpecLockContext.Provider value={specLock}>
     <SpecAskContext.Provider value={() => void askSpec()}>
     <div className="und-page-bg scroll-thin h-full overflow-y-auto">
@@ -1848,11 +1856,13 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
         <h1 className="und-page-title mt-1 text-[22px] text-foreground">{TAB_HEAD[tab].title}</h1>
         {/* 설명 줄 수가 탭마다 달라도 탭 줄이 위아래로 움직이지 않게 두 줄 높이를 잡아 둔다 */}
         <p className="mt-1 min-h-[2.6rem] max-w-[980px] text-[13px] leading-relaxed text-foreground-muted">{TAB_HEAD[tab].desc}</p>
+        {readOnly && <div className="mt-2"><SalesReadOnlyBanner /></div>}
       </header>
 
       {/* 탭: 제품 추천 / AI 학습 내용 관리 */}
       <div role="tablist" aria-label="회사 제품 추천 화면" className="und-tabs">
-        {([["recommend", "제품 추천"], ["quote", "견적서"], ["order", "수주 진행"], ["deals", "제품 영업 건 관리"], ["purchases", "제품 구매 건 관리"], ["stock", "공장 제품 재고 관리"], ["rentals", "대여 제품 목록"], ["units", "제품 S/N 관리"], ["memory", "검토·승인"]] as const).map(([key, label]) => {
+        {([["recommend", "제품 추천"], ["quote", "견적서"], ["order", "수주 진행"], ["deals", "제품 영업 건 관리"], ["purchases", "제품 구매 건 관리"], ["stock", "공장 제품 재고 관리"], ["rentals", "대여 제품 목록"], ["units", "제품 S/N 관리"], ["memory", "검토·승인"]] as const)
+          .filter(([key]) => !readOnly || !READONLY_HIDDEN.includes(key)).map(([key, label]) => {
           const pending = list.items.filter((c) => c.review_status === "pending").length;
           return (
             <button key={key} type="button" role="tab" aria-selected={tab === key} onClick={() => { setDealOpen(null); setRentalOpen(null); setPurchaseOpen(null); setTab(key); }}
@@ -2309,5 +2319,6 @@ export function ProductRecommend({ initial, initialTab, startManual, writer = ""
     </div>
     </SpecAskContext.Provider>
     </SpecLockContext.Provider>
+    </SalesReadOnlyContext.Provider>
   );
 }

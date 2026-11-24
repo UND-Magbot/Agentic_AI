@@ -37,7 +37,7 @@ async function readError(r: Response, fallback: string): Promise<string> {
   return typeof d?.detail === "string" ? d.detail : fallback;
 }
 
-export function StockExcelButtons({ onApplied }: { onApplied: () => void }) {
+export function StockExcelButtons({ onApplied, readOnly = false }: { onApplied: () => void; readOnly?: boolean }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState<"down" | "read" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -86,9 +86,11 @@ export function StockExcelButtons({ onApplied }: { onApplied: () => void }) {
       <button type="button" className={BTN} disabled={!!busy} onClick={() => void download()}
               title="판매용·보유 후 자체 개발용 두 시트 — 상태·상태 메모 칸을 고쳐 다시 올립니다">
         {busy === "down" ? "만드는 중…" : "엑셀 내려받기"}</button>
+      {!readOnly && (
       <button type="button" className={BTN} disabled={!!busy} onClick={() => fileRef.current?.click()}
               title="고친 재고 엑셀을 올리면 바뀌는 줄을 먼저 보여 줍니다">
         {busy === "read" ? "대조하는 중…" : "재고 엑셀 적용"}</button>
+      )}
       <input ref={fileRef} type="file" accept=".xlsx" className="hidden" aria-label="재고 엑셀 파일"
              onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) void upload(f); }} />
       {error && <span role="alert" className="basis-full text-right text-[12px] font-semibold text-red-600 dark:text-red-400">{error}</span>}

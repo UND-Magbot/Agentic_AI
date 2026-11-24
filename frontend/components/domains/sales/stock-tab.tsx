@@ -20,6 +20,7 @@ import { INPUT, Muted, shortDate, stamp } from "@/components/domains/sales/deal-
 import { productKey, STOCK_PURPOSE_LABEL, stockDetailText, stockLabel, stockRequest, type StockHistoryEntry, type StockListData,
          type StockPatch, type StockPurpose, type StockRow } from "@/lib/shared/stock";
 import { REGION_LABEL } from "@/lib/shared/purchases";
+import { useSalesReadOnly } from "@/components/domains/sales/sales-readonly";
 import { cn } from "@/lib/shared/utils";
 
 const STATUS_TONE: Record<string, string> = {
@@ -103,6 +104,7 @@ function oneOf(rows: StockRow[], pick: (r: StockRow) => string, many: string): R
 }
 
 export function StockTab({ onOpenPurchase }: { onOpenPurchase?: (purchaseId: number) => void }) {
+  const readOnly = useSalesReadOnly();   // 재무팀 조회 전용 — 작성 버튼 숨김(사용자 2026-11-24)
   const [purpose, setPurpose] = useState<StockPurpose>("sale");
   const mode = useSyncExternalStore(subscribeMode, readMode, () => "list" as GroupMode);
   const [data, setData] = useState<StockListData | null>(null);
@@ -667,13 +669,15 @@ export function StockTab({ onOpenPurchase }: { onOpenPurchase?: (purchaseId: num
           ))}
         </div>
         {/* 엑셀 내려받기·적용(사용자 2026-11-20) */}
-        <span className="ml-auto flex flex-wrap items-center justify-end gap-2"><StockExcelButtons onApplied={() => void load(purpose)} /></span>
+        <span className="ml-auto flex flex-wrap items-center justify-end gap-2"><StockExcelButtons readOnly={readOnly} onApplied={() => void load(purpose)} /></span>
+        {!readOnly && (<>
         <button type="button" aria-pressed={edit} onClick={() => { setEdit((v) => !v); setDateEdit(null); }}
                 className={cn("h-9 rounded-lg border px-3.5 text-[12.5px] font-semibold",
                   edit ? "border-accent bg-accent text-white" : "border-border text-foreground hover:border-accent hover:text-accent")}>
           {edit ? "수정 마치기" : "✎ 수정"}</button>
         <button type="button" onClick={() => void startDirect()}
                 className="h-9 rounded-lg bg-accent px-3.5 text-[12.5px] font-semibold text-white hover:opacity-90">+ 제품 등록</button>
+        </>)}
         {/* [제품별 묶기] — 켜면 같은 제품의 총수량, 끄면(기본) 한 대씩 */}
         <button type="button" aria-pressed={mode === "product"} onClick={() => changeMode(mode === "product" ? "list" : "product")}
                 title="같은 제품을 한 줄로 묶어 총수량 보기"

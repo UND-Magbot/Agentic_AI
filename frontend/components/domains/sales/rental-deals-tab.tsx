@@ -13,6 +13,7 @@ import { primaryBtn, secondaryBtn } from "@/components/domains/sales/proposal-ac
 import { PreviewDialog } from "@/components/domains/sales/quote-workspace";
 import { SnPanel } from "@/components/domains/sales/unit-register";
 import type { IssueUnits, RentalDetail, RentalPhase, RentalProductList, RentalProductRow, SerialLoadResult } from "@/lib/shared/sales-deals";
+import { useSalesReadOnly } from "@/components/domains/sales/sales-readonly";
 import { cn } from "@/lib/shared/utils";
 
 // sales-deals.ts 는 서버 전용(next/headers)이라 값은 여기 — 타입만 가져온다
@@ -57,6 +58,7 @@ export function RentalDealsTab({ openDealId = null, onOpenDeal, onQuote, onNewFr
   /** [+ 무상 대여 건 등록] — 무상 대여 견적서를 새로 만들어 연다 */
   onNewFree: () => Promise<void>;
 }) {
+  const readOnly = useSalesReadOnly();   // 재무팀 조회 전용 — 작성 버튼 숨김(사용자 2026-11-24)
   const [data, setData] = useState<RentalProductList | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<View>("");
@@ -137,10 +139,12 @@ export function RentalDealsTab({ openDealId = null, onOpenDeal, onQuote, onNewFr
           줄을 누르면 오른쪽에 그 제품의 S/N 과 고객사·대여 건 정보(대여 기간·회수·견적서)가 열립니다. 무상 대여 건은 [제품 영업 건 관리]에 나오지
           않고 여기서만 관리합니다. (기준일 {data.today})
         </p>
+        {!readOnly && (
         <button type="button" onClick={() => void newFree()} disabled={creating}
                 className="h-9 rounded-lg bg-accent px-4 text-[13px] font-semibold text-white hover:opacity-90 disabled:opacity-60">
           {creating ? "만드는 중…" : "+ 무상 대여 건 등록"}
         </button>
+        )}
       </header>
       {error && <p className="mb-3 rounded-lg bg-red-500/10 px-3 py-2 text-[13px] text-red-700 dark:text-red-300">{error}</p>}
       <div className="mb-3 flex flex-wrap items-center gap-2">

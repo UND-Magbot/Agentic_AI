@@ -13,6 +13,7 @@ import { ConfirmDialog, POPUP_BTN_HOVER } from "@/components/shared/ui/confirm-d
 import { Icon } from "@/components/shared/ui/icon";
 import { useDragMove } from "@/components/shared/ui/use-drag-move";
 import { supplyOf, withVat as vatWithCut } from "@/lib/shared/money";
+import { useSalesReadOnly } from "@/components/domains/sales/sales-readonly";
 import { cn, keepInPlace, scrollChatToEnd } from "@/lib/shared/utils";
 import { AutoTextarea, LineArea, MAIN_BLOCK, MAIN_DEFAULT, QuoteBlocks, blockOf, monthFactor, negoCut, usd, usdOf } from "./quote-blocks";
 import { QuotePurposeDialog } from "./quote-purpose-dialog";
@@ -300,6 +301,7 @@ export function QuoteTab({ openId, onOpen, askManual = false }: {
 }
 
 function QuoteList({ onOpen, askManual }: { onOpen: (id: number) => void; askManual: boolean }) {
+  const readOnly = useSalesReadOnly();   // 재무팀 조회 전용 — 작성 버튼 숨김(사용자 2026-11-24)
   const [items, setItems] = useState<QuoteListItem[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -329,9 +331,11 @@ function QuoteList({ onOpen, askManual }: { onOpen: (id: number) => void; askMan
         <p className="min-w-0 flex-1 text-[12.5px] text-foreground-muted">
           AI 추천이 아직 없는 제품(그리퍼·AMR 등)은 <b>[견적서 수기 작성]</b>으로 빈 견적서에서 시작합니다 — 발행하면 건 번호가 붙어 제품 판매·대여 관리로 이어집니다.
         </p>
+        {!readOnly && (
         <button type="button" className={primaryBtn} disabled={creating} onClick={() => setPicking(true)}>
           <Icon name="plus" className="h-4 w-4" /> {creating ? "만드는 중…" : "견적서 수기 작성"}
         </button>
+        )}
       </div>
       <p className="text-[12.5px] text-foreground-muted">
         제품 추천에서 툴체인저 후보를 [최종 제안 확정]한 뒤 <b>[견적서 작성 →]</b>을 누르면 추천 결과로 초안이 만들어지고, AI 와 대화하며 채웁니다.

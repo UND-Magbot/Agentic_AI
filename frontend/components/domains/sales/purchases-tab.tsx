@@ -12,6 +12,7 @@ import { askConfirm } from "@/components/shared/ui/confirm-host";
 import { Icon } from "@/components/shared/ui/icon";
 import { INPUT, Muted, shortDate, stamp, todayIso, won } from "@/components/domains/sales/deal-format";
 import { purchaseRequest, REGION_LABEL, type PurchaseListData, type PurchaseRegion, type PurchaseRow } from "@/lib/shared/purchases";
+import { useSalesReadOnly } from "@/components/domains/sales/sales-readonly";
 import { cn } from "@/lib/shared/utils";
 import { secondaryBtn } from "./proposal-actions";
 import { REQ, REQ_SCOPE, ReqLabel, ReqMark } from "@/components/domains/sales/required";
@@ -68,6 +69,7 @@ const WATCH: [Exclude<Watch, "">, string, (r: PurchaseRow) => boolean, string][]
 type Region = "" | PurchaseRegion;
 
 export function PurchasesTab({ initialOpen = null }: { initialOpen?: number | null } = {}) {
+  const readOnly = useSalesReadOnly();   // 재무팀 조회 전용 — 작성 버튼 숨김(사용자 2026-11-24)
   const [data, setData] = useState<PurchaseListData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [openId, setOpenId] = useState<number | null>(initialOpen);   // 재고 줄에서 구매 건 열기(사용자 2026-11-19)
@@ -138,8 +140,10 @@ export function PurchasesTab({ initialOpen = null }: { initialOpen?: number | nu
   return (
     <section>
       <div className="mb-3 flex flex-wrap items-center gap-2">
+        {!readOnly && (
         <button type="button" onClick={() => setAdding(true)}
                 className="h-9 rounded-lg bg-accent px-4 text-[13px] font-semibold text-white hover:opacity-90">+ 새 구매 건</button>
+        )}
         {admin && (selecting ? (
           <>
             <button type="button" onClick={() => void remove()} disabled={!selected.size}

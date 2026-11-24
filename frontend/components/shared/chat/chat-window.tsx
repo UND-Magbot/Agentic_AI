@@ -735,6 +735,8 @@ export function ChatWindow({
               {lockedDomain.key === "sales" && (
                 <SalesHome
                   disabled={streaming}
+                  // 재무팀(허용 영역 = 재무·기술영업·일반)은 기술영업 조회 전용(사용자 2026-11-24)
+                  readOnly={!!allowedDomains && allowedDomains.includes("finance") && allowedDomains.includes("sales") && !allowedDomains.includes("dev")}
                   examples={lockedDomain.examples}
                   onPickExample={(t) => void send(t)}
                   onRunBody={(atts) => void send(PROPOSAL_BODY_PROMPT, { attachments: atts })}

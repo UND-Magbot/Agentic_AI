@@ -16,6 +16,7 @@ import { Icon } from "@/components/shared/ui/icon";
 import type { DealBiz, DealKpi, DealListData, DealRental, DealRow, DealStage } from "@/lib/shared/sales-deals";
 import { supplyOf as vatlessOf } from "@/lib/shared/money";
 import { RevenueExportButton } from "@/components/domains/sales/revenue-export";
+import { useSalesReadOnly } from "@/components/domains/sales/sales-readonly";
 import { cn } from "@/lib/shared/utils";
 
 const STAGES: DealStage[] = ["견적 전", "제품 추천 확정", "견적", "수주", "출하 후 입금 대기", "완료 (출하·완납)", "드랍", "출하 기록만 (이전)"];
@@ -67,6 +68,7 @@ export function DealList({ data, biz, initialOpenId = null, initialFocus, onRefr
   onQuote?: (quoteId: number) => void;
   onRecommend?: (deal: DealRow) => void;
 }) {
+  const readOnly = useSalesReadOnly();   // 재무팀 조회 전용 — 작성 버튼 숨김(사용자 2026-11-24)
   const router = useRouter();
   const refresh = onRefresh ?? (() => router.refresh());
   const [f, setF] = useState<Filter>({ q: "", owner: "", stage: "", year: "", unpaid: false, review: false, overdue: false, as: false, kind: "",
@@ -206,10 +208,12 @@ export function DealList({ data, biz, initialOpenId = null, initialFocus, onRefr
             </>
           ) : (
             <>
+              {!readOnly && (
               <button type="button" onClick={() => setCreating(true)}
                       className="h-9 rounded-lg bg-accent px-4 text-[13px] font-semibold text-white hover:opacity-90">
                 + 새 건 등록
               </button>
+              )}
               <a href="/api/sales-deals/export" download
                  className="flex h-9 items-center rounded-lg border border-border px-4 text-[13px] font-semibold hover:bg-foreground/5">
                 엑셀 내려받기

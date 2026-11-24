@@ -30,7 +30,7 @@ from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field
 
 from .api_auth import get_current_user
-from .api_sales_deals import require_sales
+from .api_sales_deals import deny_readonly_write, require_sales, require_sales_read
 from .company_knowledge import product_recommend as pr
 from .company_knowledge.plain_text import scrub
 from .models import User
@@ -54,7 +54,8 @@ class _PlainTextRoute(APIRoute):
         return plain
 
 
-router = APIRouter(prefix="/v1/product-recommend", tags=["ProductRecommend"], route_class=_PlainTextRoute)
+router = APIRouter(prefix="/v1/product-recommend", tags=["ProductRecommend"], route_class=_PlainTextRoute,
+                   dependencies=[Depends(deny_readonly_write)])   # 재무팀 조회만(사용자 2026-11-24)
 
 
 class AskIn(BaseModel):
@@ -418,7 +419,7 @@ class QuoteIssueIn(BaseModel):
 
 
 @router.get("/quotes/{qid}/next-no")
-async def quote_next_no(qid: int, current_user: User = Depends(require_sales)):
+async def quote_next_no(qid: int, current_user: User = Depends(require_sales_read)):
     """[번호 정해서 발행] 창 — 다음 자동 번호·수주한 번호·이 견적서에서 낸 번호들."""
     try:
         return await pr.quote_next_no(qid, user_id=current_user.id)
@@ -580,13 +581,13 @@ async def finalize(rid: int, body: FinalizeIn, current_user: User = Depends(requ
 
 
 @router.get("/proposals")
-async def proposals(current_user: User = Depends(require_sales)):
+async def proposals(current_user: User = Depends(require_sales_read)):
     """확정 제안 내역(목록). 영업 건과 같이 영업부 안에서 공유 — 영업부 밖은 403(검증 REC-037, 2026-10-15)."""
     return {"items": await pr.list_proposals()}
 
 
 @router.get("/proposals/{pid}")
-async def proposal(pid: int, current_user: User = Depends(require_sales)):
+async def proposal(pid: int, current_user: User = Depends(require_sales_read)):
     try:
         return await pr.get_proposal(pid)
     except pr.RecommendError as e:

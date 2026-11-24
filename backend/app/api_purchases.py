@@ -54,14 +54,15 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .api_sales_deals import PO_INLINE, PO_MAGIC, PO_MAX_BYTES, PO_TYPES, is_admin, require_admin, require_sales
+from .api_sales_deals import (PO_INLINE, PO_MAGIC, PO_MAX_BYTES, PO_TYPES, deny_readonly_write, is_admin, require_admin, require_sales,
+                              require_sales_read)
 from .database import get_db
 from .models import User
 from .purchases import service as svc
 from .storage import get_object_stream, put_object, remove_object
 from .user_profile import get_profile
 
-router = APIRouter(prefix="/v1/purchases", tags=["Purchases"])
+router = APIRouter(prefix="/v1/purchases", tags=["Purchases"], dependencies=[Depends(deny_readonly_write)])   # 재무팀 조회만
 
 FILE_TYPES = {**PO_TYPES, ".csv": "text/csv"}           # 지출내역은 CSV 로도 온다
 ALL_KINDS = (*svc.FILE_KINDS, "expense")
@@ -319,7 +320,7 @@ class DocIn(BaseModel):
 # ── 리스트·건 ──────────────────────────────────────────────────────────────────
 
 @router.get("")
-async def list_purchases(user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+async def list_purchases(user: User = Depends(require_sales_read), db: AsyncSession = Depends(get_db)) -> dict:
     return {**await svc.list_purchases(db, svc.kst_today()), "me": {"admin": is_admin(user), "name": _name(user)}}
 
 
@@ -339,7 +340,7 @@ async def delete(body: DeleteIn, _: User = Depends(require_admin), db: AsyncSess
 
 
 @router.get("/{pid}")
-async def get(pid: int, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+async def get(pid: int, user: User = Depends(require_sales_read), db: AsyncSession = Depends(get_db)) -> dict:
     try:
         return {**await svc.get(db, pid, svc.kst_today()), "me": {"admin": is_admin(user), "name": _name(user)}}
     except svc.PurchaseError as e:
@@ -388,7 +389,7 @@ async def upload(pid: int, kind: Literal["quote", "approval", "statement", "tax"
 @router.get("/{pid}/files/{kind}/{index}")
 async def download(pid: int, kind: Literal["quote", "approval", "statement", "tax", "customs", "remit", "customs_etc", "expense"],
                    index: int,
-                   _: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> StreamingResponse:
+                   _: User = Depends(require_sales_read), db: AsyncSession = Depends(get_db)) -> StreamingResponse:
     try:
         f = await svc.get_file(db, pid, kind, index)
     except svc.PurchaseError as e:
@@ -435,7 +436,7 @@ async def unapprove(pid: int, user: User = Depends(require_sales), db: AsyncSess
 # ── 발주서 ───────────────────────────────────────────────────────────────────
 
 @router.get("/{pid}/po/draft")
-async def po_draft(pid: int, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+async def po_draft(pid: int, user: User = Depends(require_sales_read), db: AsyncSession = Depends(get_db)) -> dict:
     try:
         return await svc.po_draft(db, pid, await get_profile(db, user.id))
     except svc.PurchaseError as e:
@@ -581,7 +582,7 @@ async def po_upload_confirm(pid: int, body: PoUploadIn, user: User = Depends(req
 
 @router.get("/{pid}/po/file")
 async def po_file(pid: int, fmt: Literal["pdf", "xlsx"] = "pdf", revision: int | None = None, replaced: int | None = None,
-                  _: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> Response:
+                  _: User = Depends(require_sales_read), db: AsyncSession = Depends(get_db)) -> Response:
     try:
         src = await svc.po_source(db, pid, revision, replaced)
         up = src.get("upload")
@@ -758,7 +759,7 @@ async def upload_receipt_photo(pid: int, file: UploadFile = File(...), _: User =
 
 
 @router.get("/{pid}/receipt-photos/{name}")
-async def receipt_photo(pid: int, name: str, _: User = Depends(require_sales)) -> StreamingResponse:
+async def receipt_photo(pid: int, name: str, _: User = Depends(require_sales_read)) -> StreamingResponse:
     if not svc.RECEIPT_PHOTO.match(name):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="사진을 찾을 수 없습니다.")
     try:

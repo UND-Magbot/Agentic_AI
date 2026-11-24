@@ -40,7 +40,7 @@ import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -54,7 +54,22 @@ from .sales_deals.quote_upload import UploadConfirmIn as QuoteUploadConfirm
 from .user_profile import get_profile
 from .storage import get_object_stream, put_object, remove_object
 
-router = APIRouter(prefix="/v1/sales-deals", tags=["SalesDeals"])
+# 재무팀은 기술영업을 조회만(사용자 2026-11-24) — GET 은 require_sales_read 로 열고, 그 밖(POST 등)은 이 규칙이 모두 막는다.
+# 기술영업 API 네 곳(영업 건·구매 건·재고·제품 추천/견적서)의 router 에 같이 건다.
+READONLY_MSG = "재무팀 계정은 기술영업을 조회만 할 수 있습니다. 고치기·발행·확인은 영업팀에 요청해 주세요."
+
+
+def is_sales_readonly(user: User) -> bool:
+    """기술영업 조회 전용 계정 — 재무팀(최고 관리자 제외)."""
+    return user.role != UserRole.superadmin and user.domain == UserDomain.finance
+
+
+def deny_readonly_write(request: Request, user: User = Depends(get_current_user)) -> None:
+    if request.method not in ("GET", "HEAD", "OPTIONS") and is_sales_readonly(user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=READONLY_MSG)
+
+
+router = APIRouter(prefix="/v1/sales-deals", tags=["SalesDeals"], dependencies=[Depends(deny_readonly_write)])
 
 PHOTO_DIR = Path(__file__).resolve().parent / "sales_deals" / "data" / "photos"
 PHOTO_NAME = re.compile(r"^ship_r\d+_\d+\.jpg$")
@@ -75,7 +90,15 @@ PO_MAGIC = {".pdf": (b"%PDF",), ".png": (b"\x89PNG",), ".jpg": (b"\xff\xd8\xff",
 def require_sales(user: User = Depends(get_current_user)) -> User:
     if user.role == UserRole.superadmin or user.domain in (UserDomain.sales, UserDomain.all):
         return user
-    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="영업부만 볼 수 있습니다.")
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                        detail=READONLY_MSG if is_sales_readonly(user) else "영업부만 볼 수 있습니다.")
+
+
+def require_sales_read(user: User = Depends(get_current_user)) -> User:
+    """기술영업 조회 — 영업부·전체 권한 + 재무팀(조회 전용, 사용자 2026-11-24)."""
+    if user.role == UserRole.superadmin or user.domain in (UserDomain.sales, UserDomain.all, UserDomain.finance):
+        return user
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="영업부·재무팀만 볼 수 있습니다.")
 
 
 def _check_total(items: list) -> None:
@@ -254,7 +277,7 @@ def _fail(e: svc.DealError) -> HTTPException:
 
 def is_admin(user: User) -> bool:
     """영업 관리자(도메인 관리자)·최고 관리자 — 삭제·되돌리기·취소처럼 기록을 지우는 일은 이들만(사용자 2026-10-08)."""
-    return user.role in (UserRole.superadmin, UserRole.domain_admin)
+    return user.role in (UserRole.superadmin, UserRole.domain_admin) and not is_sales_readonly(user)   # 재무팀 관리자는 기술영업에선 조회만
 
 
 def require_admin(user: User = Depends(require_sales)) -> User:
@@ -279,7 +302,7 @@ class DecideIn(BaseModel):
 
 
 @router.get("/approvals/admins")
-async def approval_admins(_: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+async def approval_admins(_: User = Depends(require_sales_read), db: AsyncSession = Depends(get_db)) -> dict:
     """연장 요청을 받을 수 있는 관리자 목록(요청 창의 체크 목록)."""
     from .sales_deals import approvals as ap
 
@@ -287,7 +310,7 @@ async def approval_admins(_: User = Depends(require_sales), db: AsyncSession = D
 
 
 @router.get("/approvals/count")
-async def approval_count(user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+async def approval_count(user: User = Depends(require_sales_read), db: AsyncSession = Depends(get_db)) -> dict:
     """나에게 온 대기 요청 수 — [검토·승인] 탭 빨간 숫자. 관리자가 아니면 0."""
     from .sales_deals import approvals as ap
 
@@ -332,7 +355,7 @@ async def approval_decide(request_id: int, body: DecideIn, user: User = Depends(
 
 
 @router.get("")
-async def list_deals(biz: Literal["sale", "rental"] | None = None, user: User = Depends(require_sales),
+async def list_deals(biz: Literal["sale", "rental"] | None = None, user: User = Depends(require_sales_read),
                      db: AsyncSession = Depends(get_db)) -> dict:
     # me.admin — 화면이 관리자 전용 버튼(삭제·되돌리기·취소)을 숨기는 데 쓴다(실제 막는 것은 각 API)
     # biz — 제품 영업 건 관리 / 제품 대여 관리 탭(사용자 2026-10-22)
@@ -340,7 +363,7 @@ async def list_deals(biz: Literal["sale", "rental"] | None = None, user: User = 
 
 
 @router.get("/export")
-async def export_deals(_: User = Depends(require_sales), db: AsyncSession = Depends(get_db)):
+async def export_deals(_: User = Depends(require_sales_read), db: AsyncSession = Depends(get_db)):
     """제품 영업 건 관리 리스트 전체 → 엑셀(사용자 2026-10-08). 금액은 공급가액."""
     from fastapi.responses import Response
 
@@ -355,7 +378,7 @@ async def export_deals(_: User = Depends(require_sales), db: AsyncSession = Depe
 
 @router.get("/revenue-export")
 async def revenue_export(year: int, unit: Literal["year", "quarter", "month"] = "month", value: int | None = None,
-                         _: User = Depends(require_sales), db: AsyncSession = Depends(get_db)):
+                         _: User = Depends(require_sales_read), db: AsyncSession = Depends(get_db)):
     """매출 내역 엑셀(사용자 2026-11-20, 재무 연계) — 잔금 세금계산서 발행일 기준, 연도별·분기별·월별."""
     from fastapi.responses import Response
 
@@ -378,7 +401,7 @@ class InitialsIn(BaseModel):
 
 
 @router.get("/initials")
-async def list_initials(_: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+async def list_initials(_: User = Depends(require_sales_read), db: AsyncSession = Depends(get_db)) -> dict:
     from sqlalchemy import text
 
     rs = (await db.execute(text("SELECT name, initials FROM sales_initials ORDER BY name"))).mappings().all()
@@ -396,7 +419,7 @@ async def set_initials(body: InitialsIn, user: User = Depends(require_sales), db
 
 
 @router.get("/photos/{name}")
-async def photo(name: str, _: User = Depends(require_sales)) -> FileResponse:
+async def photo(name: str, _: User = Depends(require_sales_read)) -> FileResponse:
     path = PHOTO_DIR / name
     if not PHOTO_NAME.match(name) or not path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="사진을 찾을 수 없습니다.")
@@ -507,40 +530,40 @@ UNIT_LIST_MAX, CASE_LIST_MAX = 50, 200
 
 
 @router.get("/rental-units")
-async def rental_units(_: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+async def rental_units(_: User = Depends(require_sales_read), db: AsyncSession = Depends(get_db)) -> dict:
     """[대여 제품 목록] 탭(사용자 2026-10-30) — 대여 건의 제품 한 줄씩: 제품·S/N·상태 코드·고객사·담당자·대여 기간·반납일. 금액 없음."""
     from .sales_deals import rental_query
     return await rental_query.rental_units(db, svc.kst_today())
 
 
 @router.get("/rental-deals")
-async def rental_deals(_: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+async def rental_deals(_: User = Depends(require_sales_read), db: AsyncSession = Depends(get_db)) -> dict:
     """[대여 제품 목록] 탭(사용자 2026-11-10) — 대여 건(유상·무상) 한 줄씩, 상태는 대여 시작일·반납일로 자동. 금액 없음."""
     from .sales_deals import rental_deals as rd
     return await rd.rental_list(db, svc.kst_today())
 
 
 @router.get("/rental-products")
-async def rental_products(_: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+async def rental_products(_: User = Depends(require_sales_read), db: AsyncSession = Depends(get_db)) -> dict:
     """[대여 제품 목록] 탭(사용자 2026-11-10) — 대여 건(유상·무상)의 제품을 품목 줄마다 한 줄씩. 금액 없음."""
     from .sales_deals import rental_deals as rd
     return await rd.rental_products(db, svc.kst_today())
 
 
 @router.get("/units/search")
-async def search_units(q: str = "", _: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+async def search_units(q: str = "", _: User = Depends(require_sales_read), db: AsyncSession = Depends(get_db)) -> dict:
     # 보이는 수보다 많으면 more = True — 화면이 '최근 N개만'이라고 알린다(검증 2026-10-26: 말없이 잘리던 일)
     items = await units.search_units(db, q, svc.kst_today(), limit=UNIT_LIST_MAX + 1)
     return {"items": items[:UNIT_LIST_MAX], "more": len(items) > UNIT_LIST_MAX}
 
 
 @router.get("/units/{unit_id}")
-async def unit_detail(unit_id: int, _: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+async def unit_detail(unit_id: int, _: User = Depends(require_sales_read), db: AsyncSession = Depends(get_db)) -> dict:
     return await _units_call(db, units.unit_detail(db, unit_id, svc.kst_today()))
 
 
 @router.get("/as-cases")
-async def list_cases(case_status: Literal["접수", "진행 중", "완료"] | None = None, user: User = Depends(require_sales),
+async def list_cases(case_status: Literal["접수", "진행 중", "완료"] | None = None, user: User = Depends(require_sales_read),
                      db: AsyncSession = Depends(get_db)) -> dict:
     # admin — 화면이 [삭제]를 관리자에게만 보인다(실제 막는 것은 /as-cases/delete)
     items = await units.list_cases(db, status=case_status, limit=CASE_LIST_MAX + 1)
@@ -571,7 +594,7 @@ async def update_case(case_id: int, body: CaseIn, user: User = Depends(require_s
 
 
 @router.get("/warranty-policies")
-async def get_policies(user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+async def get_policies(user: User = Depends(require_sales_read), db: AsyncSession = Depends(get_db)) -> dict:
     return {"rows": await units.policies(db), "can_edit": is_admin(user)}
 
 
@@ -601,7 +624,7 @@ async def upload_as_photo(file: UploadFile = File(...), _: User = Depends(requir
 
 
 @router.get("/as-photos/{pid}")
-async def as_photo(pid: str, _: User = Depends(require_sales)) -> StreamingResponse:
+async def as_photo(pid: str, _: User = Depends(require_sales_read)) -> StreamingResponse:
     if not units.AS_PHOTO_ID.match(pid):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="사진을 찾을 수 없습니다.")
     try:
@@ -620,7 +643,7 @@ async def as_photo(pid: str, _: User = Depends(require_sales)) -> StreamingRespo
 
 
 @router.get("/{deal_id}/units")
-async def get_units(deal_id: int, quote_id: int, revision: int, _: User = Depends(require_sales),
+async def get_units(deal_id: int, quote_id: int, revision: int, _: User = Depends(require_sales_read),
                     db: AsyncSession = Depends(get_db)) -> dict:
     return await _units_call(db, units.issue_units(db, deal_id, quote_id, revision))
 
@@ -634,7 +657,7 @@ async def save_units(deal_id: int, body: UnitsIn, user: User = Depends(require_s
 
 
 @router.get("/{deal_id}/rental")
-async def rental_detail(deal_id: int, _: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+async def rental_detail(deal_id: int, _: User = Depends(require_sales_read), db: AsyncSession = Depends(get_db)) -> dict:
     """대여 건 상세 — 발행한 견적서 판의 제품 목록, 품목 줄마다 등록한 S/N 과 견적서 Remark 에서 읽은 S/N(사용자 2026-11-10)."""
     from .sales_deals import rental_deals as rd
     return await _units_call(db, rd.rental_detail(db, deal_id, svc.kst_today()))
@@ -648,7 +671,7 @@ async def rental_load_serials(deal_id: int, user: User = Depends(require_sales),
 
 
 @router.get("/{deal_id}")
-async def get_deal(deal_id: int, _: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+async def get_deal(deal_id: int, _: User = Depends(require_sales_read), db: AsyncSession = Depends(get_db)) -> dict:
     try:
         return await svc.get_deal(db, deal_id, svc.kst_today())
     except svc.DealError as e:
@@ -1014,7 +1037,7 @@ async def compare_po(deal_id: int, index: int, user: User = Depends(require_sale
 
 
 @router.get("/{deal_id}/po/{index}")
-async def download_po(deal_id: int, index: int, _: User = Depends(require_sales),
+async def download_po(deal_id: int, index: int, _: User = Depends(require_sales_read),
                       db: AsyncSession = Depends(get_db)) -> StreamingResponse:
     try:
         f = await svc.get_po_file(db, deal_id, index)
@@ -1050,7 +1073,7 @@ SHIP_PHOTO_ID = re.compile(r"^[0-9a-f]{32}\.(jpg|jpeg|png|webp)$")
 
 
 @router.get("/{deal_id}/statement/draft")
-async def statement_draft(deal_id: int, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+async def statement_draft(deal_id: int, user: User = Depends(require_sales_read), db: AsyncSession = Depends(get_db)) -> dict:
     try:   # 발행자 이니셜은 로그인 계정 값으로 미리 채운다(폼에서 고칠 수 있음)
         return await svc.statement_draft(db, deal_id, (await get_profile(db, user.id))["initials"])
     except svc.DealError as e:
@@ -1065,7 +1088,7 @@ async def set_statement(deal_id: int, body: StatementIn, user: User = Depends(re
 
 @router.get("/{deal_id}/statement/file")
 async def statement_file(deal_id: int, fmt: Literal["pdf", "xlsx"] = "pdf", prev: int | None = None,
-                         _: User = Depends(require_sales), db: AsyncSession = Depends(get_db)):
+                         _: User = Depends(require_sales_read), db: AsyncSession = Depends(get_db)):
     from fastapi.responses import Response
 
     from .company_knowledge import quote_xlsx as qx
@@ -1111,7 +1134,7 @@ async def upload_ship_photo(deal_id: int, file: UploadFile = File(...), _: User 
 
 
 @router.get("/{deal_id}/ship-photos/{pid}")
-async def ship_photo(deal_id: int, pid: str, _: User = Depends(require_sales)) -> StreamingResponse:
+async def ship_photo(deal_id: int, pid: str, _: User = Depends(require_sales_read)) -> StreamingResponse:
     if not SHIP_PHOTO_ID.match(pid):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="사진을 찾을 수 없습니다.")
     try:
@@ -1205,7 +1228,7 @@ async def quote_upload_confirm(deal_id: int, body: "QuoteUploadConfirm", user: U
 
 @router.get("/{deal_id}/quote-file")
 async def deal_quote_file(deal_id: int, quote: int, revision: int | None = None, fmt: Literal["pdf", "xlsx"] = "pdf",
-                          replaced: int | None = None, _: User = Depends(require_sales), db: AsyncSession = Depends(get_db)):
+                          replaced: int | None = None, _: User = Depends(require_sales_read), db: AsyncSession = Depends(get_db)):
     """이 건의 견적서 발행본 내려받기(영업부 누구나 — 발행·건 연결 견적서는 견적서 작업 화면도 영업부끼리 같이 쓴다, 2026-10-28). 이 건의 견적서가 아니면 404."""
     from fastapi.responses import Response
 
@@ -1231,7 +1254,7 @@ async def deal_quote_file(deal_id: int, quote: int, revision: int | None = None,
 
 
 @router.get("/{deal_id}/order")
-async def order_open(deal_id: int, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+async def order_open(deal_id: int, user: User = Depends(require_sales_read), db: AsyncSession = Depends(get_db)) -> dict:
     try:   # admin — 화면이 관리자 전용 버튼(입금 확인 취소)을 보일지 정한다(실제 막는 것은 각 API)
         res = await svc.order_open(db, deal_id, (await get_profile(db, user.id))["initials"])
         return {**res, "admin": is_admin(user)}
@@ -1332,7 +1355,7 @@ async def order_agent_turn(deal_id: int, body: OrderAgentIn, user: User = Depend
 
 
 @router.get("/{deal_id}/order/preview")
-async def order_preview(deal_id: int, _: User = Depends(require_sales), db: AsyncSession = Depends(get_db)):
+async def order_preview(deal_id: int, _: User = Depends(require_sales_read), db: AsyncSession = Depends(get_db)):
     """발급 전 거래명세서 미리보기(PDF, 파일로 남기지 않음) — 저장한 초안 그대로, 빈 칸은 빈 채로."""
     from fastapi.responses import Response
 

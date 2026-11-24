@@ -27,14 +27,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .api_purchases import ReceiptLineIn, require_category
-from .api_sales_deals import is_admin, require_sales
+from .api_sales_deals import deny_readonly_write, is_admin, require_sales, require_sales_read
 from .database import get_db
 from .models import User
 from .purchases import service as psvc
 from .purchases import stock
 from .purchases import stock_excel
 
-router = APIRouter(prefix="/v1/stock", tags=["Stock"])
+router = APIRouter(prefix="/v1/stock", tags=["Stock"], dependencies=[Depends(deny_readonly_write)])   # 재무팀 조회만
 
 
 class StockPatchIn(BaseModel):
@@ -62,7 +62,7 @@ EXCEL_MAX_BYTES = 10 * 1024 * 1024
 
 
 @router.get("/export")
-async def export_stock(_: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> Response:
+async def export_stock(_: User = Depends(require_sales_read), db: AsyncSession = Depends(get_db)) -> Response:
     data = await stock_excel.export(db)
     name = f"공장제품재고_{psvc.kst_today().strftime('%Y%m%d')}.xlsx"
     from urllib.parse import quote
@@ -100,7 +100,7 @@ async def import_apply(body: ImportApplyIn, user: User = Depends(require_sales),
 
 
 @router.get("")
-async def list_stock(purpose: Literal["sale", "dev"] = "sale", user: User = Depends(require_sales),
+async def list_stock(purpose: Literal["sale", "dev"] = "sale", user: User = Depends(require_sales_read),
                      db: AsyncSession = Depends(get_db)) -> dict:
     return {**await stock.list_items(db, purpose), "me": {"admin": is_admin(user)}}
 
@@ -129,7 +129,7 @@ async def direct_draft(user: User = Depends(require_sales), db: AsyncSession = D
 
 
 @router.get("/direct/{pid}")
-async def direct_get(pid: int, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+async def direct_get(pid: int, user: User = Depends(require_sales_read), db: AsyncSession = Depends(get_db)) -> dict:
     try:
         d = await psvc.raw(db, pid)
         if not d.get("direct"):
@@ -220,5 +220,5 @@ async def stock_photos(item_id: int, body: StockPhotosIn, user: User = Depends(r
 
 
 @router.get("/{item_id}/history")
-async def stock_history(item_id: int, user: User = Depends(require_sales), db: AsyncSession = Depends(get_db)) -> dict:
+async def stock_history(item_id: int, user: User = Depends(require_sales_read), db: AsyncSession = Depends(get_db)) -> dict:
     return {"history": await stock.history(db, item_id)}
