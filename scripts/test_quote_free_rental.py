@@ -74,7 +74,9 @@ qs._sync_work(S)
 check(not qs.free_rental(S) and qs.RENTAL_NOTE in S["form"]["foot_notes"], "기본은 유상 대여 — 중도 해지 주석 있음")
 P = edit(S, {"lines": [{"id": "L1", "name": "방역 로봇 UV-1", "commodity": "Robot", "qty": 2, "unit_price": 500_000},
                        {"id": None, "name": "충전 스테이션", "commodity": "Dock", "qty": 1, "unit_price": None}]})
-check(len(P["lines"]) == len(S["lines"]), "유상 대여 — 단가 없는 새 줄은 지금처럼 빠짐", str([x["name"] for x in P["lines"]]))
+# 화면 저장은 단가 없는 줄도 남기고 발행 전에 '단가 없음'으로 막는다(사용자 2026-11-26 — 예전엔 말없이 빠짐)
+check(any(x["name"] == "충전 스테이션" for x in P["lines"]) and any("충전 스테이션" in x and "단가 없음" in x for x in qs.problems(P)),
+      "유상 대여 — 단가 없는 새 줄은 남고 발행 전에 '단가 없음'", str([x["name"] for x in P["lines"]]))
 
 # 2. 무상 대여는 만들 때만([대여 제품 목록]의 [무상 대여 건 등록], 사용자 2026-11-10) — 작성 중에는 유상↔무상을 바꾸지 않음
 check(edit(S, {"form": {"rental_fee": "공짜"}})["form"].get("rental_fee") in (None, "paid"), "잘못된 무상/유상 값은 무시")

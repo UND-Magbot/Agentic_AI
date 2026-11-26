@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field
 from .api_auth import get_current_user
 from .api_sales_deals import deny_readonly_write, require_sales, require_sales_read
 from .company_knowledge import product_recommend as pr
+from .company_knowledge import quote_session as qs
 from .company_knowledge.plain_text import scrub
 from .models import User
 from .sales_deals.quote_upload import UploadConfirmIn as QuoteUploadConfirm
@@ -331,7 +332,7 @@ class QuoteDeliveryIn(BaseModel):
 class QuoteEditIn(BaseModel):
     """왼쪽 화면 직접 수정 — 머리(form)·품목(lines, 물류비·인건비 줄 제외)·납품 방식(delivery)·설치 인원·일수·단가(work)·넣을 옵션."""
     form: dict[str, Any] = Field(default_factory=dict, max_length=40)   # 머리 칸 27개(대여 칸 포함, 2026-10-22)
-    lines: list[QuoteLineIn] | None = Field(default=None, max_length=500)   # 대여 견적서는 S/N 마다 한 줄(88줄 사례 → 500줄, 2026-11-10)
+    lines: list[QuoteLineIn] | None = Field(default=None, max_length=qs.LINES_MAX)   # 대여 견적서는 S/N 마다 한 줄(500줄, 2026-11-10)
     delivery: QuoteDeliveryIn | None = None
     work: QuoteWorkIn | None = None
     include_options: list[str] = Field(default_factory=list, max_length=10)
@@ -513,6 +514,16 @@ async def quote_line_photo(qid: int, line_id: str, file: UploadFile = File(...),
         return await pr.quote_line_photo(qid, line_id[:12], user_id=current_user.id, data=data)
     except pr.RecommendError as e:
         raise _bad(e) from e
+
+
+@router.post("/quotes/{qid}/delete")
+async def quote_delete(qid: int, current_user: User = Depends(get_current_user)):
+    """작성 중 견적서 지우기 — 내가 만든, 한 번도 발행하지 않은 것만(사용자 2026-11-26)."""
+    try:
+        await pr.quote_delete(qid, user_id=current_user.id)
+    except pr.RecommendError as e:
+        raise _bad(e) from e
+    return {"ok": True}
 
 
 @router.post("/quotes/{qid}/lines/{line_id}/photo/remove")

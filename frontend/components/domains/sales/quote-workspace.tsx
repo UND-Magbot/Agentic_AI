@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from "react";
 import type { QuoteBlock, QuoteDelivery, QuoteForm, QuoteLine, QuoteListItem, QuoteNego, QuoteHangulCell, QuotePurpose, QuoteSession, QuoteWork } from "@/lib/shared/product-recommend";
 import { RichText } from "@/components/domains/sales/agent-chat";
 import { ConfirmDialog, POPUP_BTN_HOVER } from "@/components/shared/ui/confirm-dialog";
+import { askConfirm } from "@/components/shared/ui/confirm-host";
 import { Icon } from "@/components/shared/ui/icon";
 import { useDragMove } from "@/components/shared/ui/use-drag-move";
 import { supplyOf, withVat as vatWithCut } from "@/lib/shared/money";
@@ -318,6 +319,19 @@ function QuoteList({ onOpen, askManual }: { onOpen: (id: number) => void; askMan
       setPicking(false);
     }
   }
+  // 작성 중 견적서 지우기(사용자 2026-11-26) — 내가 만든, 발행한 적 없는 것만(서버가 다시 확인)
+  async function remove(x: QuoteListItem) {
+    const name = (x.customer ? `${x.customer} 견적서` : "이 견적서") + (x.mine === false && x.writer ? `(작성 ${x.writer})` : "");
+    if (!(await askConfirm({ title: `${name}를 지울까요?`, message: "작성 중인 내용(품목·대화)이 모두 지워지고 되돌릴 수 없습니다.",
+                             confirmLabel: "지우기", danger: true }))) return;
+    setErr(null);
+    try {
+      await api(`/quotes/${x.id}/delete`, {});
+      setItems((list) => list?.filter((y) => y.id !== x.id) ?? list);
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  }
   useEffect(() => {
     let alive = true;
     api<{ items: QuoteListItem[] }>("/quotes")
@@ -353,13 +367,15 @@ function QuoteList({ onOpen, askManual }: { onOpen: (id: number) => void; askMan
                 <th className="px-3 py-2 font-medium">견적번호</th><th className="px-3 py-2 font-medium">고객사</th>
                 <th className="px-3 py-2 font-medium">모델</th><th className="px-3 py-2 font-medium">상태</th>
                 <th className="px-3 py-2 text-right font-medium">합계</th><th className="px-3 py-2 font-medium">수정</th>
+                <th className="w-12 px-2 py-2"><span className="sr-only">지우기</span></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
               {items.map((x) => (
                 <tr key={x.id} className="cursor-pointer hover:bg-foreground/[0.03]" onClick={() => onOpen(x.id)}>
                   <td className="px-3 py-2 font-medium text-foreground">{x.quote_no ? `${x.quote_no} (v${x.revision + 1})` : "— (초안)"}</td>
-                  <td className="px-3 py-2">{x.customer ?? "—"}</td>
+                  <td className="px-3 py-2">{x.customer ?? "—"}
+                    {x.mine === false && x.writer && <span className="ml-1.5 text-[11.5px] text-foreground-subtle">· 작성 {x.writer}</span>}</td>
                   <td className="px-3 py-2">{x.manual ? <span className="text-violet-700 dark:text-violet-300">수기 작성</span> : x.model ?? "—"}
                     {x.purpose === "rental" && <span className="ml-1.5 rounded bg-emerald-500/12 px-1.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">대여</span>}</td>
                   <td className="px-3 py-2">
@@ -370,6 +386,15 @@ function QuoteList({ onOpen, askManual }: { onOpen: (id: number) => void; askMan
                   </td>
                   <td className="px-3 py-2 text-right">{x.total != null ? x.total.toLocaleString("ko-KR") : "—"}</td>
                   <td className="px-3 py-2 text-foreground-subtle">{new Date(x.updated_at).toLocaleString("ko-KR")}</td>
+                  <td className="px-2 py-1 text-center">
+                    {x.deletable && !readOnly && (
+                      <button type="button" aria-label="견적서 지우기" title="작성 중인 견적서 지우기"
+                              onClick={(e) => { e.stopPropagation(); void remove(x); }}
+                              className="grid h-8 w-8 place-items-center rounded-md text-foreground-subtle hover:bg-rose-500/10 hover:text-rose-600">
+                        <Icon name="trash" className="h-4 w-4" />
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>

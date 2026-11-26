@@ -185,6 +185,11 @@ BLOCK_TYPES = ("items", "option", "spec", "text")
 MAIN_BLOCK = "B0"
 OPTION_TITLE = "< OPTION >"
 BLOCKS_MAX = 12
+# 견적서 품목 최대 줄 수 — 대여 견적서는 S/N 마다 한 줄(88줄 사례 → 500줄, 2026-11-10). 화면 저장(QuoteEditIn.lines)도 이 값
+LINES_MAX = 500
+# AI 대화 한 번에 반영하는 변경 수 — 대화가 한꺼번에 너무 많이 고치지 않게. 화면 직접 저장은 제한 없음(입력 칸 수로 이미 묶임,
+# 사용자 2026-11-26: 머리 칸을 여럿 고치면 뒤의 새 품목이 말없이 빠지던 문제)
+CHAT_OPS_MAX = 20
 SPEC_ROWS_MAX = 20
 
 
@@ -573,16 +578,16 @@ def problems(state: dict[str, Any]) -> list[str]:
         if ln["kind"] in ("work", "freight", "note"):
             continue                                        # 물류비·인건비는 아래 납품 방식 기준으로, 서술형 줄은 가격 없음
         if not ln.get("qty") or ln["qty"] < 1:
-            out.append(f"{ln['name']} — 수량 미정")
+            out.append(f"{ln['name'] or ln.get('commodity') or '이름 없는 줄'} — 수량 미정")
         elif ln.get("conditional") and not ln.get("confirmed"):
-            out.append(f"{ln['name']} — 조건부 수량 {ln['qty']}(근거 확인 후 [수량 확인] 또는 수량 수정)")
+            out.append(f"{ln['name'] or ln.get('commodity') or '이름 없는 줄'} — 조건부 수량 {ln['qty']}(근거 확인 후 [수량 확인] 또는 수량 수정)")
         elif free:
             continue
         elif state["form"].get("lang") == "en":
             if usd_price(ln, state["form"].get("fx_rate")) is None:
-                out.append(f"{ln['name']} — 달러 단가 없음(직접 적거나 환율 입력)")
+                out.append(f"{ln['name'] or ln.get('commodity') or '이름 없는 줄'} — 달러 단가 없음(직접 적거나 환율 입력)")
         elif not ln.get("unit_price") or ln["unit_price"] <= 0:
-            out.append(f"{ln['name']} — " + ("단가표 가격 미정" if ln.get("price_status") == "unset" else "단가 없음"))
+            out.append(f"{ln['name'] or ln.get('commodity') or '이름 없는 줄'} — " + ("단가표 가격 미정" if ln.get("price_status") == "unset" else "단가 없음"))
     if not state["lines"]:
         out.append("품목이 없습니다")
     f = state["form"]
@@ -693,7 +698,8 @@ def apply_ops(state: dict[str, Any], ops: Any, message: str | None) -> tuple[dic
         return None
 
     by_id = {ln["id"]: ln for ln in st["lines"]}
-    for op in (ops if isinstance(ops, list) else [])[:20]:
+    op_list = ops if isinstance(ops, list) else []
+    for op in (op_list[:CHAT_OPS_MAX] if message is not None else op_list):
         if not isinstance(op, dict):
             continue
         kind = op.get("op")
@@ -825,8 +831,11 @@ def apply_ops(state: dict[str, Any], ops: Any, message: str | None) -> tuple[dic
             usd = usd if usd is not None and usd > 0 else None
             if price is not None and price <= 0:
                 price = None
-            # 무상 대여는 단가 없이도 줄을 넣는다(사용자 2026-10-30)
-            if not name or (price is None and usd is None and not free_rental(st)) or not qty or qty < 1:
+            # 대화는 단가를 말한 품목만(AI 가 단가를 지어내지 않게). 무상 대여(사용자 2026-10-30)와 화면 직접 저장(사용자 2026-11-26)은
+            # 단가 없이도 줄을 넣는다 — 단가가 빈 줄은 '단가 없음'으로 남아 발행 전에 막힌다(problems)
+            # 화면 직접 저장은 규격(name)을 비우고 품목(commodity)만 적은 줄도 넣는다(사용자 2026-11-26 — 예전엔 말없이 빠짐)
+            label = name or (clean_lines(op.get("commodity"), 60) if message is None else "")
+            if not label or (price is None and usd is None and not free_rental(st) and message is not None) or not qty or qty < 1:
                 continue
             blk = target_block(op)
             if blk is None and made and message is not None:
@@ -847,12 +856,14 @@ def apply_ops(state: dict[str, Any], ops: Any, message: str | None) -> tuple[dic
                   **({"usd": usd} if usd else {}), **({"block": blk} if blk and blk != MAIN_BLOCK else {}),
                   **({"unit": clean_unit(op.get("unit"))} if clean_unit(op.get("unit")) else {}),
                   "commodity": clean_lines(op.get("commodity"), 60), "remark": clean_lines(op.get("remark"), 100),
-                  **({"in_total": True} if op.get("in_total") is True else {}), "price_status": "set"}
+                  **({"in_total": True} if op.get("in_total") is True else {}),
+                  "price_status": "set" if price is not None or usd is not None else "none"}
             st["lines"].append(ln)
             by_id[ln["id"]] = ln
             st["asked"] = list({*st.get("asked", []), "extra"})
             is_opt = _types(st).get(blk or MAIN_BLOCK) == "option"
-            done.append(("옵션 추가" if is_opt else "추가") + f": {name} {int(qty)} × " + (f"{price:,.0f}원" if price else f"${usd:,.2f}" if usd else "무상")
+            done.append(("옵션 추가" if is_opt else "추가") + f": {label} {int(qty)} × "
+                        + (f"{price:,.0f}원" if price else f"${usd:,.2f}" if usd else "무상" if free_rental(st) else "단가 미정")
                         + ((" (Total 반영)" if ln.get("in_total") else " (Total 미반영)") if is_opt else ""))
         elif kind == "update" and op.get("line") in by_id:
             ln = by_id[op["line"]]

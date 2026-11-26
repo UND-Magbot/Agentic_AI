@@ -946,6 +946,13 @@ async def sales_staff(db, user_id: int | None) -> bool:
     return r is not None and (r["role"] == "superadmin" or r["domain"] in ("sales", "all"))
 
 
+async def is_superadmin(db, user_id: int | None) -> bool:
+    """최고 관리자 — 모든 사람의 작성 중 견적서를 보고·열고·지울 수 있다(사용자 2026-11-26)."""
+    if user_id is None:
+        return False
+    return (await db.execute(text("SELECT CAST(role AS text) FROM users WHERE id = :u"), {"u": user_id})).scalar() == "superadmin"
+
+
 async def quote_shared(db, r: dict[str, Any]) -> bool:
     """영업부끼리 같이 쓰는 견적서인지(사용자 2026-10-28 — 담당 넘김·퇴사 뒤 이어받기): 발행했거나, 영업 건에 이어졌거나,
     최종 제안으로 확정한 추천의 견적서. 발행 전이고 어디에도 안 이어진 작성 중 견적서는 쓴 사람만."""
@@ -963,7 +970,7 @@ async def _quote_row(db, qid: int, user_id: int | None) -> dict[str, Any]:
         raise RecommendError("견적서를 찾을 수 없습니다.")
     r = dict(r)
     if user_id is not None and r["user_id"] not in (None, user_id) \
-            and not (await quote_shared(db, r) and await sales_staff(db, user_id)):
+            and not (await quote_shared(db, r) and await sales_staff(db, user_id)) and not await is_superadmin(db, user_id):
         raise RecommendError("견적서를 찾을 수 없습니다.")
     return r
 
@@ -1200,13 +1207,40 @@ async def quote_list(*, user_id: int | None, limit: int = 100) -> list[dict[str,
     from ..database import SessionLocal
 
     async with SessionLocal() as db:
+        admin = await is_superadmin(db, user_id)
+        # 최고 관리자(사용자 2026-11-26) — 모든 사람의 작성 중 견적서. 그 밖은 내 견적서(초안·발행)
+        who = "q.status = 'draft'" if admin else "q.user_id IS NOT DISTINCT FROM :u"
         rows = (await db.execute(text(
-            "SELECT id, recommendation_id, status, quote_no, revision, customer, total, state->>'model' AS model, "
-            "COALESCE((state->>'manual')::boolean, false) AS manual, COALESCE(state->'form'->>'purpose', 'sale') AS purpose, updated_at "
-            f"FROM product_quotes WHERE user_id IS NOT DISTINCT FROM :u AND NOT ({_EMPTY_MANUAL}) ORDER BY updated_at DESC LIMIT :n"),
+            "SELECT q.id, q.recommendation_id, q.status, q.quote_no, q.revision, q.customer, q.total, q.state->>'model' AS model, "
+            "COALESCE((q.state->>'manual')::boolean, false) AS manual, COALESCE(q.state->'form'->>'purpose', 'sale') AS purpose, q.updated_at, "
+            f"({_DELETABLE}) AS deletable, "   # 조건의 칸(status·quote_no·history…)은 users 에 없는 이름이라 그대로 쓴다
+            "q.user_id IS NOT DISTINCT FROM :u AS mine, COALESCE(NULLIF(u.alias, ''), u.username) AS writer "
+            f"FROM product_quotes q LEFT JOIN users u ON u.id = q.user_id WHERE {who} "
+            f"AND NOT ({_EMPTY_MANUAL}) "
+            "ORDER BY q.updated_at DESC LIMIT :n"),
             {"u": user_id, "n": limit})).mappings().all()
     return [{**dict(r), "total": float(r["total"]) if r["total"] is not None else None, "updated_at": r["updated_at"].isoformat()}
             for r in rows]
+
+
+# 지울 수 있는 견적서(사용자 2026-11-26) — 한 번도 발행하지 않은 작성 중 견적서만. 발행한 적이 있으면(번호·발행 기록) 영업 건·
+# 거래명세서·S/N 이 그 판을 가리키므로 지우지 않는다. 본인이 만든 것만(공유 견적서라도 남의 것은 안 됨).
+_DELETABLE = "status = 'draft' AND quote_no IS NULL AND jsonb_array_length(COALESCE(history, '[]'::jsonb)) = 0"
+
+
+async def quote_delete(qid: int, *, user_id: int | None) -> None:
+    """작성 중 견적서 지우기 — 내가 만든(최고 관리자는 누구 것이든), 한 번도 발행하지 않은 것만(사용자 2026-11-26)."""
+    from ..database import SessionLocal
+
+    async with SessionLocal() as db:
+        r = (await db.execute(text(f"SELECT user_id, ({_DELETABLE}) AS ok FROM product_quotes WHERE id = :i FOR UPDATE"),
+                              {"i": qid})).mappings().first()
+        if r is None or user_id is None or (r["user_id"] != user_id and not await is_superadmin(db, user_id)):
+            raise RecommendError("견적서를 찾을 수 없습니다.")
+        if not r["ok"]:
+            raise RecommendError("발행한 적이 있는 견적서는 지울 수 없습니다 — 영업 건에서 그 견적서를 쓰고 있습니다.")
+        await db.execute(text("DELETE FROM product_quotes WHERE id = :i"), {"i": qid})
+        await db.commit()
 
 
 _CLAIMS_CHANGE = re.compile(r"(추가|반영|변경|수정|바꾸|바꿨|바뀌|삭제|빼|넣|적용)\S{0,4}\s*(했|하였|됐|되었|드렸|두었|뒀)")

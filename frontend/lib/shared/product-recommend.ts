@@ -370,6 +370,11 @@ export type QuoteListItem = {
   id: number; recommendation_id: number | null; status: "draft" | "issued"; quote_no: string | null; revision: number;
   customer: string | null; total: number | null; model: string | null; updated_at: string; manual?: boolean;
   purpose?: QuotePurpose;
+  /** 지울 수 있음 — 내가 만든(최고 관리자는 누구 것이든), 한 번도 발행하지 않은 작성 중 견적서(사용자 2026-11-26) */
+  deletable?: boolean;
+  /** 내가 만든 견적서인지 · 작성자 이름 — 최고 관리자 목록엔 모든 사람의 작성 중 견적서가 나온다 */
+  mine?: boolean;
+  writer?: string | null;
 };
 
 /** 테스트용 정답지 샘플(제품 추천 질문 모두 채우기) — quotable: 유선 자동 툴체인저라 견적 단가가 있음. */

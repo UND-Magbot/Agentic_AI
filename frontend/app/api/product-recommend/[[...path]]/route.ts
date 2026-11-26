@@ -16,6 +16,7 @@
  * GET  /api/product-recommend/quotes/price-list            → 회사 단가표(수기 견적의 [단가표에서 추가])
  * GET  /api/product-recommend/quotes · /quotes/{id} · /quotes/{id}/next-no → 내 견적서 목록 · 한 건 · 다음 발행번호
  * POST /api/product-recommend/quotes/{id}/chat|edit|issue|load-won  → 대화로 고치기 · 직접 수정 저장 · 발행 · 수주한 견적서 불러오기
+ * POST /api/product-recommend/quotes/{id}/delete          → 작성 중 견적서 지우기(내가 만든, 발행한 적 없는 것만, 사용자 2026-11-26)
  * POST /api/product-recommend/quotes/{id}/en-cell         → 해외 견적서 AI 번역 칸의 영어 고치기 · [한글 그대로]
  * POST /api/product-recommend/quotes/{id}/upload         → 밖에서 고친 견적서(엑셀·PDF) 올리기 → AI 가 읽은 품목
  * POST /api/product-recommend/quotes/{id}/upload/confirm → 확인한 품목으로 발행(새 발행번호)
@@ -148,7 +149,7 @@ export async function POST(req: NextRequest, { params }: Params) {
   }
   if (path.length === 2 && path[0] === "quotes" && path[1] === "draft") return forward("POST", "/quotes/draft", body);
   if (path.length === 2 && path[0] === "quotes" && path[1] === "manual") return forward("POST", "/quotes/manual", body);
-  if (path.length === 3 && path[0] === "quotes" && /^\d+$/.test(path[1]) && ["chat", "edit", "issue", "en-cell", "load-won"].includes(path[2])) {
+  if (path.length === 3 && path[0] === "quotes" && /^\d+$/.test(path[1]) && ["chat", "edit", "issue", "en-cell", "load-won", "delete"].includes(path[2])) {
     return forward("POST", `/quotes/${path[1]}/${path[2]}`, body);
   }
   if (path.length === 6 && path[0] === "quotes" && /^\d+$/.test(path[1]) && path[2] === "lines" && /^[A-Za-z0-9]{1,12}$/.test(path[3])
