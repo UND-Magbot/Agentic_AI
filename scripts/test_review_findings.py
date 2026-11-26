@@ -482,7 +482,7 @@ async def rental_phase(db, tag: str) -> None:
     deal_id, _ = await new_deal(db, "QT-RV20261027-21", amount=36_000_000)
     sale_id, _ = await new_deal(db, "QT-RV20261027-22")
     # 대여 시작일은 앞으로의 날짜 — 시작일이 지나면 출하 전(등록) S/N 도 대여 중으로 본다(사용자 2026-11-10, 상태는 시작일로 자동)
-    start = (TODAY + dt.timedelta(days=30)).isoformat()
+    start = (svc.kst_today() + dt.timedelta(days=30)).isoformat()   # 실제 오늘 기준(코드가 kst_today 로 시작 여부를 봄)
     await db.execute(text("UPDATE sales_deals SET shipments = CAST(:s AS jsonb), quote = quote || CAST(:q AS jsonb) WHERE id = :d"),
                      {"s": json.dumps([{"date": "2026-10-05"}]), "d": deal_id,
                       "q": json.dumps({"biz": "rental", "rental": {"months": 36, "start": start, "end": "2029-10-04", "monthly": 1_000_000}})})
